@@ -165,7 +165,7 @@ message VersionAuxData {
 }
 
 // Metadata describing the index.
-message IndexMetadata {
+message  {
   // Unique ID of an index. It is unique across all the dataset versions.
   UUID uuid = 1;
 
@@ -366,27 +366,3 @@ message VectorIndexDetails {}
 
 // Details for the remap index, which stores row ID mappings for different dataset versions
 // TODO: this might get large, we should add an option to store as an external file if exceeding a threshold
-message RemapIndexDetails {
-
-  message NewFragmentSignature {
-    uint64 fragment_id = 1;
-    uint64 num_rows = 2;
-  }
-
-  message FragmentMapping {
-    repeated DataFragment old_fragments = 1;
-
-    repeated NewFragmentSignature new_fragment_signatures = 2;
-  }
-
-  message VersionFragmentMapping {
-      uint64 dataset_version = 1;
-
-      repeated FragmentMapping fragment_mappings = 2;
-
-      // The path to the row ID mapping file for this version, relative to the index root
-      string row_id_map_path = 3;
-  }
-
-  repeated VersionFragmentMapping version_mappings = 1;
-}

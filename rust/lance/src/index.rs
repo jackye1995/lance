@@ -74,6 +74,7 @@ use self::scalar::build_scalar_index;
 use self::vector::{build_vector_index, VectorIndexParams, LANCE_VECTOR_INDEX};
 use crate::index::vector::remap_vector_index;
 use crate::{dataset::Dataset, Error, Result};
+use crate::index::remap::open_remap_index;
 
 // Whether to auto-migrate a dataset when we encounter corruption.
 fn auto_migrate_corruption() -> bool {
@@ -1107,11 +1108,7 @@ impl DatasetIndexInternalExt for Dataset {
                 return Ok(Some(remap_index));
             }
 
-            let remap_index = if let Some(r) = self.open_remap_index(&NoOpMetricsCollector).await? {
-                r
-            } else {
-                return Ok(None);
-            };
+            let remap_index = open_remap_index(self, index)?;
             info!(target: TRACE_IO_EVENTS, index_uuid=uuid, type=IO_TYPE_OPEN_SCALAR, index_type=IndexType::Remap.to_string());
             metrics.record_index_load();
 

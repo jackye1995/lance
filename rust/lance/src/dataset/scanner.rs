@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The Lance Authors
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -2157,6 +2157,15 @@ impl Scanner {
         let covered_frags = self.fragments_covered_by_index_query(index_expr).await?;
         let mut relevant_frags = Vec::with_capacity(fragments.len());
         let mut missing_frags = Vec::with_capacity(fragments.len());
+
+        let (remappable, remapped) =
+            match self.dataset.open_remap_index(&NoOpMetricsCollector).await? {
+                Some(remap_index) => {
+                    remap_index.check_remappable_fragments(&covered_frags, &fragments)?
+                }
+                None => (HashSet::new(), Vec::new()),
+            };
+
         for fragment in fragments {
             if covered_frags.contains(fragment.id as u32) {
                 relevant_frags.push(fragment);
@@ -2164,6 +2173,12 @@ impl Scanner {
                 missing_frags.push(fragment);
             }
         }
+
+        if !remappable.is_empty() {
+            relevant_frags.extend(remapped);
+            missing_frags.retain(|f| !remappable.contains(&f.id));
+        }
+
         Ok((relevant_frags, missing_frags))
     }
 

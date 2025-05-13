@@ -290,6 +290,17 @@ impl IndexStore for LanceIndexStore {
         let path = self.index_dir.child(name);
         self.object_store.delete(&path).await
     }
+
+    async fn list_index_files(&self) -> Result<Vec<String>> {
+        let mut files = Vec::new();
+        let mut stream = self.object_store.list(Some(self.index_dir.clone()));
+        while let Some(meta) = stream.try_next().await? {
+            if let Some(name) = meta.location.filename() {
+                files.push(name.to_string());
+            }
+        }
+        Ok(files)
+    }
 }
 
 #[cfg(test)]

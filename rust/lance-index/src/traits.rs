@@ -116,4 +116,7 @@ pub trait DatasetIndexExt {
         partition_id: usize,
         with_vector: bool,
     ) -> Result<SendableRecordBatchStream>;
+
+    /// Remap an index using the row ID mapping information from the remap index.
+    async fn remap_index(&mut self, index_id: &Uuid) -> Result<()>;
 }

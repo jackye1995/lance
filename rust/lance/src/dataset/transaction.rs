@@ -144,6 +144,8 @@ pub enum Operation {
         groups: Vec<RewriteGroup>,
         /// Indices that have been updated with the new row addresses
         rewritten_indices: Vec<RewrittenIndex>,
+        /// The remap index to be created or updated to
+        remap_index: Option<Index>,
     },
     /// Replace data in a column in the dataset with a new data. This is used for
     /// null column population where we replace an entirely null column with a
@@ -848,6 +850,7 @@ impl Transaction {
             Operation::Rewrite {
                 ref groups,
                 ref rewritten_indices,
+                ref remap_index,
             } => {
                 final_fragments.extend(maybe_existing_fragments?.clone());
                 let current_version = current_manifest.map(|m| m.version).unwrap_or_default();
@@ -869,6 +872,10 @@ impl Transaction {
                     }
                 } else {
                     Self::handle_rewrite_indices(&mut final_indices, rewritten_indices, groups)?;
+                }
+
+                if let Some(remap_index) = remap_index {
+                    final_indices.push(remap_index.clone());
                 }
             }
             Operation::CreateIndex {
@@ -1361,6 +1368,7 @@ impl TryFrom<pb::Transaction> for Transaction {
                 new_fragments,
                 groups,
                 rewritten_indices,
+                remap_index,
             })) => {
                 let groups = if !groups.is_empty() {
                     groups
@@ -1383,10 +1391,12 @@ impl TryFrom<pb::Transaction> for Transaction {
                     .iter()
                     .map(RewrittenIndex::try_from)
                     .collect::<Result<_>>()?;
+                let remap_index = remap_index.map(Index::try_from).transpose()?;
 
                 Operation::Rewrite {
                     groups,
                     rewritten_indices,
+                    remap_index,
                 }
             }
             Some(pb::transaction::Operation::CreateIndex(pb::transaction::CreateIndex {
@@ -1625,6 +1635,7 @@ impl From<&Transaction> for pb::Transaction {
             Operation::Rewrite {
                 groups,
                 rewritten_indices,
+                remap_index,
             } => pb::transaction::Operation::Rewrite(pb::transaction::Rewrite {
                 groups: groups
                     .iter()
@@ -1634,6 +1645,7 @@ impl From<&Transaction> for pb::Transaction {
                     .iter()
                     .map(|rewritten| rewritten.into())
                     .collect(),
+                remap_index: remap_index.as_ref().map(IndexMetadata::from),
                 ..Default::default()
             }),
             Operation::CreateIndex {
@@ -1897,6 +1909,7 @@ mod tests {
                     new_fragments: vec![fragment1.clone()],
                 }],
                 rewritten_indices: vec![],
+                remap_index: None,
             },
             Operation::ReserveFragments { num_fragments: 3 },
             Operation::Update {
@@ -2018,6 +2031,7 @@ mod tests {
                         new_fragments: vec![fragment0.clone()],
                     }],
                     rewritten_indices: Vec::new(),
+                    remap_index: None,
                 },
                 [
                     Compatible,    // append
@@ -2039,6 +2053,7 @@ mod tests {
                         new_fragments: vec![fragment0.clone()],
                     }],
                     rewritten_indices: Vec::new(),
+                    remap_index: None,
                 },
                 [
                     Compatible,    // append

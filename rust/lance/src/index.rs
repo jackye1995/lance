@@ -7,6 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 
+use crate::dataset::transaction::{Operation, Transaction};
 use arrow_schema::{DataType, Schema};
 use async_trait::async_trait;
 use datafusion::execution::SendableRecordBatchStream;
@@ -21,6 +22,7 @@ use lance_file::v2::reader::FileReaderOptions;
 use lance_index::metrics::{MetricsCollector, NoOpMetricsCollector};
 use lance_index::optimize::OptimizeOptions;
 use lance_index::pb::index::Implementation;
+use lance_index::remap::RemapIndex;
 use lance_index::scalar::expression::{
     IndexInformationProvider, LabelListQueryParser, SargableQueryParser, ScalarQueryParser,
     TextQueryParser,
@@ -35,6 +37,7 @@ pub use lance_index::IndexParams;
 use lance_index::INDEX_METADATA_SCHEMA_KEY;
 use lance_index::{
     pb,
+    remap::REMAP_INDEX_NAME,
     scalar::{ScalarIndexParams, LANCE_SCALAR_INDEX},
     vector::VectorIndex,
     DatasetIndexExt, Index, IndexType, INDEX_FILE_NAME,
@@ -59,19 +62,18 @@ use vector::utils::get_vector_type;
 pub(crate) mod append;
 pub(crate) mod cache;
 pub mod prefilter;
+pub mod remap;
 pub mod scalar;
 pub mod vector;
 
 use crate::dataset::index::LanceIndexStoreExt;
 pub use crate::index::prefilter::{FilterLoader, PreFilter};
 
-use crate::dataset::transaction::{Operation, Transaction};
-use crate::index::vector::remap_vector_index;
-use crate::{dataset::Dataset, Error, Result};
-
 use self::append::merge_indices;
 use self::scalar::build_scalar_index;
 use self::vector::{build_vector_index, VectorIndexParams, LANCE_VECTOR_INDEX};
+use crate::index::vector::remap_vector_index;
+use crate::{dataset::Dataset, Error, Result};
 
 // Whether to auto-migrate a dataset when we encounter corruption.
 fn auto_migrate_corruption() -> bool {
@@ -713,6 +715,114 @@ impl DatasetIndexExt for Dataset {
             ))),
         }
     }
+
+    async fn remap_index(&mut self, index_id: &Uuid) -> Result<()> {
+        // TODO: refactor with remap_index() function on the top
+        let indices = self.load_indices().await?;
+        let current_idx = indices
+            .iter()
+            .find(|i| i.uuid == *index_id)
+            .ok_or_else(|| Error::Index {
+                message: format!("Index with id {} does not exist", index_id),
+                location: location!(),
+            })?
+            .clone();
+
+        if current_idx.name == REMAP_INDEX_NAME {
+            return Err(Error::Index {
+                message: "Cannot remap the remap index itself".to_string(),
+                location: location!(),
+            });
+        }
+
+        if current_idx.fields.len() > 1 {
+            return Err(Error::Index {
+                message: "Remapping indices with multiple fields is not supported".to_string(),
+                location: location!(),
+            });
+        }
+
+        let remap_index = if let Some(r) = self.open_remap_index(&NoOpMetricsCollector).await? {
+            r
+        } else {
+            return Err(Error::Index {
+                message: "Cannot perform independent remap after compaction without a remap index"
+                    .into(),
+                location: location!(),
+            });
+        };
+
+        let row_id_map = remap_index.load_combined_row_id_map().await?;
+
+        let field = current_idx
+            .fields
+            .first()
+            .expect("An index existed with no fields");
+
+        let field = self.schema().field_by_id(*field).unwrap();
+
+        let new_id = Uuid::new_v4();
+
+        let generic = self
+            .open_generic_index(&field.name, &index_id.to_string(), &NoOpMetricsCollector)
+            .await?;
+
+        match generic.index_type() {
+            it if it.is_scalar() => {
+                let new_store = LanceIndexStore::from_dataset(self, &new_id.to_string());
+
+                let scalar_index = self
+                    .open_scalar_index(&field.name, &index_id.to_string(), &NoOpMetricsCollector)
+                    .await?;
+                scalar_index.remap(&row_id_map, &new_store).await?;
+            }
+            it if it.is_vector() => {
+                remap_vector_index(
+                    Arc::new(self.clone()),
+                    &field.name,
+                    index_id,
+                    &new_id,
+                    &current_idx,
+                    &row_id_map,
+                )
+                .await?;
+            }
+            _ => {
+                return Err(Error::Index {
+                    message: format!("Index type {} is not supported", generic.index_type()),
+                    location: location!(),
+                });
+            }
+        }
+
+        let new_fragment_bitmap = current_idx
+            .fragment_bitmap
+            .as_ref()
+            .map(|bitmap| remap_index.remap_index_fragment_bitmap(&bitmap).unwrap());
+
+        let new_idx = IndexMetadata {
+            uuid: new_id,
+            name: current_idx.name.clone(),
+            fields: current_idx.fields.clone(),
+            dataset_version: self.manifest.version,
+            fragment_bitmap: new_fragment_bitmap,
+            index_details: current_idx.index_details.clone(),
+        };
+
+        let transaction = Transaction::new(
+            self.manifest.version,
+            Operation::CreateIndex {
+                new_indices: vec![new_idx],
+                removed_indices: vec![current_idx],
+            },
+            None,
+            None,
+        );
+
+        self.apply_commit(transaction, &Default::default(), &Default::default())
+            .await?;
+        Ok(())
+    }
 }
 
 /// A trait for internal dataset utilities
@@ -741,6 +851,13 @@ pub trait DatasetIndexInternalExt: DatasetIndexExt {
         uuid: &str,
         metrics: &dyn MetricsCollector,
     ) -> Result<Arc<dyn VectorIndex>>;
+
+    // Open the remap index
+    async fn open_remap_index(
+        &self,
+        metrics: &dyn MetricsCollector,
+    ) -> Result<Option<Arc<RemapIndex>>>;
+
     /// Loads information about all the available scalar indices on the dataset
     async fn scalar_index_info(&self) -> Result<ScalarIndexInfo>;
 
@@ -979,6 +1096,34 @@ impl DatasetIndexInternalExt for Dataset {
         Ok(index)
     }
 
+    async fn open_remap_index(
+        &self,
+        metrics: &dyn MetricsCollector,
+    ) -> Result<Option<Arc<RemapIndex>>> {
+        let indices = self.load_indices().await?;
+        if let Some(index) = indices.iter().find(|idx| idx.name == REMAP_INDEX_NAME) {
+            let uuid = index.uuid.to_string();
+            if let Some(remap_index) = self.session.index_cache.get_remap(&uuid) {
+                return Ok(Some(remap_index));
+            }
+
+            let remap_index = if let Some(r) = self.open_remap_index(&NoOpMetricsCollector).await? {
+                r
+            } else {
+                return Ok(None);
+            };
+            info!(target: TRACE_IO_EVENTS, index_uuid=uuid, type=IO_TYPE_OPEN_SCALAR, index_type=IndexType::Remap.to_string());
+            metrics.record_index_load();
+
+            self.session
+                .index_cache
+                .insert_remap(&uuid, remap_index.clone());
+            Ok(Some(remap_index))
+        } else {
+            Ok(None)
+        }
+    }
+
     #[instrument(level = "trace", skip_all)]
     async fn scalar_index_info(&self) -> Result<ScalarIndexInfo> {
         let indices = self.load_indices().await?;
@@ -1042,12 +1187,25 @@ impl DatasetIndexInternalExt for Dataset {
                 location: location!(),
             })?;
         }
-        Ok(self
+
+        let mut fragments = self
             .fragments()
             .iter()
             .filter(|f| !total_fragment_bitmap.contains(f.id as u32))
             .cloned()
-            .collect())
+            .collect();
+
+        if let Some(remap_index) = self.open_remap_index(&NoOpMetricsCollector).await? {
+            let (remappable, _) = remap_index
+                .as_ref()
+                .check_remappable_fragments(&total_fragment_bitmap, &fragments)?;
+
+            if !remappable.is_empty() {
+                fragments.retain(|f| !remappable.contains(&f.id));
+            }
+        }
+
+        Ok(fragments)
     }
 
     async fn indexed_fragments(&self, name: &str) -> Result<Vec<Vec<Fragment>>> {

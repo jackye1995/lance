@@ -1,0 +1,2232 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Modern columnar format for ML workloads">
+      
+      
+      
+        <link rel="canonical" href="https://lancedb.github.io/lance/format/">
+      
+      
+        <link rel="prev" href="../introduction/schema_evolution/">
+      
+      
+        <link rel="next" href="../blob/">
+      
+      
+      <link rel="icon" href="../assets/favicon_64x64.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.6.14">
+    
+    
+      
+        <title>Lance Format Spec - Lance</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.342714a4.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.06af60db.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+      <link rel="stylesheet" href="../assets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#lance-formats" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Lance" class="md-header__button md-logo" aria-label="Lance" data-md-component="logo">
+      
+  <img src="../assets/high-res-icon.png" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Lance
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Lance Format Spec
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+          <a href="javascript:void(0)" class="md-search__icon md-icon" title="Share" aria-label="Share" data-clipboard data-clipboard-text="" data-md-component="search-share" tabindex="-1">
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.15c-.05.21-.08.43-.08.66 0 1.61 1.31 2.91 2.92 2.91s2.92-1.3 2.92-2.91A2.92 2.92 0 0 0 18 16.08"/></svg>
+          </a>
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/lancedb/lance" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    lancedb/lance
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Lance" class="md-nav__button md-logo" aria-label="Lance" data-md-component="logo">
+      
+  <img src="../assets/high-res-icon.png" alt="logo">
+
+    </a>
+    Lance
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/lancedb/lance" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    lancedb/lance
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Home
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Introduction
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            Introduction
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../notebooks/quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Quickstart
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../notebooks/youtube_transcript_search/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    YouTube Transcript Search
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../introduction/read_and_write/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Read and Write
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../introduction/schema_evolution/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Schema Evolution
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Advanced Usage
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            Advanced Usage
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    Lance Format Spec
+    
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    Lance Format Spec
+    
+  </span>
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#dataset-directory" class="md-nav__link">
+    <span class="md-ellipsis">
+      Dataset Directory
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Dataset Directory">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fragments" class="md-nav__link">
+    <span class="md-ellipsis">
+      Fragments
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#file-structure" class="md-nav__link">
+    <span class="md-ellipsis">
+      File Structure
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#file-version" class="md-nav__link">
+    <span class="md-ellipsis">
+      File Version
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#file-encodings" class="md-nav__link">
+    <span class="md-ellipsis">
+      File Encodings
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#feature-flags" class="md-nav__link">
+    <span class="md-ellipsis">
+      Feature Flags
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      Fields
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dataset-update-and-schema-evolution" class="md-nav__link">
+    <span class="md-ellipsis">
+      Dataset Update and Schema Evolution
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#deletion" class="md-nav__link">
+    <span class="md-ellipsis">
+      Deletion
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#committing-datasets" class="md-nav__link">
+    <span class="md-ellipsis">
+      Committing Datasets
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Committing Datasets">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#manifest-naming-schemes" class="md-nav__link">
+    <span class="md-ellipsis">
+      Manifest Naming Schemes
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#conflict_resolution" class="md-nav__link">
+    <span class="md-ellipsis">
+      Conflict resolution
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#external-manifest-store" class="md-nav__link">
+    <span class="md-ellipsis">
+      External Manifest Store
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#statistics" class="md-nav__link">
+    <span class="md-ellipsis">
+      Statistics
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Statistics">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#statistic-values" class="md-nav__link">
+    <span class="md-ellipsis">
+      Statistic values
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#page-level-statistics-format" class="md-nav__link">
+    <span class="md-ellipsis">
+      Page-level statistics format
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#feature-move-stable-row-ids" class="md-nav__link">
+    <span class="md-ellipsis">
+      Feature: Move-Stable Row IDs
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Feature: Move-Stable Row IDs">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#assigning-row-ids" class="md-nav__link">
+    <span class="md-ellipsis">
+      Assigning row ids
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#row-id-sequences" class="md-nav__link">
+    <span class="md-ellipsis">
+      Row ID sequences
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#row-id-index" class="md-nav__link">
+    <span class="md-ellipsis">
+      Row ID index
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../blob/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Blob API
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tags/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Tags
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../object_store/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Object Store Configuration
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../distributed_write/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Distributed Write
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../performance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Performance Guide
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tokenizer/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Tokenizer
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../arrays/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Extension Arrays
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Integrations
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            Integrations
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../integrations/huggingface/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Huggingface
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../integrations/tensorflow/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Tensorflow
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../integrations/pytorch/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    PyTorch
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../integrations/ray/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Ray
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../integrations/spark/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Spark
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Examples
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            Examples
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../examples/examples/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Overview
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../examples/write_read_dataset/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Write/Read Dataset
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../examples/llm_dataset_creation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    LLM Dataset Creation
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../examples/llm_training/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    LLM Training
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../examples/flickr8k_dataset_creation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Flickr8k Dataset Creation
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../examples/clip_training/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    CLIP Training
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../examples/artefact_management/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Artefact Management
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../examples/spark_datasource_example/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Spark DataSource
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    API References
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            API References
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Overview
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/python/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Python API
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/py_modules/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Python Modules
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Contributing
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#dataset-directory" class="md-nav__link">
+    <span class="md-ellipsis">
+      Dataset Directory
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Dataset Directory">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fragments" class="md-nav__link">
+    <span class="md-ellipsis">
+      Fragments
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#file-structure" class="md-nav__link">
+    <span class="md-ellipsis">
+      File Structure
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#file-version" class="md-nav__link">
+    <span class="md-ellipsis">
+      File Version
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#file-encodings" class="md-nav__link">
+    <span class="md-ellipsis">
+      File Encodings
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#feature-flags" class="md-nav__link">
+    <span class="md-ellipsis">
+      Feature Flags
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      Fields
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dataset-update-and-schema-evolution" class="md-nav__link">
+    <span class="md-ellipsis">
+      Dataset Update and Schema Evolution
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#deletion" class="md-nav__link">
+    <span class="md-ellipsis">
+      Deletion
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#committing-datasets" class="md-nav__link">
+    <span class="md-ellipsis">
+      Committing Datasets
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Committing Datasets">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#manifest-naming-schemes" class="md-nav__link">
+    <span class="md-ellipsis">
+      Manifest Naming Schemes
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#conflict_resolution" class="md-nav__link">
+    <span class="md-ellipsis">
+      Conflict resolution
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#external-manifest-store" class="md-nav__link">
+    <span class="md-ellipsis">
+      External Manifest Store
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#statistics" class="md-nav__link">
+    <span class="md-ellipsis">
+      Statistics
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Statistics">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#statistic-values" class="md-nav__link">
+    <span class="md-ellipsis">
+      Statistic values
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#page-level-statistics-format" class="md-nav__link">
+    <span class="md-ellipsis">
+      Page-level statistics format
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#feature-move-stable-row-ids" class="md-nav__link">
+    <span class="md-ellipsis">
+      Feature: Move-Stable Row IDs
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Feature: Move-Stable Row IDs">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#assigning-row-ids" class="md-nav__link">
+    <span class="md-ellipsis">
+      Assigning row ids
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#row-id-sequences" class="md-nav__link">
+    <span class="md-ellipsis">
+      Row ID sequences
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#row-id-index" class="md-nav__link">
+    <span class="md-ellipsis">
+      Row ID index
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="lance-formats">Lance Formats<a class="headerlink" href="#lance-formats" title="Permanent link">&para;</a></h1>
+<p>The Lance format is both a table format and a file format. Lance
+typically refers to tables as \"datasets\". A Lance dataset is designed
+to efficiently handle secondary indices, fast ingestion and modification
+of data, and a rich set of schema evolution features.</p>
+<h2 id="dataset-directory">Dataset Directory<a class="headerlink" href="#dataset-directory" title="Permanent link">&para;</a></h2>
+<p>A [Lance Dataset]{.title-ref} is organized in a directory.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>/path/to/dataset:
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    data/*.lance  -- Data directory
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    _versions/*.manifest -- Manifest file for each dataset version.
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    _indices/{UUID-*}/index.idx -- Secondary index, each index per directory.
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    _deletions/*.{arrow,bin} -- Deletion files, which contain ids of rows
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>      that have been deleted.
+</code></pre></div>
+<p>A <code>Manifest</code> file includes the metadata to describe a version of the
+dataset.</p>
+<p>See the <a href="https://github.com/lancedb/lance/blob/main/protos/table.proto">table.proto</a> file for the complete Manifest definition.</p>
+<h3 id="fragments">Fragments<a class="headerlink" href="#fragments" title="Permanent link">&para;</a></h3>
+<p><code>DataFragment</code> represents a chunk of data in the dataset. Itself
+includes one or more <code>DataFile</code>, where each <code>DataFile</code> can contain
+several columns in the chunk of data. It also may include a
+<code>DeletionFile</code>, which is explained in a later section.</p>
+<p>See the <a href="https://github.com/lancedb/lance/blob/main/protos/table.proto">table.proto</a> file for the complete DataFragment and DataFile definitions.</p>
+<p>The overall structure of a fragment is shown below. One or more data
+files store the columns of a fragment. New columns can be added to a
+fragment by adding new data files. The deletion file (if present),
+stores the rows that have been deleted from the fragment.</p>
+<p><img alt="image" src="../assets/fragment_structure.png" /></p>
+<p>Every row has a unique id, which is an u64 that is composed of two u32s:
+the fragment id and the local row id. The local row id is just the index
+of the row in the data files.</p>
+<h2 id="file-structure">File Structure<a class="headerlink" href="#file-structure" title="Permanent link">&para;</a></h2>
+<p>Each <code>.lance</code> file is the container for the actual data.</p>
+<p><img alt="image" src="../assets/format_overview.png" /></p>
+<p>At the tail of the file, [ColumnMetadata]{.title-ref} protobuf blocks
+are used to describe the encoding of the columns in the file.</p>
+<p>See the <a href="https://github.com/lancedb/lance/blob/main/protos/file2.proto">file2.proto</a> file for the complete metadata definitions.</p>
+<p>A <code>Footer</code> describes the overall layout of the file. The entire file
+layout is described here:</p>
+<p>See the <a href="https://github.com/lancedb/lance/blob/main/protos/file2.proto">file2.proto</a> file for the complete file layout definitions.</p>
+<h2 id="file-version">File Version<a class="headerlink" href="#file-version" title="Permanent link">&para;</a></h2>
+<p>The Lance file format has gone through a number of changes including a
+breaking change from version 1 to version 2. There are a number of APIs
+that allow the file version to be specified. Using a newer version of
+the file format will lead to better compression and/or performance.
+However, older software versions may not be able to read newer files.</p>
+<p>In addition, the latest version of the file format (next) is unstable
+and should not be used for production use cases. Breaking changes could
+be made to unstable encodings and that would mean that files written
+with these encodings are no longer readable by any newer versions of
+Lance. The <code>next</code> version should only be used for experimentation and
+benchmarking upcoming features.</p>
+<p>The following values are supported:</p>
+<hr />
+<p>Version        Minimal Lance  Maximum Lance  Description
+                 Version        Version        </p>
+<hr />
+<p>0.1            Any            Any            This is the initial Lance
+                                               format.</p>
+<p>2.0            0.16.0         Any            Rework of the Lance file
+                                               format that removed row
+                                               groups and introduced null
+                                               support for lists, fixed
+                                               size lists, and primitives</p>
+<p>2.1 (unstable) None           Any            Enhances integer and string
+                                               compression, adds support
+                                               for nulls in struct fields,
+                                               and improves random access
+                                               performance with nested
+                                               fields.</p>
+<p>legacy         N/A            N/A            Alias for 0.1</p>
+<p>stable         N/A            N/A            Alias for the latest stable
+                                               version (currently 2.0)</p>
+<p>next           N/A            N/A            Alias for the latest
+                                               unstable version (currently
+                                               2.1)</p>
+<hr />
+<dl>
+<dd>File Versions</dd>
+</dl>
+<h2 id="file-encodings">File Encodings<a class="headerlink" href="#file-encodings" title="Permanent link">&para;</a></h2>
+<p>Lance supports a variety of encodings for different data types. The
+encodings are chosen to give both random access and scan performance.
+Encodings are added over time and may be extended in the future. The
+manifest records a max format version which controls which encodings
+will be used. This allows for a gradual migration to a new data format
+so that old readers can still read new data while a migration is in
+progress.</p>
+<p>Encodings are divided into \"field encodings\" and \"array encodings\".
+Field encodings are consistent across an entire field of data, while
+array encodings are used for individual pages of data within a field.
+Array encodings can nest other array encodings (e.g. a dictionary
+encoding can bitpack the indices) however array encodings cannot nest
+field encodings. For this reason data types such as
+<code>Dictionary&lt;UInt8, List&lt;String&gt;&gt;</code> are not yet supported (since there is
+no dictionary field encoding)</p>
+<hr />
+<p>Encoding     Encoding   What it does                 Supported   When it is
+  Name         Type                                    Versions    applied</p>
+<hr />
+<p>Basic struct Field      Encodes non-nullable struct  &gt;= 2.0     Default encoding
+               encoding   data                                     for structs</p>
+<p>List         Field      Encodes lists (nullable or   &gt;= 2.0     Default encoding
+               encoding   non-nullable)                            for lists</p>
+<p>Basic        Field      Encodes primitive data types &gt;= 2.0     Default encoding
+  Primitive    encoding   using separate validity                  for primitive
+                          array                                    data types</p>
+<p>Value        Array      Encodes a single vector of   &gt;= 2.0     Fallback
+               encoding   fixed-width values                       encoding for
+                                                                   fixed-width
+                                                                   types</p>
+<p>Binary       Array      Encodes a single vector of   &gt;= 2.0     Fallback
+               encoding   variable-width data                      encoding for
+                                                                   variable-width
+                                                                   types</p>
+<p>Dictionary   Array      Encodes data using a         &gt;= 2.0     Used on string
+               encoding   dictionary array and an                  pages with fewer
+                          indices array which is                   than 100 unique
+                          useful for large data types              elements
+                          with few unique values                   </p>
+<p>Packed       Array      Encodes a struct with        &gt;= 2.0     Only used on
+  struct       encoding   fixed-width fields in a                  struct types if
+                          row-major format making                  the field
+                          random access more efficient             metadata
+                                                                   attribute
+                                                                   <code>"packed"</code> is
+                                                                   set to <code>"true"</code></p>
+<p>Fsst         Array      Compresses binary data by    &gt;= 2.1     Used on string
+               encoding   identifying common                       pages that are
+                          substrings (of 8 bytes or                not dictionary
+                          less) and encoding them as               encoded
+                          symbols                                  </p>
+<p>Bitpacking   Array      Encodes a single vector of   &gt;= 2.1     Used on integral
+               encoding   fixed-width values using                 types
+                          bitpacking which is useful             <br />
+                          for integral types that do             <br />
+                          not span the full range of             <br />
+                          values                                   </p>
+<hr />
+<dl>
+<dd>Encodings Available</dd>
+</dl>
+<h2 id="feature-flags">Feature Flags<a class="headerlink" href="#feature-flags" title="Permanent link">&para;</a></h2>
+<p>As the file format and dataset evolve, new feature flags are added to
+the format. There are two separate fields for checking for feature
+flags, depending on whether you are trying to read or write the table.
+Readers should check the <code>reader_feature_flags</code> to see if there are any
+flag it is not aware of. Writers should check <code>writer_feature_flags</code>. If
+either sees a flag they don\'t know, they should return an
+\"unsupported\" error on any read or write operation.</p>
+<h2 id="fields">Fields<a class="headerlink" href="#fields" title="Permanent link">&para;</a></h2>
+<p>Fields represent the metadata for a column. This includes the name, data
+type, id, nullability, and encoding.</p>
+<p>Fields are listed in depth first order, and can be one of (1) parent
+(struct), (2) repeated (list/array), or (3) leaf (primitive). For
+example, the schema:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>a: i32
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>b: struct {
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    c: list&lt;i32&gt;
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    d: i32
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>}
+</code></pre></div>
+<p>Would be represented as the following field list:</p>
+<hr />
+<p>name          id            type          parent_id     logical_type</p>
+<hr />
+<p><code>a</code>           1             LEAF          0             <code>"int32"</code></p>
+<p><code>b</code>           2             PARENT        0             <code>"struct"</code></p>
+<p><code>b.c</code>         3             REPEATED      2             <code>"list"</code></p>
+<p><code>b.c</code>         4             LEAF          3             <code>"int32"</code></p>
+<p><code>b.d</code>         5             LEAF          2             <code>"int32"</code></p>
+<hr />
+<h2 id="dataset-update-and-schema-evolution">Dataset Update and Schema Evolution<a class="headerlink" href="#dataset-update-and-schema-evolution" title="Permanent link">&para;</a></h2>
+<p><code>Lance</code> supports fast dataset update and schema evolution via
+manipulating the <code>Manifest</code> metadata.</p>
+<p><code>Appending</code> is done by appending new <code>Fragment</code> to the dataset. While
+adding columns is done by adding new <code>DataFile</code> of the new columns to
+each <code>Fragment</code>. Finally, <code>Overwrite</code> a dataset can be done by resetting
+the <code>Fragment</code> list of the <code>Manifest</code>.</p>
+<p><img alt="image" src="../assets/schema_evolution.png" /></p>
+<h2 id="deletion">Deletion<a class="headerlink" href="#deletion" title="Permanent link">&para;</a></h2>
+<p>Rows can be marked deleted by adding a deletion file next to the data in
+the <code>_deletions</code> folder. These files contain the indices of rows that
+have between deleted for some fragment. For a given version of the
+dataset, each fragment can have up to one deletion file. Fragments that
+have no deleted rows have no deletion file.</p>
+<p>Readers should filter out row ids contained in these deletion files
+during a scan or ANN search.</p>
+<p>Deletion files come in two flavors:</p>
+<ol>
+<li>Arrow files: which store a column with a flat vector of indices</li>
+<li>Roaring bitmaps: which store the indices as compressed bitmaps.</li>
+</ol>
+<p><a href="https://roaringbitmap.org/">Roaring Bitmaps</a> are used for larger
+deletion sets, while Arrow files are used for small ones. This is
+because Roaring Bitmaps are known to be inefficient for small sets.</p>
+<p>The filenames of deletion files are structured like:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>_deletions/{fragment_id}-{read_version}-{random_id}.{arrow|bin}
+</code></pre></div>
+<p>Where <code>fragment_id</code> is the fragment the file corresponds to,
+<code>read_version</code> is the version of the dataset that it was created off of
+(usually one less than the version it was committed to), and <code>random_id</code>
+is a random i64 used to avoid collisions. The suffix is determined by
+the file type (<code>.arrow</code> for Arrow file, <code>.bin</code> for roaring bitmap).</p>
+<p>See the <a href="https://github.com/lancedb/lance/blob/main/protos/table.proto">table.proto</a> file for the DeletionFile definition.</p>
+<p>Deletes can be materialized by re-writing data files with the deleted
+rows removed. However, this invalidates row indices and thus the ANN
+indices, which can be expensive to recompute.</p>
+<h2 id="committing-datasets">Committing Datasets<a class="headerlink" href="#committing-datasets" title="Permanent link">&para;</a></h2>
+<p>A new version of a dataset is committed by writing a new manifest file
+to the <code>_versions</code> directory.</p>
+<p>To prevent concurrent writers from overwriting each other, the commit
+process must be atomic and consistent for all writers. If two writers
+try to commit using different mechanisms, they may overwrite each
+other\'s changes. For any storage system that natively supports atomic
+rename-if-not-exists or put-if-not-exists, these operations should be
+used. This is true of local file systems and cloud object stores, with
+the notable except of AWS S3. For ones that lack this functionality, an
+external locking mechanism can be configured by the user.</p>
+<h3 id="manifest-naming-schemes">Manifest Naming Schemes<a class="headerlink" href="#manifest-naming-schemes" title="Permanent link">&para;</a></h3>
+<p>Manifest files must use a consistent naming scheme. The names correspond
+to the versions. That way we can open the right version of the dataset
+without having to read all the manifests. It also makes it clear which
+file path is the next one to be written.</p>
+<p>There are two naming schemes that can be used:</p>
+<ol>
+<li>V1: <code>_versions/{version}.manifest</code>. This is the legacy naming
+    scheme.</li>
+<li>V2: <code>_versions/{u64::MAX - version:020}.manifest</code>. This is the new
+    naming scheme. The version is zero-padded (to 20 digits) and
+    subtracted from <code>u64::MAX</code>. This allows the versions to be sorted in
+    descending order, making it possible to find the latest manifest on
+    object storage using a single list call.</li>
+</ol>
+<p>It is an error for there to be a mixture of these two naming schemes.</p>
+<h3 id="conflict_resolution">Conflict resolution<a class="headerlink" href="#conflict_resolution" title="Permanent link">&para;</a></h3>
+<p>If two writers try to commit at the same time, one will succeed and the
+other will fail. The failed writer should attempt to retry the commit,
+but only if its changes are compatible with the changes made by the
+successful writer.</p>
+<p>The changes for a given commit are recorded as a transaction file, under
+the <code>_transactions</code> prefix in the dataset directory. The transaction
+file is a serialized <code>Transaction</code> protobuf message. See the
+<code>transaction.proto</code> file for its definition.</p>
+<p><img alt="image" src="../assets/conflict_resolution_flow.png" /></p>
+<p>The commit process is as follows:</p>
+<blockquote>
+<ol>
+<li>The writer finishes writing all data files.</li>
+<li>The writer creates a transaction file in the <code>_transactions</code>
+    directory. This file describes the operations that were performed,
+    which is used for two purposes: (1) to detect conflicts, and (2)
+    to re-build the manifest during retries.</li>
+<li>Look for any new commits since the writer started writing. If
+    there are any, read their transaction files and check for
+    conflicts. If there are any conflicts, abort the commit.
+    Otherwise, continue.</li>
+<li>Build a manifest and attempt to commit it to the next version. If
+    the commit fails because another writer has already committed, go
+    back to step 3.</li>
+</ol>
+</blockquote>
+<p>When checking whether two transactions conflict, be conservative. If the
+transaction file is missing, assume it conflicts. If the transaction
+file has an unknown operation, assume it conflicts.</p>
+<h3 id="external-manifest-store">External Manifest Store<a class="headerlink" href="#external-manifest-store" title="Permanent link">&para;</a></h3>
+<p>If the backing object store does not support *-if-not-exists
+operations, an external manifest store can be used to allow concurrent
+writers. An external manifest store is a KV store that supports
+put-if-not-exists operation. The external manifest store supplements but
+does not replace the manifests in object storage. A reader unaware of
+the external manifest store could read a table that uses it, but it
+might be up to one version behind the true latest version of the table.</p>
+<p><img alt="image" src="../assets/external_store_commit.gif" /></p>
+<p>The commit process is as follows:</p>
+<ol>
+<li><code>PUT_OBJECT_STORE mydataset.lance/_versions/{version}.manifest-{uuid}</code>
+    stage a new manifest in object store under a unique path determined
+    by new uuid</li>
+<li><code>PUT_EXTERNAL_STORE base_uri, version, mydataset.lance/_versions/{version}.manifest-{uuid}</code>
+    commit the path of the staged manifest to the external store.</li>
+<li><code>COPY_OBJECT_STORE mydataset.lance/_versions/{version}.manifest-{uuid} mydataset.lance/_versions/{version}.manifest</code>
+    copy the staged manifest to the final path</li>
+<li><code>PUT_EXTERNAL_STORE base_uri, version, mydataset.lance/_versions/{version}.manifest</code>
+    update the external store to point to the final manifest</li>
+</ol>
+<p>Note that the commit is effectively complete after step 2. If the writer
+fails after step 2, a reader will be able to detect the external store
+and object store are out-of-sync, and will try to synchronize the two
+stores. If the reattempt at synchronization fails, the reader will
+refuse to load. This is to ensure that the dataset is always portable by
+copying the dataset directory without special tool.</p>
+<p><img alt="image" src="../assets/external_store_reader.gif" /></p>
+<p>The reader load process is as follows:</p>
+<ol>
+<li><code>GET_EXTERNAL_STORE base_uri, version, path</code> then, if path does not
+    end in a UUID return the path</li>
+<li><code>COPY_OBJECT_STORE mydataset.lance/_versions/{version}.manifest-{uuid} mydataset.lance/_versions/{version}.manifest</code>
+    reattempt synchronization</li>
+<li><code>PUT_EXTERNAL_STORE base_uri, version, mydataset.lance/_versions/{version}.manifest</code>
+    update the external store to point to the final manifest</li>
+<li><code>RETURN mydataset.lance/_versions/{version}.manifest</code> always return
+    the finalized path, return error if synchronization fails</li>
+</ol>
+<h2 id="statistics">Statistics<a class="headerlink" href="#statistics" title="Permanent link">&para;</a></h2>
+<p>Statistics are stored within Lance files. The statistics can be used to
+determine which pages can be skipped within a query. The null count,
+lower bound (min), and upper bound (max) are stored.</p>
+<p>Statistics themselves are stored in Lance\'s columnar format, which
+allows for selectively reading only relevant stats columns.</p>
+<h3 id="statistic-values">Statistic values<a class="headerlink" href="#statistic-values" title="Permanent link">&para;</a></h3>
+<p>Three types of statistics are stored per column: null count, min value,
+max value. The min and max values are stored as their native data types
+in arrays.</p>
+<p>There are special behaviors for different data types to account for
+nulls:</p>
+<p>For integer-based data types (including signed and unsigned integers,
+dates, and timestamps), if the min and max are unknown (all values are
+null), then the minimum/maximum representable values should be used
+instead.</p>
+<p>For float data types, if the min and max are unknown, then use <code>-Inf</code>
+and <code>+Inf</code>, respectively. (<code>-Inf</code> and <code>+Inf</code> may also be used for min
+and max if those values are present in the arrays.) <code>NaN</code> values should
+be ignored for the purpose of min and max statistics. If the max value
+is zero (negative or positive), the max value should be recorded as
+<code>+0.0</code>. Likewise, if the min value is zero (positive or negative), it
+should be recorded as <code>-0.0</code>.</p>
+<p>For binary data types, if the min or max are unknown or unrepresentable,
+then use null value. Binary data type bounds can also be truncated. For
+example, an array containing just the value <code>"abcd"</code> could have a
+truncated min of <code>"abc"</code> and max of <code>"abd"</code>. If there is no truncated
+value greater than the maximum value, then instead use null for the
+maximum.</p>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>The <code>min</code> and <code>max</code> values are not guaranteed to be within the array;
+they are simply upper and lower bounds. Two common cases where they are
+not contained in the array is if the min or max original value was
+deleted and when binary data is truncated. Therefore, statistic should
+not be used to compute queries such as <code>SELECT max(col) FROM table</code>.</p>
+</div>
+<h3 id="page-level-statistics-format">Page-level statistics format<a class="headerlink" href="#page-level-statistics-format" title="Permanent link">&para;</a></h3>
+<p>Page-level statistics are stored as arrays within the Lance file. Each
+array contains one page long and is <code>num_pages</code> long. The page offsets
+are stored in an array just like the data page table. The offset to the
+statistics page table is stored in the metadata.</p>
+<p>The schema for the statistics is:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>&lt;field_id_1&gt;: struct
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>    null_count: i64
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    min_value: &lt;field_1_data_type&gt;
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    max_value: &lt;field_1_data_type&gt;
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>...
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>&lt;field_id_N&gt;: struct
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>    null_count: i64
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>    min_value: &lt;field_N_data_type&gt;
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>    max_value: &lt;field_N_data_type&gt;
+</code></pre></div>
+<p>Any number of fields may be missing, as statistics for some fields or of
+some kind may be skipped. In addition, readers should expect there may
+be extra fields that are not in this schema. These should be ignored.
+Future changes to the format may add additional fields, but these
+changes will be backwards compatible.</p>
+<p>However, writers should not write extra fields that aren\'t described in
+this document. Until they are defined in the specification, there is no
+guarantee that readers will be able to safely interpret new forms of
+statistics.</p>
+<h2 id="feature-move-stable-row-ids">Feature: Move-Stable Row IDs<a class="headerlink" href="#feature-move-stable-row-ids" title="Permanent link">&para;</a></h2>
+<p>The row ids features assigns a unique u64 id to each row in the table.
+This id is stable after being moved (such as during compaction), but is
+not necessarily stable after a row is updated. (A future feature may
+make them stable after updates.) To make access fast, a secondary index
+is created that maps row ids to their locations in the table. The
+respective parts of these indices are stored in the respective
+fragment\'s metadata.</p>
+<dl>
+<dt>row id</dt>
+<dd>
+<p>A unique auto-incrementing u64 id assigned to each row in the table.</p>
+</dd>
+<dt>row address</dt>
+<dd>
+<p>The current location of a row in the table. This is a u64 that can
+be thought of as a pair of two u32 values: the fragment id and the
+local row offset. For example, if the row address is (42, 9), then
+the row is in the 42rd fragment and is the 10<sup>th</sup> row in that
+fragment.</p>
+</dd>
+<dt>row id sequence</dt>
+<dd>
+<p>The sequence of row ids in a fragment.</p>
+</dd>
+<dt>row id index</dt>
+<dd>
+<p>A secondary index that maps row ids to row addresses. This index is
+constructed by reading all the row id sequences.</p>
+</dd>
+</dl>
+<h3 id="assigning-row-ids">Assigning row ids<a class="headerlink" href="#assigning-row-ids" title="Permanent link">&para;</a></h3>
+<p>Row ids are assigned in a monotonically increasing sequence. The next
+row id is stored in the manifest as the field <code>next_row_id</code>. This starts
+at zero. When making a commit, the writer uses that field to assign row
+ids to new fragments. If the commit fails, the writer will re-read the
+new <code>next_row_id</code>, update the new row ids, and then try again. This is
+similar to how the <code>max_fragment_id</code> is used to assign new fragment ids.</p>
+<p>When a row id updated, it is typically assigned a new row id rather than
+reusing the old one. This is because this feature doesn\'t have a
+mechanism to update secondary indices that may reference the old values
+for the row id. By deleting the old row id and creating a new one, the
+secondary indices will avoid referencing stale data.</p>
+<h3 id="row-id-sequences">Row ID sequences<a class="headerlink" href="#row-id-sequences" title="Permanent link">&para;</a></h3>
+<p>The row id values for a fragment are stored in a <code>RowIdSequence</code>
+protobuf message. This is described in the
+<a href="https://github.com/lancedb/lance/blob/main/protos/rowids.proto">protos/rowids.proto</a>
+file. Row id sequences are just arrays of u64 values, which have
+representations optimized for the common case where they are sorted and
+possibly contiguous. For example, a new fragment will have a row id
+sequence that is just a simple range, so it is stored as a <code>start</code> and
+<code>end</code> value.</p>
+<p>These sequence messages are either stored inline in the fragment
+metadata, or are written to a separate file and referenced from the
+fragment metadata. This choice is typically made based on the size of
+the sequence. If the sequence is small, it is stored inline. If it is
+large, it is written to a separate file. By keeping the small sequences
+inline, we can avoid the overhead of additional IO operations.</p>
+<p>See the <a href="https://github.com/lancedb/lance/blob/main/protos/table.proto">table.proto</a> file for the complete row_id_sequence definition.</p>
+<h3 id="row-id-index">Row ID index<a class="headerlink" href="#row-id-index" title="Permanent link">&para;</a></h3>
+<p>To ensure fast access to rows by their row id, a secondary index is
+created that maps row ids to their locations in the table. This index is
+built when a table is loaded, based on the row id sequences in the
+fragments. For example, if fragment 42 has a row id sequence of
+<code>[0, 63, 10]</code>, then the index will have entries for <code>0 -&gt; (42, 0)</code>,
+<code>63 -&gt; (42, 1)</code>, <code>10 -&gt; (42, 2)</code>. The exact form of this index is left
+up to the implementation, but it should be optimized for fast lookups.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        <div class="md-social">
+  
+    
+    
+    
+    
+    <a href="https://github.com/lancedb/lance" target="_blank" rel="noopener" title="Source on GitHub" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8M97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+    
+    
+    
+    
+    <a href="https://pypi.org/project/pylance/" target="_blank" rel="noopener" title="PyPI Package" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.8 200.5c-7.7-30.9-22.3-54.2-53.4-54.2h-40.1v47.4c0 36.8-31.2 67.8-66.8 67.8H172.7c-29.2 0-53.4 25-53.4 54.3v101.8c0 29 25.2 46 53.4 54.3 33.8 9.9 66.3 11.7 106.8 0 26.9-7.8 53.4-23.5 53.4-54.3v-40.7H226.2v-13.6h160.2c31.1 0 42.6-21.7 53.4-54.2 11.2-33.5 10.7-65.7 0-108.6M286.2 404c11.1 0 20.1 9.1 20.1 20.3 0 11.3-9 20.4-20.1 20.4-11 0-20.1-9.2-20.1-20.4.1-11.3 9.1-20.3 20.1-20.3M167.8 248.1h106.8c29.7 0 53.4-24.5 53.4-54.3V91.9c0-29-24.4-50.7-53.4-55.6-35.8-5.9-74.7-5.6-106.8.1-45.2 8-53.4 24.7-53.4 55.6v40.7h106.9v13.6h-147c-31.1 0-58.3 18.7-66.8 54.2-9.8 40.7-10.2 66.1 0 108.6 7.6 31.6 25.7 54.2 56.8 54.2H101v-48.8c0-35.3 30.5-66.4 66.8-66.4m-6.7-142.6c-11.1 0-20.1-9.1-20.1-20.3.1-11.3 9-20.4 20.1-20.4 11 0 20.1 9.2 20.1 20.4s-9 20.3-20.1 20.3"/></svg>
+    </a>
+  
+    
+    
+    
+    
+    <a href="https://discord.gg/zMM32dvNtd" target="_blank" rel="noopener" title="Discord Community" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M524.531 69.836a1.5 1.5 0 0 0-.764-.7A485 485 0 0 0 404.081 32.03a1.82 1.82 0 0 0-1.923.91 338 338 0 0 0-14.9 30.6 447.9 447.9 0 0 0-134.426 0 310 310 0 0 0-15.135-30.6 1.89 1.89 0 0 0-1.924-.91 483.7 483.7 0 0 0-119.688 37.107 1.7 1.7 0 0 0-.788.676C39.068 183.651 18.186 294.69 28.43 404.354a2.02 2.02 0 0 0 .765 1.375 487.7 487.7 0 0 0 146.825 74.189 1.9 1.9 0 0 0 2.063-.676A348 348 0 0 0 208.12 430.4a1.86 1.86 0 0 0-1.019-2.588 321 321 0 0 1-45.868-21.853 1.885 1.885 0 0 1-.185-3.126 251 251 0 0 0 9.109-7.137 1.82 1.82 0 0 1 1.9-.256c96.229 43.917 200.41 43.917 295.5 0a1.81 1.81 0 0 1 1.924.233 235 235 0 0 0 9.132 7.16 1.884 1.884 0 0 1-.162 3.126 301.4 301.4 0 0 1-45.89 21.83 1.875 1.875 0 0 0-1 2.611 391 391 0 0 0 30.014 48.815 1.86 1.86 0 0 0 2.063.7A486 486 0 0 0 610.7 405.729a1.88 1.88 0 0 0 .765-1.352c12.264-126.783-20.532-236.912-86.934-334.541M222.491 337.58c-28.972 0-52.844-26.587-52.844-59.239s23.409-59.241 52.844-59.241c29.665 0 53.306 26.82 52.843 59.239 0 32.654-23.41 59.241-52.843 59.241m195.38 0c-28.971 0-52.843-26.587-52.843-59.239s23.409-59.241 52.843-59.241c29.667 0 53.307 26.82 52.844 59.239 0 32.654-23.177 59.241-52.844 59.241"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      <script id="__config" type="application/json">{"base": "..", "features": ["navigation.expand", "navigation.sections", "navigation.top", "navigation.tracking", "content.tabs.link", "content.code.copy", "content.code.annotate", "search.highlight", "search.share", "search.suggest"], "search": "../assets/javascripts/workers/search.d50fe291.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.13a4f30d.min.js"></script>
+      
+        <script src="../assets/extra.js"></script>
+      
+    
+  </body>
+</html>

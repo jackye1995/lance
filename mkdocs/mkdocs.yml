@@ -1,0 +1,141 @@
+site_name: Lance
+site_description: Modern columnar format for ML workloads
+site_url: https://lancedb.github.io/lance/
+repo_url: https://github.com/lancedb/lance
+repo_name: lancedb/lance
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  logo: assets/high-res-icon.png
+  favicon: assets/favicon_64x64.png
+  palette:
+    # Palette toggle for light mode
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    # Palette toggle for dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.expand
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - content.tabs.link
+    - content.code.copy
+    - content.code.annotate
+    - search.highlight
+    - search.share
+    - search.suggest
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [../python/python]
+          options:
+            docstring_style: google
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - codehilite:
+      guess_lang: false
+  - def_list
+  - footnotes
+  - md_in_html
+  - toc:
+      permalink: true
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.betterem:
+      smart_enable: all
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.magiclink:
+      repo_url_shorthand: true
+      user: lancedb
+      repo: lance
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/lancedb/lance
+      name: Source on GitHub
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/pylance/
+      name: PyPI Package
+    - icon: fontawesome/brands/discord
+      link: https://discord.gg/zMM32dvNtd
+      name: Discord Community
+
+nav:
+  - Home: index.md
+  - Introduction:
+    - Quickstart: notebooks/quickstart.md
+    - Read and Write: introduction/read_and_write.md
+    - Schema Evolution: introduction/schema_evolution.md
+  - Advanced Usage:
+    - Lance Format Spec: format.md
+    - Blob API: blob.md
+    - Tags: tags.md
+    - Object Store Configuration: object_store.md
+    - Distributed Write: distributed_write.md
+    - Performance Guide: performance.md
+    - Tokenizer: tokenizer.md
+    - Extension Arrays: arrays.md
+  - Integrations:
+    - Huggingface: integrations/huggingface.md
+    - Tensorflow: integrations/tensorflow.md
+    - PyTorch: integrations/pytorch.md
+    - Ray: integrations/ray.md
+    - Spark: integrations/spark.md
+  - Examples:
+    - Overview: examples/examples.md
+    - YouTube Transcript Search: notebooks/youtube_transcript_search.md
+    - Write/Read Dataset: examples/write_read_dataset.md
+    - LLM Dataset Creation: examples/llm_dataset_creation.md
+    - LLM Training: examples/llm_training.md
+    - Flickr8k Dataset Creation: examples/flickr8k_dataset_creation.md
+    - CLIP Training: examples/clip_training.md
+    - Artefact Management: examples/artefact_management.md
+    - Spark DataSource: examples/spark_datasource_example.md
+  - API References:
+    - Overview: api/api.md
+    - Python API: api/python.md
+    - Python Modules: api/py_modules.md
+  - Contributing: contributing.md
+
+extra_css:
+  - assets/extra.css
+
+extra_javascript:
+  - assets/extra.js 

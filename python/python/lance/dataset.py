@@ -312,7 +312,7 @@ class LanceDataset(pa.dataset.Dataset):
         Similar to Git, tags are a way to add metadata to a specific version of the
         dataset.
 
-        .. warning::
+        !!!warning
 
             Tagged versions are exempted from the :py:meth:`cleanup_old_versions()`
             process.
@@ -323,12 +323,12 @@ class LanceDataset(pa.dataset.Dataset):
         Examples
         --------
 
-        .. code-block:: python
+        ```python
+        ds = lance.open("dataset.lance")
+        ds.tags.create("v2-prod-20250203", 10)
 
-            ds = lance.open("dataset.lance")
-            ds.tags.create("v2-prod-20250203", 10)
-
-            tags = ds.tags.list()
+        tags = ds.tags.list()
+        ```
 
         """
         return Tags(self._ds)
@@ -3120,6 +3120,7 @@ class LanceOperation:
         --------
         Use the projece operator to swap column:
 
+        ```python
         >>> import lance
         >>> import pyarrow as pa
         >>> import pyarrow.compute as pc
@@ -3140,6 +3141,7 @@ class LanceOperation:
            a b0  b
         0  1  a  c
         1  2  b  d
+        ```
         """
 
         schema: LanceSchema

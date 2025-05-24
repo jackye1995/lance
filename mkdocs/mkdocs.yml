@@ -84,6 +84,7 @@ markdown_extensions:
   - pymdownx.tasklist:
       custom_checkbox: true
   - pymdownx.tilde
+  - tables
 
 extra:
   social:
@@ -133,9 +134,3 @@ nav:
     - Python API: api/python.md
     - Python Modules: api/py_modules.md
   - Contributing: contributing.md
-
-extra_css:
-  - assets/extra.css
-
-extra_javascript:
-  - assets/extra.js 

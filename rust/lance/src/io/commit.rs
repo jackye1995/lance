@@ -771,10 +771,10 @@ pub(crate) async fn commit_transaction(
         // started at exact same time better.
 
         let mut rebase =
-            TransactionRebase::try_new(&original_dataset, transaction, affected_rows).await?;
+            conflict_resolver::begin_rebase(&original_dataset, transaction, affected_rows).await?;
 
         for (other_version, other_transaction) in other_transactions.iter() {
-            rebase.check_txn(other_transaction, *other_version)?;
+            rebase.rebase_against_txn(other_transaction, *other_version)?;
         }
 
         transaction = rebase.finish(&dataset).await?;

@@ -53,6 +53,7 @@ use std::{
 use super::ManifestWriteConfig;
 use crate::utils::temporal::timestamp_to_nanos;
 use deepsize::DeepSizeOf;
+use futures::StreamExt;
 use lance_core::{datatypes::Schema, Error, Result};
 use lance_file::{datatypes::Fields, version::LanceFileVersion};
 use lance_index::frag_reuse::FRAG_REUSE_INDEX_NAME;
@@ -892,7 +893,7 @@ impl Operation {
     }
 
     /// Check whether another operation modifies the same fragment IDs as this one.
-    fn modifies_same_ids(&self, other: &Self) -> bool {
+    pub(crate) fn modifies_same_ids(&self, other: &Self) -> bool {
         let self_ids = self.modified_fragment_ids().collect::<HashSet<_>>();
         let mut other_ids = other.modified_fragment_ids();
         other_ids.any(|id| self_ids.contains(&id))
@@ -1089,7 +1090,14 @@ impl Transaction {
             Operation::CreateIndex { new_indices, .. } => match &other.operation {
                 Operation::Append { .. } => Compatible,
                 // Indices are identified by UUIDs, so they shouldn't conflict.
-                Operation::CreateIndex { .. } => Compatible,
+                Operation::CreateIndex { new_indices: created_indices, .. } => {
+                    if new_indices.into_iter().any(|idx| idx.name == FRAG_REUSE_INDEX_NAME)
+                        && created_indices.into_iter().any(|idx| idx.name == FRAG_REUSE_INDEX_NAME) {
+                        NotCompatible
+                    } else {
+                        Compatible
+                    }
+                }
                 // Although some of the rows we indexed may have been deleted / moved,
                 // row ids are still valid, so we allow this optimistically.
                 Operation::Delete { .. } | Operation::Update { .. } => Compatible,

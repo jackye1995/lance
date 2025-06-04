@@ -6,7 +6,7 @@ use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
 };
-
+use async_trait::async_trait;
 use futures::{StreamExt, TryStreamExt};
 use lance_core::{
     utils::{deletion::DeletionVector, mask::RowIdTreeMap},
@@ -17,12 +17,14 @@ use lance_table::{
     io::deletion::{deletion_file_path, write_deletion_file},
 };
 use snafu::{location, Location};
-
+use lance_index::frag_reuse::{FragReuseIndex, FragReuseIndexDetails, FRAG_REUSE_INDEX_NAME};
+use lance_table::format::Index;
 use crate::io::deletion::read_dataset_deletion_file;
 use crate::{
     dataset::transaction::{ConflictResult, Operation, Transaction},
     Dataset,
 };
+use crate::dataset::transaction::ConflictResult::{Compatible, NotCompatible, Retryable};
 
 pub struct TransactionRebase<'a> {
     transaction: Transaction,
@@ -32,23 +34,107 @@ pub struct TransactionRebase<'a> {
     affected_rows: Option<&'a RowIdTreeMap>,
 }
 
+#[async_trait]
+pub trait ConflictResolver<'a>: Send + Sync {
+
+    fn txn(&self) -> &Transaction;
+
+    fn rebase_against_txn(
+        &mut self,
+        other_transaction: &Transaction,
+        other_version: u64
+    ) -> Result<()>;
+
+    async fn finish(self, dataset: &'a Dataset) -> Result<Transaction>;
+
+    fn nonretryable_conflict_err(
+        &self,
+        other_transaction: &Transaction,
+        other_version: u64,
+        location: Location,
+    ) -> crate::Error {
+        crate::Error::CommitConflict {
+            version: other_version,
+            source: format!(
+                "This {} transaction is incompatible with concurrent transaction {} at version {}.",
+                self.txn().operation, other_transaction.operation, other_version).into(),
+            location,
+        }
+    }
+
+    fn retryable_conflict_err(
+        &self,
+        other_transaction: &Transaction,
+        other_version: u64,
+        location: Location,
+    ) -> crate::Error {
+        crate::Error::RetryableCommitConflict {
+            version: other_version,
+            source: format!(
+                "This {} transaction was preempted by concurrent transaction {} at version {}. Please retry.",
+                self.txn().operation, other_transaction.operation, other_version).into(),
+            location,
+        }
+    }
+}
+
+impl<'a> ConflictResolver<'a> for Operation {
+    fn txn(&self) -> &Transaction {
+        todo!()
+    }
+
+    fn rebase_against_txn(&mut self, other_transaction: &Transaction, other_version: u64) -> Result<()> {
+        todo!()
+    }
+
+    async fn finish(self, dataset: &'a Dataset) -> Result<Transaction> {
+        todo!()
+    }
+}
+
+
+
+
+pub async fn begin_rebase<'a>(
+    dataset: &Dataset,
+    transaction: Transaction,
+    affected_rows: Option<&'a RowIdTreeMap>,
+) -> Result<TransactionRebase<'a>> {
+    match transaction.operation.clone() {
+        Operation::Delete { updated_fragments, .. } |
+        Operation::Update { updated_fragments, .. } => {
+            TransactionRebase::begin(dataset, transaction, affected_rows, updated_fragments).await
+        }
+        Operation::CreateIndex { .. } => {
+            CreateIndexTransactionRebase::begin(dataset, transaction).await
+        }
+        Operation::Rewrite { .. } => {
+            RewriteTransactionRebase::begin(dataset, transaction, affected_rows).await
+        }
+        Operation::Overwrite { .. } |
+        Operation::Append { .. } |
+        Operation::DataReplacement { .. } |
+        Operation::Merge { .. } |
+        Operation::Restore { .. } |
+        Operation::ReserveFragments { .. } |
+        Operation::Project { .. } |
+        Operation::UpdateConfig { .. } => todo!()
+    }
+}
+
 impl<'a> TransactionRebase<'a> {
-    pub async fn try_new(
+    async fn begin(
         dataset: &Dataset,
         transaction: Transaction,
         affected_rows: Option<&'a RowIdTreeMap>,
-    ) -> Result<Self> {
-        // We might not need to check for row-level conflicts anyways.
-        if !matches!(&transaction.operation,
-            Operation::Update { updated_fragments, .. } |
-            Operation::Delete { updated_fragments, .. }
-            if !updated_fragments.is_empty() && affected_rows.is_some(),
-        ) {
-            return Ok(Self {
+        updated_fragments: Vec<Fragment>,
+    ) -> Result<Arc<Self>> {
+        if updated_fragments.is_empty() || affected_rows.is_none() {
+            return Ok(Arc::new(TransactionRebase {
                 transaction,
                 initial_fragments: HashMap::new(),
                 affected_rows: None,
-            });
+            }));
         }
 
         let dataset = if dataset.manifest.version != transaction.read_version {
@@ -73,95 +159,86 @@ impl<'a> TransactionRebase<'a> {
             .map(|fragment| (fragment.id, (fragment.clone(), false)))
             .collect::<HashMap<_, _>>();
 
-        Ok(Self {
+        Ok(Arc::new(TransactionRebase {
             initial_fragments,
             transaction,
             affected_rows,
-        })
+        }))
+    }
+}
+
+
+
+impl<'a> TransactionRebase<'a> for TransactionRebase<'a> {
+    fn txn(&self) -> &Transaction {
+        &self.transaction
     }
 
-    fn retryable_conflict_err(
-        &self,
+    fn rebase_against_txn(
+        &mut self,
         other_transaction: &Transaction,
-        other_version: u64,
-        location: Location,
-    ) -> crate::Error {
-        crate::Error::RetryableCommitConflict {
-            version: other_version,
-            source: format!(
-                "This {} transaction was preempted by concurrent transaction {} at version {}. Please retry.",
-                self.transaction.operation, other_transaction.operation, other_version).into(),
-            location,
-        }
-    }
-
-    /// Check whether the transaction conflicts with another transaction.
-    ///
-    /// Will return an error if the transaction is not valid. Otherwise, it will
-    /// return Ok(()).
-    pub fn check_txn(&mut self, other_transaction: &Transaction, other_version: u64) -> Result<()> {
-        match self.transaction.conflicts_with(other_transaction) {
-            ConflictResult::Compatible => Ok(()),
-            ConflictResult::NotCompatible => {
-                Err(crate::Error::CommitConflict {
-                    version: other_version,
-                    source: format!(
-                        "This {} transaction is incompatible with concurrent transaction {} at version {}.",
-                        self.transaction.operation, other_transaction.operation, other_version).into(),
-                    location: location!(),
-                })
+        other_version: u64
+    ) -> Result<()> {
+        match &other_transaction.operation {
+            Operation::CreateIndex { .. }
+            | Operation::ReserveFragments { .. }
+            | Operation::Project { .. }
+            | Operation::Append { .. }
+            | Operation::UpdateConfig { .. } => Ok(()),
+            Operation::Rewrite { .. }
+            | Operation::DataReplacement { .. } => {
+                // If we update the same fragments, we conflict.
+                if self.txn().operation.modifies_same_ids(&other_transaction.operation) {
+                    Err(self.retryable_conflict_err(other_transaction, other_version, location!()))
+                } else {
+                    Ok(())
+                }
             },
-            ConflictResult::Retryable => {
-                match &other_transaction.operation {
-                    Operation::Update { updated_fragments, removed_fragment_ids, .. } |
-                    Operation::Delete { updated_fragments, deleted_fragment_ids: removed_fragment_ids, .. } => {
-                        if self.affected_rows.is_none() {
-                            // We don't have any affected rows, so we can't
-                            // do the rebase anyways.
+            Operation::Update { updated_fragments, removed_fragment_ids, .. } |
+            Operation::Delete { updated_fragments, deleted_fragment_ids: removed_fragment_ids, .. } => {
+                if self.affected_rows.is_none() {
+                    // We don't have any affected rows, so we can't
+                    // do the rebase anyways.
+                    return Err(self.retryable_conflict_err(
+                        other_transaction,
+                        other_version,
+                        location!()
+                    ));
+                }
+                for updated in updated_fragments {
+                    if let Some((fragment, needs_rewrite)) = self.initial_fragments.get_mut(&updated.id) {
+                        // If data files, not just deletion files, are modified,
+                        // then we can't rebase.
+                        if fragment.files != updated.files {
                             return Err(self.retryable_conflict_err(
                                 other_transaction,
                                 other_version,
                                 location!()
                             ));
                         }
-                        for updated in updated_fragments {
-                            if let Some((fragment, needs_rewrite)) = self.initial_fragments.get_mut(&updated.id) {
-                                // If data files, not just deletion files, are modified,
-                                // then we can't rebase.
-                                if fragment.files != updated.files {
-                                    return Err(self.retryable_conflict_err(
-                                        other_transaction,
-                                        other_version,
-                                        location!()
-                                    ));
-                                }
 
-                                // Mark any modified fragments as needing a rewrite.
-                                *needs_rewrite |= updated.deletion_file != fragment.deletion_file;
-                            }
-                        }
-
-                        for removed_fragment_id in removed_fragment_ids {
-                            if self.initial_fragments.contains_key(removed_fragment_id) {
-                                return Err(self.retryable_conflict_err(
-                                        other_transaction,
-                                        other_version,
-                                        location!()
-                                    ));
-                            }
-                        }
-                        return Ok(());
-                    },
-                    _ => {}
+                        // Mark any modified fragments as needing a rewrite.
+                        *needs_rewrite |= updated.deletion_file != fragment.deletion_file;
+                    }
                 }
 
-                Err(self.retryable_conflict_err(other_transaction, other_version, location!()))
-            }
+                for removed_fragment_id in removed_fragment_ids {
+                    if self.initial_fragments.contains_key(removed_fragment_id) {
+                        return Err(self.retryable_conflict_err(
+                            other_transaction,
+                            other_version,
+                            location!()
+                        ));
+                    }
+                }
+                Ok(())
+            },
+            Operation::Merge { .. } => Err(self.retryable_conflict_err(other_transaction, other_version, location!())),
+            Operation::Overwrite { .. } | Operation::Restore { .. } => Err(self.nonretryable_conflict_err(other_transaction, other_version, location!())),
         }
     }
 
-    /// Writes
-    pub async fn finish(mut self, dataset: &Dataset) -> Result<Transaction> {
+    async fn finish(mut self, dataset: &'a Dataset) -> Result<Transaction> {
         if self
             .initial_fragments
             .iter()
@@ -308,6 +385,160 @@ impl<'a> TransactionRebase<'a> {
         }
     }
 }
+
+pub struct RewriteTransactionRebase<'a> {
+    transaction: Transaction,
+    initial_fragments: HashMap<u64, (Fragment, bool)>,
+    affected_rows: Option<&'a RowIdTreeMap>,
+    frag_reuse_index_details: Option<FragReuseIndexDetails>,
+}
+
+impl<'a> RewriteTransactionRebase<'a> {
+    pub fn begin(
+        dataset: &Dataset,
+        transaction: Transaction,
+        affected_rows: Option<&'a RowIdTreeMap>,
+    ) -> Result<Arc<RewriteTransactionRebase<'a>>> {
+        todo!()
+    }
+}
+
+impl<'a> TransactionRebase<'a> for RewriteTransactionRebase<'a> {
+    fn txn(&self) -> &Transaction {
+        &self.transaction
+    }
+
+    fn rebase_against_txn(
+        &mut self,
+        other_transaction: &Transaction,
+        other_version: u64
+    ) -> Result<()> {
+        match &other_transaction.operation {
+            // Rewrite is only compatible with operations that don't touch
+            // existing fragments or update fragments we don't touch.
+            Operation::Append { .. }
+            | Operation::ReserveFragments { .. }
+            | Operation::Project { .. }
+            | Operation::UpdateConfig { .. } => Ok(()),
+            Operation::Delete { .. } | Operation::Rewrite { .. } | Operation::Update { .. } => {
+                // As long as they rewrite disjoint fragments they shouldn't conflict.
+                if self.transaction.operation.modifies_same_ids(&other_transaction.operation) {
+                    Err(self.retryable_conflict_err(other_transaction, other_version, location!()))
+                } else {
+                    Ok(())
+                }
+            }
+            Operation::DataReplacement { .. } | Operation::Merge { .. } => {
+                // TODO(rmeng): check that the fragments being replaced are not part of the groups
+                Err(self.retryable_conflict_err(other_transaction, other_version, location!()))
+            }
+            Operation::CreateIndex { new_indices, .. } => {
+                let mut affected_ids = HashSet::new();
+                for index in new_indices {
+                    if let Some(frag_bitmap) = &index.fragment_bitmap {
+                        affected_ids.extend(frag_bitmap.iter());
+                    } else {
+                        return Err(self.retryable_conflict_err(other_transaction, other_version, location!()));
+                    }
+                }
+                if self
+                    .transaction
+                    .operation
+                    .modified_fragment_ids()
+                    .any(|id| affected_ids.contains(&(id as u32)))
+                {
+                    Err(self.retryable_conflict_err(other_transaction, other_version, location!()))
+                } else {
+                    Ok(())
+                }
+            }
+            Operation::Overwrite { .. } | Operation::Restore { .. } => Err(self.nonretryable_conflict_err(other_transaction, other_version, location!())),
+        }
+    }
+
+    async fn finish(self, dataset: &Dataset) -> Result<Transaction> {
+        todo!()
+    }
+}
+
+pub struct CreateIndexTransactionRebase<'a> {
+    transaction: Transaction,
+    affected_rows: Option<&'a RowIdTreeMap>,
+    new_indices: Vec<Index>,
+    frag_reuse_index_details: Option<FragReuseIndexDetails>,
+}
+
+impl<'a> CreateIndexTransactionRebase<'a> {
+    pub fn begin(
+        dataset: &Dataset,
+        transaction: Transaction,
+        affected_rows: Option<&'a RowIdTreeMap>,
+    ) -> Result<Arc<RewriteTransactionRebase<'a>>> {
+        todo!()
+    }
+}
+
+impl<'a> TransactionRebase<'a> for CreateIndexTransactionRebase {
+    fn txn(&self) -> &Transaction {
+        &self.transaction
+    }
+
+    fn rebase_against_txn(&mut self, other_transaction: &Transaction, other_version: u64) -> Result<()> {
+        match &other_transaction.operation {
+            Operation::Append { .. } => Ok(()),
+            // Indices are identified by UUIDs, so they shouldn't conflict.
+            Operation::CreateIndex { new_indices: created_indices, .. } => {
+                if self.new_indices.iter().any(|idx| idx.name == FRAG_REUSE_INDEX_NAME)
+                    && created_indices.iter().any(|idx| idx.name == FRAG_REUSE_INDEX_NAME) {
+                    Err(self.nonretryable_conflict_err(other_transaction, other_version, location!()))
+                } else {
+                    Ok(())
+                }
+            }
+            // Although some of the rows we indexed may have been deleted / moved,
+            // row ids are still valid, so we allow this optimistically.
+            Operation::Delete { .. } | Operation::Update { .. } => Ok(()),
+            // Merge, reserve, and project don't change row ids, so this should be fine.
+            Operation::Merge { .. } => Ok(()),
+            Operation::ReserveFragments { .. } => Ok(()),
+            Operation::Project { .. } => Ok(()),
+            // Should be compatible with rewrite if it didn't move the rows
+            // we indexed. If it did, we could retry.
+            // TODO: this will change with stable row ids.
+            Operation::Rewrite { .. } => {
+                let mut affected_ids = HashSet::new();
+                for index in self.new_indices.iter() {
+                    if let Some(frag_bitmap) = &index.fragment_bitmap {
+                        affected_ids.extend(frag_bitmap.iter());
+                    } else {
+                        return Err(self.retryable_conflict_err(other_transaction, other_version, location!()));
+                    }
+                }
+                if other_transaction
+                    .operation
+                    .modified_fragment_ids()
+                    .any(|id| affected_ids.contains(&(id as u32)))
+                {
+                    Err(self.retryable_conflict_err(other_transaction, other_version, location!()))
+                } else {
+                    Ok(())
+                }
+            }
+            Operation::UpdateConfig { .. } => Ok(()),
+            Operation::DataReplacement { .. } => {
+                // TODO(rmeng): check that the new indices isn't on the column being replaced
+                Err(self.retryable_conflict_err(other_transaction, other_version, location!()))
+            }
+            Operation::Overwrite { .. } | Operation::Restore { .. } => Err(self.nonretryable_conflict_err(other_transaction, other_version, location!())),
+        }
+    }
+
+    async fn finish(self, dataset: &'a Dataset) -> Result<Transaction> {
+        todo!()
+    }
+}
+
+
 
 #[cfg(test)]
 mod tests {

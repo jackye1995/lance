@@ -420,3 +420,32 @@ message FragmentReuseIndexDetails {
     repeated Group groups = 3;
   }
 }
+
+message MemTableIndexDetails {
+
+  message MemTable {
+    string location = 1;
+
+    // The dataset version that the MemTable is created at
+    // This serves as a boundary for concurrent operations like indexing
+    // to prevent performing operations that might overlap with the memTable
+    uint64 start_dataset_version = 2;
+
+    //
+    string index_aligned_dataset_version = 3;
+
+    uint64 last_committed_version = 4;
+
+    // A sealed memTable can no longer be written to.
+    // A writer should seal the memTable if 
+    bool sealed = 5;
+
+    // multiple writers can concurrently write to the memTable.
+    // each writer keeps its own high watermark.
+    // when that specific writer dies accidentally,
+    //
+    map<string, string> watermarks = 6;
+  }
+
+  repeated MemTable memTables = 1;
+}

@@ -79,7 +79,7 @@ use log::info;
 use roaring::RoaringTreemap;
 use snafu::{location, ResultExt};
 use tokio::task::JoinSet;
-use lance_index::mem_wal::MemWal;
+use lance_index::mem_wal::{MemWal, MEM_WAL_INDEX_NAME};
 use crate::{
     datafusion::dataframe::SessionContextExt,
     dataset::{
@@ -368,7 +368,7 @@ impl MergeInsertBuilder {
         self
     }
 
-    pub fn mem_wal_to_remove(&mut self, dataset: &Dataset, mem_wal: MemWal) -> Result<&mut Self> {
+    pub async fn mem_wal_to_remove(&mut self, dataset: &Dataset, mem_wal: MemWal) -> Result<&mut Self> {
 
         if self.params.on.len() > 1 {
             return Err(Error::NotSupported {
@@ -391,6 +391,15 @@ impl MergeInsertBuilder {
                     ));
                 }
             }
+        }
+
+        if let Some(mem_wal_index) = dataset.load_index_by_name(MEM_WAL_INDEX_NAME).await.unwrap() {
+            
+        } else {
+            return Err(Error::invalid_input(
+                "MemWAL index not found",
+                location!(),
+            ));
         }
 
         self.params.mem_wal_to_remove = Some(mem_wal);

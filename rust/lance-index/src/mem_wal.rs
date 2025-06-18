@@ -3,6 +3,8 @@ use lance_core::cache::DeepSizeOf;
 use lance_core::Error;
 use lance_table::format::pb;
 
+pub const MEM_WAL_INDEX_NAME: &str = "__lance_mem_wal";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, DeepSizeOf)]
 pub struct MemWal {
     pub memtable_location: String,

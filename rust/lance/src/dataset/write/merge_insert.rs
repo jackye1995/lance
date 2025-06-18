@@ -79,7 +79,7 @@ use log::info;
 use roaring::RoaringTreemap;
 use snafu::{location, ResultExt};
 use tokio::task::JoinSet;
-
+use lance_index::mem_wal::MemWal;
 use crate::{
     datafusion::dataframe::SessionContextExt,
     dataset::{
@@ -233,6 +233,7 @@ struct MergeInsertParams {
     delete_not_matched_by_source: WhenNotMatchedBySource,
     conflict_retries: u32,
     retry_timeout: Duration,
+    mem_wal_to_remove: Option<MemWal>,
 }
 
 /// A MergeInsertJob inserts new rows, deletes old rows, and updates existing rows all as
@@ -311,6 +312,7 @@ impl MergeInsertBuilder {
                 delete_not_matched_by_source: WhenNotMatchedBySource::Keep,
                 conflict_retries: 10,
                 retry_timeout: Duration::from_secs(30),
+                mem_wal_to_remove: None,
             },
         })
     }
@@ -364,6 +366,35 @@ impl MergeInsertBuilder {
     pub fn retry_timeout(&mut self, timeout: Duration) -> &mut Self {
         self.params.retry_timeout = timeout;
         self
+    }
+
+    pub fn mem_wal_to_remove(&mut self, dataset: &Dataset, mem_wal: MemWal) -> Result<&mut Self> {
+
+        if self.params.on.len() > 1 {
+            return Err(Error::NotSupported {
+                source: format!("MemWAL currently only supports 1 merge field: {:?}", self.params.on).into(),
+                location: location!(),
+            });
+        }
+
+        for on_col in self.params.on.iter() {
+            if let Some(on_field) =dataset.schema().field(on_col) {
+                if !on_field.unenforced_primary_key {
+                    return Err(Error::invalid_input(
+                        format!("Removing a MemWAL requires merge field {} to be a primary key", on_field),
+                        location!(),
+                    ));
+                } else {
+                    return Err(Error::invalid_input(
+                        format!("Merge column not found in schema: {}", on_field),
+                        location!(),
+                    ));
+                }
+            }
+        }
+
+        self.params.mem_wal_to_remove = Some(mem_wal);
+        Ok(self)
     }
 
     /// Crate a merge insert job

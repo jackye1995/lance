@@ -421,35 +421,24 @@ message FragmentReuseIndexDetails {
   }
 }
 
-message MemTableIndexDetails {
+message MemWalIndexDetails {
 
-  repeated MemTable memTables = 1;
+  repeated MemWal mem_wal_list = 1;
 
-  message MemTable {
-    string location = 1;
+  message MemWal {
+    // this is likely an in-memory address starting with memory://
+    // but it is also possible to host a memtable in a shared address like redis or S3 express.
+    string memtable_location = 1;
 
-    // The dataset version that the MemTable is created at
-    // This serves as a boundary for concurrent operations like indexing
-    // to prevent performing operations that might overlap with the memTable
-    uint64 start_dataset_version = 2;
+    // the root location of the WAL.
+    // THe WAL storage durability determines the data durability
+    string wal_location = 2;
 
-    // If a memTable has start_dataset_version X, and there are 2 indexes I1 and I2,
-    // I1 and I2 should not include data after version X until both I1 and I2 are caught up to dataset version X.
-    // Every time an index is updated, this index_aligned_dataset_version can be updated to that new dataset_version.
-    // When a read happens trying to combine results from the source table and the memTable,
-    // It will checkout the dataset to this version.
-    string index_aligned_dataset_version = 3;
-
-    // A sealed memTable can no longer be written to.
-    // A writer should seal the memTable if it reaches a certain criteria (e.g. larger than 1GB)
-    // There should be one and only one memTable in the memTable index that is not sealed at any given point of time.
-    bool sealed = 4;
-
-    // The writer keeps track of an increasing watermark for each write to MemTable.
+    // The writer keeps track of an increasing watermark for each write to MemTable, starting from 0.
     // The watermark in the MemTable index is updated accordingly after each write to the source table.
     // At the beginning of a write, if the watermark number does not match the expected number in writer,
     // It means some corruption has happened, e.g. phantom writer, and the MemTable needs to be removed
     // and fallback to reading data on disk and open a new MemTable for write.
-    uint64 watermark = 5;
+    uint64 watermark = 3;
   }
 }

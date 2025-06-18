@@ -20,6 +20,7 @@ use snafu::location;
 use std::convert::TryFrom;
 
 pub mod frag_reuse;
+pub mod mem_wal;
 pub mod metrics;
 pub mod optimize;
 pub mod prefilter;
@@ -91,6 +92,8 @@ pub enum IndexType {
 
     FragmentReuse = 6,
 
+    MemWal = 7,
+
     // 100+ and up for vector index.
     /// Flat vector index.
     Vector = 100, // Legacy vector index, alias to IvfPq
@@ -111,6 +114,7 @@ impl std::fmt::Display for IndexType {
             Self::Inverted => write!(f, "Inverted"),
             Self::NGram => write!(f, "NGram"),
             Self::FragmentReuse => write!(f, "FragmentReuse"),
+            Self::MemWal => write!(f, "MemWal"),
             Self::Vector | Self::IvfPq => write!(f, "IVF_PQ"),
             Self::IvfFlat => write!(f, "IVF_FLAT"),
             Self::IvfSq => write!(f, "IVF_SQ"),
@@ -172,6 +176,14 @@ impl IndexType {
                 | Self::IvfSq
         )
     }
+    
+    pub fn is_system(&self) -> bool {
+        matches!(
+            self,
+            Self::FragmentReuse
+            | Self::MemWal
+        )
+    }
 
     /// Returns the current format version of the index type,
     /// bump this when the index format changes.
@@ -187,6 +199,7 @@ impl IndexType {
             Self::Inverted => 0,
             Self::NGram => 0,
             Self::FragmentReuse => 0,
+            Self::MemWal => 0,
 
             // for now all vector indices are built by the same builder,
             // so they share the same version.

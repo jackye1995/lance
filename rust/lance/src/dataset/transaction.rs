@@ -73,6 +73,7 @@ use object_store::path::Path;
 use roaring::RoaringBitmap;
 use snafu::location;
 use uuid::Uuid;
+use lance_index::mem_wal::MemWal;
 
 /// A change to a dataset that can be retried
 ///
@@ -117,6 +118,7 @@ pub enum Operation {
         updated_fragments: Vec<Fragment>,
         deleted_fragment_ids: Vec<u64>,
         predicate: String,
+        mem_wal_index: Option<Index>,
     },
     /// Overwrite the entire dataset with the given fragments. This is also
     /// used when initially creating a table.
@@ -204,6 +206,7 @@ pub enum Operation {
         new_fragments: Vec<Fragment>,
         /// The fields that have been modified
         fields_modified: Vec<u32>,
+        mem_wal_index: Option<Index>,
     },
 
     /// Project to a new schema. This only changes the schema, not the data.
@@ -254,16 +257,19 @@ impl PartialEq for Operation {
                     updated_fragments: a_updated,
                     deleted_fragment_ids: a_deleted,
                     predicate: a_predicate,
+                    mem_wal_index: a_mem_wal_index,
                 },
                 Self::Delete {
                     updated_fragments: b_updated,
                     deleted_fragment_ids: b_deleted,
                     predicate: b_predicate,
+                    mem_wal_index: b_mem_wal_index,
                 },
             ) => {
                 compare_vec(a_updated, b_updated)
                     && compare_vec(a_deleted, b_deleted)
                     && a_predicate == b_predicate
+                    && a_mem_wal_index == b_mem_wal_index
             }
             (
                 Self::Overwrite {
@@ -328,18 +334,21 @@ impl PartialEq for Operation {
                     updated_fragments: a_updated,
                     new_fragments: a_new,
                     fields_modified: a_fields,
+                    mem_wal_index: a_mem_wal_index,
                 },
                 Self::Update {
                     removed_fragment_ids: b_removed,
                     updated_fragments: b_updated,
                     new_fragments: b_new,
                     fields_modified: b_fields,
+                    mem_wal_index: b_mem_wal_index,
                 },
             ) => {
                 compare_vec(a_removed, b_removed)
                     && compare_vec(a_updated, b_updated)
                     && compare_vec(a_new, b_new)
                     && compare_vec(a_fields, b_fields)
+                    && a_mem_wal_index == b_mem_wal_index
             }
             (Self::Project { schema: a }, Self::Project { schema: b }) => a == b,
             (
@@ -1116,6 +1125,7 @@ impl Transaction {
                 updated_fragments,
                 new_fragments,
                 fields_modified,
+                mem_wal_index: mem_wal_to_drop,
             } => {
                 final_fragments.extend(maybe_existing_fragments?.iter().filter_map(|f| {
                     if removed_fragment_ids.contains(&f.id) {
@@ -1143,6 +1153,8 @@ impl Transaction {
                 }
                 final_fragments.extend(new_fragments);
                 Self::retain_relevant_indices(&mut final_indices, &schema, &final_fragments)
+
+
             }
             Operation::Overwrite { ref fragments, .. } => {
                 let mut new_fragments =
@@ -1680,6 +1692,7 @@ impl TryFrom<pb::Transaction> for Transaction {
                     .collect::<Result<Vec<_>>>()?,
                 deleted_fragment_ids,
                 predicate,
+                mem_wal_index: None
             },
             Some(pb::transaction::Operation::Overwrite(pb::transaction::Overwrite {
                 fragments,
@@ -1782,6 +1795,7 @@ impl TryFrom<pb::Transaction> for Transaction {
                     .map(Fragment::try_from)
                     .collect::<Result<Vec<_>>>()?,
                 fields_modified,
+                mem_wal_index: None,
             },
             Some(pb::transaction::Operation::Project(pb::transaction::Project { schema })) => {
                 Operation::Project {
@@ -1947,6 +1961,7 @@ impl From<&Transaction> for pb::Transaction {
                 updated_fragments,
                 deleted_fragment_ids,
                 predicate,
+                mem_wal_index: _,
             } => pb::transaction::Operation::Delete(pb::transaction::Delete {
                 updated_fragments: updated_fragments
                     .iter()
@@ -2011,6 +2026,7 @@ impl From<&Transaction> for pb::Transaction {
                 updated_fragments,
                 new_fragments,
                 fields_modified,
+                mem_wal_index: _,
             } => pb::transaction::Operation::Update(pb::transaction::Update {
                 removed_fragment_ids: removed_fragment_ids.clone(),
                 updated_fragments: updated_fragments

@@ -74,7 +74,7 @@ pub mod frag_reuse;
 pub mod prefilter;
 pub mod scalar;
 pub mod vector;
-mod mem_wal;
+pub mod mem_wal;
 
 use crate::dataset::index::LanceIndexStoreExt;
 pub use crate::index::prefilter::{FilterLoader, PreFilter};

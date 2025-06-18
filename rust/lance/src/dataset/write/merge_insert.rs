@@ -93,7 +93,7 @@ use crate::{
     },
     Dataset,
 };
-
+use crate::index::mem_wal::{build_mem_wal_index_metadata, load_mem_wal_index_details};
 use super::{write_fragments_internal, CommitBuilder, WriteParams};
 
 // "update if" expressions typically compare fields from the source table to the target table.
@@ -233,7 +233,7 @@ struct MergeInsertParams {
     delete_not_matched_by_source: WhenNotMatchedBySource,
     conflict_retries: u32,
     retry_timeout: Duration,
-    mem_wal_to_remove: Option<MemWal>,
+    updated_mem_wal_index: Option<Index>,
 }
 
 /// A MergeInsertJob inserts new rows, deletes old rows, and updates existing rows all as
@@ -312,7 +312,7 @@ impl MergeInsertBuilder {
                 delete_not_matched_by_source: WhenNotMatchedBySource::Keep,
                 conflict_retries: 10,
                 retry_timeout: Duration::from_secs(30),
-                mem_wal_to_remove: None,
+                updated_mem_wal_index: None,
             },
         })
     }
@@ -368,7 +368,7 @@ impl MergeInsertBuilder {
         self
     }
 
-    pub async fn mem_wal_to_remove(&mut self, dataset: &Dataset, mem_wal: MemWal) -> Result<&mut Self> {
+    pub async fn drop_mem_wal(&mut self, dataset: &Dataset, mem_wal: MemWal) -> Result<&mut Self> {
 
         if self.params.on.len() > 1 {
             return Err(Error::NotSupported {
@@ -394,15 +394,28 @@ impl MergeInsertBuilder {
         }
 
         if let Some(mem_wal_index) = dataset.load_index_by_name(MEM_WAL_INDEX_NAME).await.unwrap() {
-            
+            let mut details = load_mem_wal_index_details(&mem_wal_index)?;
+            if !details.mem_wal_list.contains(&mem_wal) {
+                return Err(Error::invalid_input(
+                    format!("Cannot find MemWAL in the index: {:?}", mem_wal),
+                    location!(),
+                ));
+            }
+            details.mem_wal_list.retain(|m| *m != mem_wal);
+            let mem_wal_index_meta = build_mem_wal_index_metadata(
+                dataset, mem_wal_index, details);
         } else {
             return Err(Error::invalid_input(
                 "MemWAL index not found",
                 location!(),
             ));
         }
+        
+        
 
-        self.params.mem_wal_to_remove = Some(mem_wal);
+        self.params.updated_mem_wal_index = Some(Index {
+
+        })
         Ok(self)
     }
 
@@ -1251,6 +1264,7 @@ impl MergeInsertJob {
                 updated_fragments,
                 new_fragments,
                 fields_modified,
+                mem_wal_index: self.params.mem_wal_to_drop,
             };
             // We have rewritten the fragments, not just the deletion files, so
             // we can't use affected rows here.
@@ -1283,6 +1297,7 @@ impl MergeInsertJob {
                 // On this path we only make deletions against updated_fragments and will not
                 // modify any field values.
                 fields_modified: vec![],
+                mem_wal_index: self.params.mem_wal_to_drop,
             };
 
             let affected_rows = Some(RowIdTreeMap::from(removed_row_ids));

@@ -1041,6 +1041,7 @@ impl Dataset {
                 updated_fragments,
                 deleted_fragment_ids,
                 predicate: predicate.to_string(),
+                mem_wal_index: None,
             },
             // No change is needed to the blobs dataset.  The blobs are implicitly deleted since the
             // rows that reference them are deleted.

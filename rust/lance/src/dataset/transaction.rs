@@ -73,7 +73,7 @@ use object_store::path::Path;
 use roaring::RoaringBitmap;
 use snafu::location;
 use uuid::Uuid;
-use lance_index::mem_wal::MemWal;
+use lance_index::mem_wal::{MemWal, MEM_WAL_INDEX_NAME};
 
 /// A change to a dataset that can be retried
 ///
@@ -1106,6 +1106,7 @@ impl Transaction {
             Operation::Delete {
                 ref updated_fragments,
                 ref deleted_fragment_ids,
+                ref mem_wal_index,
                 ..
             } => {
                 // Remove the deleted fragments
@@ -1118,14 +1119,19 @@ impl Transaction {
                         }
                     }
                 });
-                Self::retain_relevant_indices(&mut final_indices, &schema, &final_fragments)
+                Self::retain_relevant_indices(&mut final_indices, &schema, &final_fragments);
+
+                if let Some(mem_wal_index) = mem_wal_index {
+                    final_indices.retain(|idx| idx.name != MEM_WAL_INDEX_NAME);
+                    final_indices.push(mem_wal_index.clone());
+                }
             }
             Operation::Update {
                 removed_fragment_ids,
                 updated_fragments,
                 new_fragments,
                 fields_modified,
-                mem_wal_index: mem_wal_to_drop,
+                mem_wal_index,
             } => {
                 final_fragments.extend(maybe_existing_fragments?.iter().filter_map(|f| {
                     if removed_fragment_ids.contains(&f.id) {
@@ -1152,9 +1158,12 @@ impl Transaction {
                     Self::assign_row_ids(next_row_id, new_fragments.as_mut_slice())?;
                 }
                 final_fragments.extend(new_fragments);
-                Self::retain_relevant_indices(&mut final_indices, &schema, &final_fragments)
+                Self::retain_relevant_indices(&mut final_indices, &schema, &final_fragments);
 
-
+                if let Some(mem_wal_index) = mem_wal_index {
+                    final_indices.retain(|idx| idx.name != MEM_WAL_INDEX_NAME);
+                    final_indices.push(mem_wal_index.clone());
+                }
             }
             Operation::Overwrite { ref fragments, .. } => {
                 let mut new_fragments =

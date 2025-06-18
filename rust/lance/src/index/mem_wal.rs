@@ -29,7 +29,13 @@ pub fn load_mem_wal_index_details(index: &Index) -> Result<MemWalIndexDetails> {
     Ok(MemWalIndexDetails::try_from(proto)?)
 }
 
-pub(crate) async fn build_mem_wal_index_metadata(
+pub fn drop_mem_wal(
+    dataset: &Dataset,
+) {
+    
+}
+
+pub(crate) fn build_mem_wal_index_metadata(
     dataset: &Dataset,
     index_meta: Option<&Index>,
     new_index_details: MemWalIndexDetails,

@@ -214,98 +214,116 @@ impl<'a> TransactionRebase<'a> {
         other_transaction: &Transaction,
         other_version: u64,
     ) -> Result<()> {
-        match &other_transaction.operation {
-            Operation::CreateIndex { .. }
-            | Operation::ReserveFragments { .. }
-            | Operation::Project { .. }
-            | Operation::Append { .. }
-            | Operation::UpdateConfig { .. } => Ok(()),
-            Operation::Rewrite { groups, .. } => {
-                if groups
-                    .iter()
-                    .flat_map(|f| f.old_fragments.iter().map(|f| f.id))
-                    .any(|id| self.modified_fragment_ids.contains(&id))
-                {
-                    Err(self.retryable_conflict_err(other_transaction, other_version, location!()))
-                } else {
-                    Ok(())
-                }
-            }
-            Operation::DataReplacement { replacements, .. } => {
-                if replacements
-                    .iter()
-                    .map(|r| r.0)
-                    .any(|id| self.modified_fragment_ids.contains(&id))
-                {
-                    Err(self.retryable_conflict_err(other_transaction, other_version, location!()))
-                } else {
-                    Ok(())
-                }
-            }
-            Operation::Update {
-                updated_fragments,
-                removed_fragment_ids,
-                ..
-            }
-            | Operation::Delete {
-                updated_fragments,
-                deleted_fragment_ids: removed_fragment_ids,
-                ..
-            } => {
-                if !updated_fragments
-                    .iter()
-                    .map(|f| f.id)
-                    .chain(removed_fragment_ids.iter().copied())
-                    .any(|id| self.modified_fragment_ids.contains(&id))
-                {
-                    return Ok(());
-                }
-
-                if self.affected_rows.is_none() {
-                    // We don't have any affected rows, so we can't
-                    // do the rebase anyways.
-                    return Err(self.retryable_conflict_err(
-                        other_transaction,
-                        other_version,
-                        location!(),
-                    ));
-                }
-                for updated in updated_fragments {
-                    if let Some((fragment, needs_rewrite)) =
-                        self.initial_fragments.get_mut(&updated.id)
+        if let Operation::Update {
+            updated_fragments: new_updated_fragments,
+            removed_fragment_ids: new_removed_fragment_ids,
+            mem_wal_index: new_mem_wal_index,
+            ..
+        }
+        | Operation::Delete {
+            updated_fragments: new_updated_fragments,
+            deleted_fragment_ids: new_removed_fragment_ids,
+            mem_wal_index: new_mem_wal_index,
+            ..
+        } = &self.transaction.operation
+        {
+            match &other_transaction.operation {
+                Operation::CreateIndex { .. }
+                | Operation::ReserveFragments { .. }
+                | Operation::Project { .. }
+                | Operation::Append { .. }
+                | Operation::UpdateConfig { .. } => Ok(()),
+                Operation::Rewrite { groups, .. } => {
+                    if groups
+                        .iter()
+                        .flat_map(|f| f.old_fragments.iter().map(|f| f.id))
+                        .any(|id| self.modified_fragment_ids.contains(&id))
                     {
-                        // If data files, not just deletion files, are modified,
-                        // then we can't rebase.
-                        if fragment.files != updated.files {
-                            return Err(self.retryable_conflict_err(
-                                other_transaction,
-                                other_version,
-                                location!(),
-                            ));
-                        }
-
-                        // Mark any modified fragments as needing a rewrite.
-                        *needs_rewrite |= updated.deletion_file != fragment.deletion_file;
+                        Err(self.retryable_conflict_err(other_transaction, other_version, location!()))
+                    } else {
+                        Ok(())
                     }
                 }
+                Operation::DataReplacement { replacements, .. } => {
+                    if replacements
+                        .iter()
+                        .map(|r| r.0)
+                        .any(|id| self.modified_fragment_ids.contains(&id))
+                    {
+                        Err(self.retryable_conflict_err(other_transaction, other_version, location!()))
+                    } else {
+                        Ok(())
+                    }
+                }
+                Operation::Update {
+                    updated_fragments,
+                    removed_fragment_ids,
+                    mem_wal_index,
+                    ..
+                }
+                | Operation::Delete {
+                    updated_fragments,
+                    deleted_fragment_ids: removed_fragment_ids,
+                    mem_wal_index,
+                    ..
+                } => {
+                    if !updated_fragments
+                        .iter()
+                        .map(|f| f.id)
+                        .chain(removed_fragment_ids.iter().copied())
+                        .any(|id| self.modified_fragment_ids.contains(&id))
+                    {
+                        return Ok(());
+                    }
 
-                for removed_fragment_id in removed_fragment_ids {
-                    if self.initial_fragments.contains_key(removed_fragment_id) {
+                    if self.affected_rows.is_none() {
+                        // We don't have any affected rows, so we can't
+                        // do the rebase anyways.
                         return Err(self.retryable_conflict_err(
                             other_transaction,
                             other_version,
                             location!(),
                         ));
                     }
+                    for updated in updated_fragments {
+                        if let Some((fragment, needs_rewrite)) =
+                            self.initial_fragments.get_mut(&updated.id)
+                        {
+                            // If data files, not just deletion files, are modified,
+                            // then we can't rebase.
+                            if fragment.files != updated.files {
+                                return Err(self.retryable_conflict_err(
+                                    other_transaction,
+                                    other_version,
+                                    location!(),
+                                ));
+                            }
+
+                            // Mark any modified fragments as needing a rewrite.
+                            *needs_rewrite |= updated.deletion_file != fragment.deletion_file;
+                        }
+                    }
+
+                    for removed_fragment_id in removed_fragment_ids {
+                        if self.initial_fragments.contains_key(removed_fragment_id) {
+                            return Err(self.retryable_conflict_err(
+                                other_transaction,
+                                other_version,
+                                location!(),
+                            ));
+                        }
+                    }
+                    Ok(())
                 }
-                Ok(())
+                Operation::Merge { .. } => {
+                    Err(self.retryable_conflict_err(other_transaction, other_version, location!()))
+                }
+                Operation::Overwrite { .. } | Operation::Restore { .. } => {
+                    Err(self.incompatible_conflict_err(other_transaction, other_version, location!()))
+                }
             }
-            Operation::Merge { .. } => {
-                Err(self.retryable_conflict_err(other_transaction, other_version, location!()))
-            }
-            Operation::Overwrite { .. } | Operation::Restore { .. } => {
-                Err(self.incompatible_conflict_err(other_transaction, other_version, location!()))
-            }
+        } else {
+            Err(wrong_operation_err(&self.transaction.operation))
         }
     }
 

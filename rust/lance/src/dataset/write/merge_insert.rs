@@ -403,20 +403,15 @@ impl MergeInsertBuilder {
             }
             details.mem_wal_list.retain(|m| *m != mem_wal);
             let mem_wal_index_meta = build_mem_wal_index_metadata(
-                dataset, mem_wal_index, details);
+                dataset, Some(&mem_wal_index), details)?;
+            self.params.updated_mem_wal_index = Some(mem_wal_index_meta);
+            Ok(self)
         } else {
-            return Err(Error::invalid_input(
+            Err(Error::invalid_input(
                 "MemWAL index not found",
                 location!(),
-            ));
+            ))
         }
-        
-        
-
-        self.params.updated_mem_wal_index = Some(Index {
-
-        })
-        Ok(self)
     }
 
     /// Crate a merge insert job
@@ -1264,7 +1259,7 @@ impl MergeInsertJob {
                 updated_fragments,
                 new_fragments,
                 fields_modified,
-                mem_wal_index: self.params.mem_wal_to_drop,
+                mem_wal_index: self.params.updated_mem_wal_index,
             };
             // We have rewritten the fragments, not just the deletion files, so
             // we can't use affected rows here.
@@ -1297,7 +1292,7 @@ impl MergeInsertJob {
                 // On this path we only make deletions against updated_fragments and will not
                 // modify any field values.
                 fields_modified: vec![],
-                mem_wal_index: self.params.mem_wal_to_drop,
+                mem_wal_index: self.params.updated_mem_wal_index,
             };
 
             let affected_rows = Some(RowIdTreeMap::from(removed_row_ids));

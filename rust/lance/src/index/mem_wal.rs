@@ -1,23 +1,25 @@
-use std::sync::Arc;
+use crate::Dataset;
+use lance_core::{Error, Result};
+use lance_index::frag_reuse::{
+    FragReuseIndexDetails, FRAG_REUSE_DETAILS_FILE_NAME, FRAG_REUSE_INDEX_NAME,
+};
+use lance_index::mem_wal::{MemWalIndexDetails, MEM_WAL_INDEX_NAME};
+use lance_table::format::pb::fragment_reuse_index_details::{Content, InlineContent};
+use lance_table::format::pb::{ExternalFile, FragmentReuseIndexDetails};
+use lance_table::format::{pb, Index};
 use roaring::RoaringBitmap;
 use snafu::location;
+use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
-use lance_core::{Result, Error};
-use lance_index::frag_reuse::{FragReuseIndexDetails, FRAG_REUSE_DETAILS_FILE_NAME, FRAG_REUSE_INDEX_NAME};
-use lance_index::mem_wal::{MemWalIndexDetails, MEM_WAL_INDEX_NAME};
-use lance_table::format::{pb, Index};
-use lance_table::format::pb::{ExternalFile, FragmentReuseIndexDetails};
-use lance_table::format::pb::fragment_reuse_index_details::{Content, InlineContent};
-use crate::Dataset;
 
 pub fn load_mem_wal_index_details(index: &Index) -> Result<MemWalIndexDetails> {
     let details_any = index.index_details.clone();
     if details_any.is_none()
         || !details_any
-        .as_ref()
-        .unwrap()
-        .type_url
-        .ends_with("MemWalIndexDetails")
+            .as_ref()
+            .unwrap()
+            .type_url
+            .ends_with("MemWalIndexDetails")
     {
         return Err(Error::Index {
             message: "Index details is not for the MemWAL index".into(),
@@ -29,11 +31,7 @@ pub fn load_mem_wal_index_details(index: &Index) -> Result<MemWalIndexDetails> {
     Ok(MemWalIndexDetails::try_from(proto)?)
 }
 
-pub fn drop_mem_wal(
-    dataset: &Dataset,
-) {
-    
-}
+pub fn drop_mem_wal(dataset: &Dataset) {}
 
 pub(crate) fn build_mem_wal_index_metadata(
     dataset: &Dataset,

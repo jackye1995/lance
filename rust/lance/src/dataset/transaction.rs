@@ -56,6 +56,7 @@ use deepsize::DeepSizeOf;
 use lance_core::{datatypes::Schema, Error, Result};
 use lance_file::{datatypes::Fields, version::LanceFileVersion};
 use lance_index::frag_reuse::FRAG_REUSE_INDEX_NAME;
+use lance_index::mem_wal::{MemWal, MEM_WAL_INDEX_NAME};
 use lance_io::object_store::ObjectStore;
 use lance_table::feature_flags::{apply_feature_flags, FLAG_MOVE_STABLE_ROW_IDS};
 use lance_table::{
@@ -73,7 +74,6 @@ use object_store::path::Path;
 use roaring::RoaringBitmap;
 use snafu::location;
 use uuid::Uuid;
-use lance_index::mem_wal::{MemWal, MEM_WAL_INDEX_NAME};
 
 /// A change to a dataset that can be retried
 ///
@@ -1701,7 +1701,7 @@ impl TryFrom<pb::Transaction> for Transaction {
                     .collect::<Result<Vec<_>>>()?,
                 deleted_fragment_ids,
                 predicate,
-                mem_wal_index: None
+                mem_wal_index: None,
             },
             Some(pb::transaction::Operation::Overwrite(pb::transaction::Overwrite {
                 fragments,

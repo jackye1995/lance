@@ -53,6 +53,21 @@ use lance_datafusion::{
     utils::reader_to_stream,
 };
 
+use super::{write_fragments_internal, CommitBuilder, WriteParams};
+use crate::index::mem_wal::{build_mem_wal_index_metadata, load_mem_wal_index_details};
+use crate::{
+    datafusion::dataframe::SessionContextExt,
+    dataset::{
+        fragment::{FileFragment, FragReadConfig},
+        transaction::{Operation, Transaction},
+        write::open_writer,
+    },
+    index::DatasetIndexInternalExt,
+    io::exec::{
+        project, scalar_index::MapIndexExec, utils::ReplayExec, AddRowAddrExec, Planner, TakeExec,
+    },
+    Dataset,
+};
 use datafusion_physical_expr::expressions::Column;
 use futures::{
     future::Either,
@@ -73,28 +88,13 @@ use lance_datafusion::{
     utils::StreamingWriteSource,
 };
 use lance_file::version::LanceFileVersion;
+use lance_index::mem_wal::{MemWal, MEM_WAL_INDEX_NAME};
 use lance_index::{DatasetIndexExt, ScalarIndexCriteria};
 use lance_table::format::{Fragment, Index};
 use log::info;
 use roaring::RoaringTreemap;
 use snafu::{location, ResultExt};
 use tokio::task::JoinSet;
-use lance_index::mem_wal::{MemWal, MEM_WAL_INDEX_NAME};
-use crate::{
-    datafusion::dataframe::SessionContextExt,
-    dataset::{
-        fragment::{FileFragment, FragReadConfig},
-        transaction::{Operation, Transaction},
-        write::open_writer,
-    },
-    index::DatasetIndexInternalExt,
-    io::exec::{
-        project, scalar_index::MapIndexExec, utils::ReplayExec, AddRowAddrExec, Planner, TakeExec,
-    },
-    Dataset,
-};
-use crate::index::mem_wal::{build_mem_wal_index_metadata, load_mem_wal_index_details};
-use super::{write_fragments_internal, CommitBuilder, WriteParams};
 
 // "update if" expressions typically compare fields from the source table to the target table.
 // These tables have the same schema and so filter expressions need to differentiate.  To do that
@@ -369,19 +369,25 @@ impl MergeInsertBuilder {
     }
 
     pub async fn drop_mem_wal(&mut self, dataset: &Dataset, mem_wal: MemWal) -> Result<&mut Self> {
-
         if self.params.on.len() > 1 {
             return Err(Error::NotSupported {
-                source: format!("MemWAL currently only supports 1 merge field: {:?}", self.params.on).into(),
+                source: format!(
+                    "MemWAL currently only supports 1 merge field: {:?}",
+                    self.params.on
+                )
+                .into(),
                 location: location!(),
             });
         }
 
         for on_col in self.params.on.iter() {
-            if let Some(on_field) =dataset.schema().field(on_col) {
+            if let Some(on_field) = dataset.schema().field(on_col) {
                 if !on_field.unenforced_primary_key {
                     return Err(Error::invalid_input(
-                        format!("Removing a MemWAL requires merge field {} to be a primary key", on_field),
+                        format!(
+                            "Removing a MemWAL requires merge field {} to be a primary key",
+                            on_field
+                        ),
                         location!(),
                     ));
                 } else {
@@ -393,7 +399,11 @@ impl MergeInsertBuilder {
             }
         }
 
-        if let Some(mem_wal_index) = dataset.load_index_by_name(MEM_WAL_INDEX_NAME).await.unwrap() {
+        if let Some(mem_wal_index) = dataset
+            .load_index_by_name(MEM_WAL_INDEX_NAME)
+            .await
+            .unwrap()
+        {
             let mut details = load_mem_wal_index_details(&mem_wal_index)?;
             if !details.mem_wal_list.contains(&mem_wal) {
                 return Err(Error::invalid_input(
@@ -402,15 +412,12 @@ impl MergeInsertBuilder {
                 ));
             }
             details.mem_wal_list.retain(|m| *m != mem_wal);
-            let mem_wal_index_meta = build_mem_wal_index_metadata(
-                dataset, Some(&mem_wal_index), details)?;
+            let mem_wal_index_meta =
+                build_mem_wal_index_metadata(dataset, Some(&mem_wal_index), details)?;
             self.params.updated_mem_wal_index = Some(mem_wal_index_meta);
             Ok(self)
         } else {
-            Err(Error::invalid_input(
-                "MemWAL index not found",
-                location!(),
-            ))
+            Err(Error::invalid_input("MemWAL index not found", location!()))
         }
     }
 

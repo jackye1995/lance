@@ -239,7 +239,11 @@ impl<'a> TransactionRebase<'a> {
                         .flat_map(|f| f.old_fragments.iter().map(|f| f.id))
                         .any(|id| self.modified_fragment_ids.contains(&id))
                     {
-                        Err(self.retryable_conflict_err(other_transaction, other_version, location!()))
+                        Err(self.retryable_conflict_err(
+                            other_transaction,
+                            other_version,
+                            location!(),
+                        ))
                     } else {
                         Ok(())
                     }
@@ -250,7 +254,11 @@ impl<'a> TransactionRebase<'a> {
                         .map(|r| r.0)
                         .any(|id| self.modified_fragment_ids.contains(&id))
                     {
-                        Err(self.retryable_conflict_err(other_transaction, other_version, location!()))
+                        Err(self.retryable_conflict_err(
+                            other_transaction,
+                            other_version,
+                            location!(),
+                        ))
                     } else {
                         Ok(())
                     }
@@ -267,6 +275,13 @@ impl<'a> TransactionRebase<'a> {
                     mem_wal_index,
                     ..
                 } => {
+                    // if mem_wal_index.is_some() && new_mem_wal_index.is_some() {
+                    //     return Err(self.incompatible_conflict_err(
+                    //         other_transaction, other_version,
+                    //         location!()));
+                    // }
+
+
                     if !updated_fragments
                         .iter()
                         .map(|f| f.id)
@@ -318,9 +333,9 @@ impl<'a> TransactionRebase<'a> {
                 Operation::Merge { .. } => {
                     Err(self.retryable_conflict_err(other_transaction, other_version, location!()))
                 }
-                Operation::Overwrite { .. } | Operation::Restore { .. } => {
-                    Err(self.incompatible_conflict_err(other_transaction, other_version, location!()))
-                }
+                Operation::Overwrite { .. } | Operation::Restore { .. } => Err(
+                    self.incompatible_conflict_err(other_transaction, other_version, location!())
+                ),
             }
         } else {
             Err(wrong_operation_err(&self.transaction.operation))

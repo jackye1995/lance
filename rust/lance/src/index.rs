@@ -71,10 +71,10 @@ use vector::utils::get_vector_type;
 pub(crate) mod append;
 pub(crate) mod cache;
 pub mod frag_reuse;
+pub mod mem_wal;
 pub mod prefilter;
 pub mod scalar;
 pub mod vector;
-pub mod mem_wal;
 
 use crate::dataset::index::LanceIndexStoreExt;
 pub use crate::index::prefilter::{FilterLoader, PreFilter};

@@ -1,7 +1,7 @@
-use serde::{Deserialize, Serialize};
 use lance_core::cache::DeepSizeOf;
 use lance_core::Error;
 use lance_table::format::pb;
+use serde::{Deserialize, Serialize};
 
 pub const MEM_WAL_INDEX_NAME: &str = "__lance_mem_wal";
 
@@ -42,7 +42,7 @@ pub struct MemWalIndexDetails {
 impl From<&MemWalIndexDetails> for pb::MemWalIndexDetails {
     fn from(details: &MemWalIndexDetails) -> Self {
         Self {
-            mem_wal_list: details.mem_wal_list.iter().map(|m| m.into()).collect()
+            mem_wal_list: details.mem_wal_list.iter().map(|m| m.into()).collect(),
         }
     }
 }
@@ -52,7 +52,9 @@ impl TryFrom<pb::MemWalIndexDetails> for MemWalIndexDetails {
 
     fn try_from(details: pb::MemWalIndexDetails) -> lance_core::Result<Self> {
         Ok(Self {
-            mem_wal_list: details.mem_wal_list.into_iter()
+            mem_wal_list: details
+                .mem_wal_list
+                .into_iter()
                 .map(MemWal::try_from)
                 .collect::<lance_core::Result<_>>()?,
         })

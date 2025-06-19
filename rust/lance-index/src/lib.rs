@@ -176,13 +176,9 @@ impl IndexType {
                 | Self::IvfSq
         )
     }
-    
+
     pub fn is_system(&self) -> bool {
-        matches!(
-            self,
-            Self::FragmentReuse
-            | Self::MemWal
-        )
+        matches!(self, Self::FragmentReuse | Self::MemWal)
     }
 
     /// Returns the current format version of the index type,

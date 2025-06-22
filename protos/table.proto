@@ -425,20 +425,38 @@ message MemWalIndexDetails {
 
   repeated MemWal mem_wal_list = 1;
 
+  // A combination of MemTable and WAL for fast upsert.
   message MemWal {
-    // this is likely an in-memory address starting with memory://
-    // but it is also possible to host a memtable in a shared address like redis or S3 express.
-    string memtable_location = 1;
 
     // the root location of the WAL.
-    // THe WAL storage durability determines the data durability
-    string wal_location = 2;
+    // THe WAL storage durability determines the data durability.
+    // This WAL location also serves as the unique identifier of this MemWAL.
+    string wal_location = 1;
 
-    // The writer keeps track of an increasing watermark for each write to MemTable, starting from 0.
-    // The watermark in the MemTable index is updated accordingly after each write to the source table.
-    // At the beginning of a write, if the watermark number does not match the expected number in writer,
-    // It means some corruption has happened, e.g. phantom writer, and the MemTable needs to be removed
-    // and fallback to reading data on disk and open a new MemTable for write.
-    uint64 watermark = 3;
+    // The MemTable location, which is likely an in-memory address starting with memory://,
+    // but it is also possible to host a MemTable in a shared address.
+    // When the MemTable is crashed and recovered from the WAL, this location could change.
+    string mem_table_location = 2;
+
+    // The previous MemTable location.
+    // If there are multiple writers happen to try recreating the same MemTable,
+    // this serves as a dedupe key so that only 1 writer can recover the MemTable.
+    string prev_mem_table_location = 3;
+
+    // Indicates if the MemWAL has been sealed.
+    // When a MemTable is full, the process should update this MemWAL as sealed
+    // and create a new MemWAL to write to atomically.
+    bool sealed = 4;
+
+    // Indicates if the MemWAL has been flushed to the source table.
+    // When a MemTable is sealed, it can be flushed asynchronously to the Lance table.
+    // When the flush completes, the process should commit the new dataset version
+    // and mark this MemWAL as flushed atomically.
+    // After a MemWAL is flushed, the cleanup process can delete the WAL.
+    bool flushed = 5;
+
+    // Timestamp when this MemWAL was created (UTC timestamp in milliseconds since epoch)
+    // This should only be set during the initial creation of a MemWAL.
+    uint64 created_at = 6;
   }
 }

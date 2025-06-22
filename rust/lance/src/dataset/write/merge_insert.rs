@@ -368,7 +368,11 @@ impl MergeInsertBuilder {
         self
     }
 
-    pub async fn drop_mem_wal(&mut self, dataset: &Dataset, mem_wal: MemWal) -> Result<&mut Self> {
+    /// Mark a MemWAL as being flushed.
+    ///
+    /// The records in this merge-insert operation are coming from the MemTable that has been sealed.
+    /// After the merge-insert is committed, this MemWAL will also be marked as flushed.
+    pub async fn mem_table_to_flush(&mut self, dataset: &Dataset, wal_id: &str) -> Result<&mut Self> {
         if self.params.on.len() > 1 {
             return Err(Error::NotSupported {
                 source: format!(
@@ -405,6 +409,7 @@ impl MergeInsertBuilder {
             .unwrap()
         {
             let mut details = load_mem_wal_index_details(&mem_wal_index)?;
+
             if !details.mem_wal_list.contains(&mem_wal) {
                 return Err(Error::invalid_input(
                     format!("Cannot find MemWAL in the index: {:?}", mem_wal),

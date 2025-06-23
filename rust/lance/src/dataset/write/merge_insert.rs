@@ -240,6 +240,8 @@ struct MergeInsertParams {
     delete_not_matched_by_source: WhenNotMatchedBySource,
     conflict_retries: u32,
     retry_timeout: Duration,
+    mem_wal_region: Option<String>,
+    mem_wal_generation: Option<u64>,
 }
 
 /// A MergeInsertJob inserts new rows, deletes old rows, and updates existing rows all as
@@ -318,6 +320,8 @@ impl MergeInsertBuilder {
                 delete_not_matched_by_source: WhenNotMatchedBySource::Keep,
                 conflict_retries: 10,
                 retry_timeout: Duration::from_secs(30),
+                mem_wal_region: None,
+                mem_wal_generation: None,
             },
         })
     }
@@ -370,6 +374,17 @@ impl MergeInsertBuilder {
     /// The default is 30 seconds.
     pub fn retry_timeout(&mut self, timeout: Duration) -> &mut Self {
         self.params.retry_timeout = timeout;
+        self
+    }
+
+    /// Indicate that this merge-insert uses data in a sealed MemTable.
+    /// Once write is completed, the corresponding MemTable should also be marked as flushed.
+    pub fn mark_mem_wal_as_flushed(
+        &mut self,
+        mem_wal_region: &str,
+        mem_wal_generation: u64) -> &mut Self {
+        self.params.mem_wal_region = Some(mem_wal_region.to_owned());
+        self.params.mem_wal_generation = Some(mem_wal_generation);
         self
     }
 
@@ -1354,6 +1369,8 @@ impl MergeInsertJob {
                 updated_fragments,
                 new_fragments,
                 fields_modified,
+                mem_wal_region: self.params.mem_wal_region,
+                mem_wal_generation: self.params.mem_wal_generation,
             };
             // We have rewritten the fragments, not just the deletion files, so
             // we can't use affected rows here.
@@ -1386,6 +1403,8 @@ impl MergeInsertJob {
                 // On this path we only make deletions against updated_fragments and will not
                 // modify any field values.
                 fields_modified: vec![],
+                mem_wal_region: self.params.mem_wal_region,
+                mem_wal_generation: self.params.mem_wal_generation,
             };
 
             let affected_rows = Some(RowIdTreeMap::from(removed_row_ids));

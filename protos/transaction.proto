@@ -161,6 +161,10 @@ message Transaction {
     repeated DataFragment new_fragments = 3;
     // The ids of the fields that have been modified.
     repeated uint32 fields_modified = 4;
+    // The corresponding MemWAL region that should be marked as flushed
+    optional string mem_wal_region = 5;
+    // The corresponding MemWAL generation that should be marked as flushed
+    optional uint64 mem_wal_generation = 6;
   }
   
   // An operation that updates the table config.
@@ -185,6 +189,19 @@ message Transaction {
     repeated DataReplacementGroup replacements = 1;
   }
 
+  // Update the state of the MemWal index
+  message UpdateMemWalState {
+
+    // added new MemWAL if exists
+    MemWalIndexDetails.MemWal added_mem_wal = 1;
+
+    // updated MemWAL if exists
+    MemWalIndexDetails.MemWal updated_mem_wal = 2;
+
+    // removed MemWALs if exist
+    repeated MemWalIndexDetails.MemWal removed_mem_wal_list = 3;
+  }
+
   // The operation of this transaction.
   oneof operation {
     Append append = 100;
@@ -199,6 +216,7 @@ message Transaction {
     Project project = 109;
     UpdateConfig update_config = 110;
     DataReplacement data_replacement = 111;
+    UpdateMemWalState update_mem_wal_state = 112;
   }
 
   // An operation to apply to the blob dataset

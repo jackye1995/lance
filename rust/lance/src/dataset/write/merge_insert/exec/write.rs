@@ -479,7 +479,9 @@ impl ExecutionPlan for FullSchemaMergeInsertExec {
         let merge_stats_holder = self.merge_stats.clone();
         let transaction_holder = self.transaction.clone();
         let affected_rows_holder = self.affected_rows.clone();
-
+        let mem_wal_region = self.params.mem_wal_region.clone();
+        let mem_wal_generation = self.params.mem_wal_generation;
+        
         let result_stream = stream::once(async move {
             // Step 2: Write new fragments using the filtered data (inserts + updates)
             let write_result = write_fragments_internal(
@@ -510,6 +512,8 @@ impl ExecutionPlan for FullSchemaMergeInsertExec {
                 updated_fragments,
                 new_fragments,
                 fields_modified: vec![], // No fields are modified in schema for upsert
+                mem_wal_region,
+                mem_wal_generation,
             };
 
             // Step 5: Create and store the transaction

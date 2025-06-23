@@ -248,6 +248,10 @@ impl U64Segment {
         }
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Get the min and max value of the segment, excluding tombstones.
     pub fn range(&self) -> Option<RangeInclusive<u64>> {
         match self {
@@ -366,6 +370,92 @@ impl U64Segment {
             }
             Self::SortedArray(array) => array.get(i),
             Self::Array(array) => array.get(i),
+        }
+    }
+
+    /// Produce a new segment that has [`val`] as the new highest value in the segment
+    pub fn with_new_high(self, val: u64) -> Self {
+        match self {
+            Self::Range(range) => {
+                if val == range.end + 1 {
+                    Self::Range(Range {
+                        start: range.start,
+                        end: val,
+                    })
+                } else {
+                    Self::RangeWithHoles {
+                        range: Range {
+                            start: range.start,
+                            end: val,
+                        },
+                        holes: EncodedU64Array::U64((range.end..val).collect()),
+                    }
+                }
+            }
+            Self::RangeWithHoles { range, holes } => {
+                if val == range.end + 1 {
+                    Self::RangeWithHoles {
+                        range: Range {
+                            start: range.start,
+                            end: val,
+                        },
+                        holes,
+                    }
+                } else {
+                    let mut new_holes: Vec<u64> = holes.iter().collect();
+                    new_holes.extend(range.end..val);
+                    Self::RangeWithHoles {
+                        range: Range {
+                            start: range.start,
+                            end: val,
+                        },
+                        holes: EncodedU64Array::U64(new_holes),
+                    }
+                }
+            }
+            Self::RangeWithBitmap { range, bitmap } => {
+                if val == range.end + 1 {
+                    Self::RangeWithBitmap {
+                        range: Range {
+                            start: range.start,
+                            end: val,
+                        },
+                        bitmap,
+                    }
+                } else {
+                    let new_range = Range {
+                        start: range.start,
+                        end: val,
+                    };
+                    let mut new_bitmap =
+                        Bitmap::new_full((new_range.end - new_range.start) as usize);
+
+                    for (idx, is_set) in bitmap.iter().enumerate() {
+                        if !is_set {
+                            new_bitmap.clear(idx);
+                        }
+                    }
+
+                    for idx in range.end + 1..val {
+                        new_bitmap.clear(idx as usize);
+                    }
+
+                    Self::RangeWithBitmap {
+                        range: new_range,
+                        bitmap: new_bitmap,
+                    }
+                }
+            }
+            Self::SortedArray(array) => {
+                let mut new_array = array.iter().collect::<Vec<u64>>();
+                new_array.push(val);
+                Self::SortedArray(EncodedU64Array::U64(new_array))
+            }
+            Self::Array(array) => {
+                let mut new_array = array.iter().collect::<Vec<u64>>();
+                new_array.push(val);
+                Self::Array(EncodedU64Array::U64(new_array))
+            }
         }
     }
 

@@ -32,15 +32,25 @@ pub fn load_mem_wal_index_details(index: &Index) -> Result<MemWalIndexDetails> {
     Ok(MemWalIndexDetails::try_from(proto)?)
 }
 
+/// Mark a write to the MemWAL.
+/// This will raise the watermark of the specific MemWAL by 1
+pub async fn mark_write_to_mem_wal(
+    dataset: &mut Dataset,
+    mem_wal: MemWal,
+) -> Result<()> {
+
+}
+
+
 /// Initialize a new MemWAL.
 /// Atomically compare-and-set the current MemTable as sealed
 /// If there is an old unsealed MemWAL, seal it at the same time.
-pub fn mark_mem_wal_as_sealed(
-    dataset: &Dataset,
+pub async fn mark_mem_wal_as_sealed(
+    dataset: &mut Dataset,
     mem_wal_to_recover: Option<&MemWal>,
     next_wal_location: Option<&str>,
     next_mem_table_location: Option<&str>,
-) {
+) -> Result<()> {
 
 }
 

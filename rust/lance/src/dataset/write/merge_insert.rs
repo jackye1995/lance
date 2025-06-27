@@ -388,6 +388,8 @@ impl MergeInsertBuilder {
         {
             if let Some(generations) = mem_wal_index.mem_wal_map.get(mem_wal_id.region.as_str()) {
                 if let Some(mem_wal) = generations.get(&mem_wal_id.generation) {
+                    mem_wal.check_flushed(false)?;
+                    mem_wal.check_sealed(true)?;
                     self.params.mem_wal_to_flush = Some(mem_wal.clone());
                     Ok(self)
                 } else {

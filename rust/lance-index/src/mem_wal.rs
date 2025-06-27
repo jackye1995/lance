@@ -105,6 +105,34 @@ impl MemWal {
     pub fn wal_entries(&self) -> U64Segment {
         U64Segment::try_from(pb::U64Segment::decode(self.wal_entries.as_slice()).unwrap()).unwrap()
     }
+
+    /// Check if the MemWAL is in the expected sealed state
+    pub fn check_sealed(&self, expected_sealed: bool) -> lance_core::Result<()> {
+        if self.sealed != expected_sealed {
+            return Err(Error::invalid_input(
+                format!(
+                    "MemWAL {:?} is sealed: {}, but expected {}",
+                    self.id, self.sealed, expected_sealed
+                ),
+                location!(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Check if the MemWAL is in the expected flushed state
+    pub fn check_flushed(&self, expected_flushed: bool) -> lance_core::Result<()> {
+        if self.flushed != expected_flushed {
+            return Err(Error::invalid_input(
+                format!(
+                    "MemWAL {:?} is flushed: {}, but expected {}",
+                    self.id, self.flushed, expected_flushed
+                ),
+                location!(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, DeepSizeOf)]

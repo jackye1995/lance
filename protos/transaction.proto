@@ -161,10 +161,8 @@ message Transaction {
     repeated DataFragment new_fragments = 3;
     // The ids of the fields that have been modified.
     repeated uint32 fields_modified = 4;
-    // The corresponding MemWAL region that should be marked as flushed
-    optional string mem_wal_region = 5;
-    // The corresponding MemWAL generation that should be marked as flushed
-    optional uint64 mem_wal_generation = 6;
+    /// The MemWAL (pre-image) that should be marked as flushed after this transaction
+    MemWalIndexDetails.MemWal mem_wal_to_flush = 5;
   }
   
   // An operation that updates the table config.
@@ -192,14 +190,12 @@ message Transaction {
   // Update the state of the MemWal index
   message UpdateMemWalState {
 
-    // added new MemWAL if exists
-    MemWalIndexDetails.MemWal added_mem_wal = 1;
+    repeated MemWalIndexDetails.MemWal added = 1;
 
-    // updated MemWAL if exists
-    MemWalIndexDetails.MemWal updated_mem_wal = 2;
+    repeated MemWalIndexDetails.MemWal updated = 2;
 
-    // removed MemWALs if exist
-    repeated MemWalIndexDetails.MemWal removed_mem_wal_list = 3;
+    // If a MemWAL is updated, its pre-image should be in the removed list.
+    repeated MemWalIndexDetails.MemWal removed = 3;
   }
 
   // The operation of this transaction.

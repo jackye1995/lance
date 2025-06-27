@@ -5,12 +5,12 @@ use crate::dataset::transaction::{Operation, Transaction};
 use crate::index::DatasetIndexInternalExt;
 use crate::Dataset;
 use lance_core::{Error, Result};
-use lance_index::mem_wal::{MemWal, MemWalIndex, MemWalIndexDetails, MEM_WAL_INDEX_NAME};
+use lance_index::mem_wal::{MemWal, MemWalId, MemWalIndex, MemWalIndexDetails, MEM_WAL_INDEX_NAME};
 use lance_index::metrics::NoOpMetricsCollector;
 use lance_table::format::{pb, Index};
 use prost::Message;
 use snafu::location;
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -38,7 +38,9 @@ fn load_mem_wal_index_details(index: Index) -> Result<MemWalIndexDetails> {
 }
 
 pub fn open_mem_wal_index(index: Index) -> Result<Arc<MemWalIndex>> {
-    Ok(Arc::new(MemWalIndex::new(load_mem_wal_index_details(index)?)))
+    Ok(Arc::new(MemWalIndex::new(load_mem_wal_index_details(
+        index,
+    )?)))
 }
 
 /// Advance the generation of the MemWAL for the given region.
@@ -48,88 +50,74 @@ pub fn open_mem_wal_index(index: Index) -> Result<Arc<MemWalIndex>> {
 /// If the MemWALIndex structure does not exist, create it along the way.
 pub async fn advance_mem_wal_generation(
     dataset: &mut Dataset,
-    mem_wal_region: &str,
+    region: &str,
     new_mem_table_location: &str,
     new_wal_location: &str,
 ) -> Result<()> {
     let transaction = if let Some(mem_wal_index) =
         dataset.open_mem_wal_index(&NoOpMetricsCollector).await?
     {
-        let (added_mem_wal, updated_mem_wal, removed_mem_wal_list, mut new_mem_wal_list) =
-            if let Some(generations) = mem_wal_index.mem_wal_map.get(mem_wal_region) {
-                let mut new_mem_wal_list: Vec<MemWal> = Vec::new();
-                let mut removed_mem_wal_list: Vec<MemWal> = Vec::new();
-                // MemWALs of the same region is ordered increasingly by its generation
-                let mut values_iter = generations.values().rev();
-                if let Some(latest_mem_wal) = values_iter.next() {
-
-                    let updated_mem_wal = if !latest_mem_wal.sealed {
-                        let mut updated_mem_wal = latest_mem_wal.clone();
-                        updated_mem_wal.sealed = true;
-                        new_mem_wal_list.push(updated_mem_wal.clone());
-                        removed_mem_wal_list.push(latest_mem_wal.clone());
-                        Some(updated_mem_wal)
-                    } else {
-                        None
-                    };
-
-                    let added_mem_wal = MemWal::new_empty(mem_wal_region, latest_mem_wal.generation + 1, new_mem_table_location, new_wal_location);
-                    new_mem_wal_list.push(added_mem_wal.clone());
-
-
-                    // add the remaining MemWALs of the same region
-                    for mem_wal in values_iter {
-                        new_mem_wal_list.push(mem_wal.clone());
-                    }
-
-                    Ok((
-                        added_mem_wal,
-                        updated_mem_wal,
-                        removed_mem_wal_list,
-                        new_mem_wal_list,
-                    ))
+        let (added_mem_wal, updated_mem_wal, removed_mem_wal) = if let Some(generations) =
+            mem_wal_index.mem_wal_map.get(region)
+        {
+            // MemWALs of the same region is ordered increasingly by its generation
+            let mut values_iter = generations.values().rev();
+            if let Some(latest_mem_wal) = values_iter.next() {
+                let (updated_mem_wal, removed_mem_wal) = if !latest_mem_wal.sealed {
+                    let mut updated_mem_wal = latest_mem_wal.clone();
+                    updated_mem_wal.sealed = true;
+                    (Some(updated_mem_wal), Some(latest_mem_wal.clone()))
                 } else {
-                    Err(Error::Internal {
-                    message: format!("Encountered MemWAL index mapping that has a region with no any generation: {}", mem_wal_region),
+                    (None, None)
+                };
+
+                let added_mem_wal = MemWal::new_empty(
+                    MemWalId::new(region, latest_mem_wal.id.generation + 1),
+                    new_mem_table_location,
+                    new_wal_location,
+                );
+
+                Ok((added_mem_wal, updated_mem_wal, removed_mem_wal))
+            } else {
+                Err(Error::Internal {
+                    message: format!("Encountered MemWAL index mapping that has a region with no any generation: {}", region),
                     location: location!(),
                 })
-                }
-            } else {
-                let added_mem_wal =
-                    MemWal::new_empty(mem_wal_region, 0, new_mem_table_location, new_wal_location);
-
-                Ok((added_mem_wal.clone(), None, vec![], vec![added_mem_wal]))
-            }?;
-
-        mem_wal_index
-            .mem_wal_map
-            .iter()
-            .filter(|(region, _)| *region != mem_wal_region)
-            .for_each(|(_, generations)| new_mem_wal_list.extend(generations.values().cloned()));
+            }
+        } else {
+            Ok((
+                MemWal::new_empty(
+                    MemWalId::new(region, 0),
+                    new_mem_table_location,
+                    new_wal_location,
+                ),
+                None,
+                None,
+            ))
+        }?;
 
         Transaction::new(
             dataset.manifest.version,
             Operation::UpdateMemWalState {
-                added_mem_wal: Some(added_mem_wal),
-                updated_mem_wal,
-                removed_mem_wal_list,
-                new_mem_wal_list: Some(new_mem_wal_list),
+                added: vec![added_mem_wal],
+                updated: updated_mem_wal.into_iter().collect(),
+                removed: removed_mem_wal.into_iter().collect(),
             },
             None,
             None,
         )
     } else {
         // this is the first time the MemWAL index is created
-        let added_mem_wal =
-            MemWal::new_empty(mem_wal_region, 0, new_mem_table_location, new_wal_location);
-
         Transaction::new(
             dataset.manifest.version,
             Operation::UpdateMemWalState {
-                added_mem_wal: Some(added_mem_wal.clone()),
-                updated_mem_wal: None,
-                removed_mem_wal_list: Vec::new(),
-                new_mem_wal_list: Some(vec![added_mem_wal]),
+                added: vec![MemWal::new_empty(
+                    MemWalId::new(region, 0),
+                    new_mem_table_location,
+                    new_wal_location,
+                )],
+                updated: vec![],
+                removed: vec![],
             },
             None,
             None,
@@ -156,14 +144,13 @@ pub async fn append_mem_wal_entry(
         updated_mem_wal
     };
 
-    mutate_mem_wal_generation(dataset, mem_wal_region, mem_wal_generation, mutate).await
+    mutate_mem_wal(dataset, mem_wal_region, mem_wal_generation, mutate).await
 }
 
 /// Mark the specific MemWAL as sealed.
-/// Typically, it is recommended to call [`advance_mem_wal_generation`]
+/// Typically, it is recommended to call [`advance_mem_wal_generation`] instead.
 /// But this will always keep the table in a state with an unsealed MemTable.
-/// Calling this function will only seal the current latest MemWAL,
-/// without opening the next generation.
+/// Calling this function will only seal the current latest MemWAL without opening the next one.
 pub async fn mark_mem_wal_as_sealed(
     dataset: &mut Dataset,
     mem_wal_region: &str,
@@ -175,7 +162,7 @@ pub async fn mark_mem_wal_as_sealed(
         updated_mem_wal
     };
 
-    mutate_mem_wal_generation(dataset, mem_wal_region, mem_wal_generation, mutate).await
+    mutate_mem_wal(dataset, mem_wal_region, mem_wal_generation, mutate).await
 }
 
 /// Mark the specific MemWAL as flushed
@@ -190,22 +177,25 @@ pub async fn mark_mem_wal_as_flushed(
         updated_mem_wal
     };
 
-    mutate_mem_wal_generation(dataset, mem_wal_region, mem_wal_generation, mutate).await
+    mutate_mem_wal(dataset, mem_wal_region, mem_wal_generation, mutate).await
 }
 
 /// Mark the specific MemWAL as flushed.
 /// This is intended to be used as a part of the Update transaction.
 pub fn update_indices_mark_mem_wal_as_flushed(
     dataset_version: u64,
-    indices: &mut Vec<Index>,
-    mem_wal_region: &str,
-    mem_wal_generation: u64,
+    indices: &mut [Index],
+    region: &str,
+    generation: u64,
 ) -> Result<()> {
     if let Some(pos) = indices.iter().position(|x| x.name == MEM_WAL_INDEX_NAME) {
         let mem_wal_index_meta = indices[pos].clone();
-        let mut details = load_mem_wal_index_details(mem_wal_index_meta.clone())?;
-        if let Some(mem_wal) = details.mem_wal_list.iter_mut()
-            .find(|m| m.region == mem_wal_region && m.generation == mem_wal_generation) {
+        let mut details = load_mem_wal_index_details(mem_wal_index_meta)?;
+        if let Some(mem_wal) = details
+            .mem_wal_list
+            .iter_mut()
+            .find(|m| m.id.region == region && m.id.generation == generation)
+        {
             mem_wal.flushed = true;
             indices[pos] = new_mem_wal_index_meta(dataset_version, details.mem_wal_list)?;
             Ok(())
@@ -213,7 +203,7 @@ pub fn update_indices_mark_mem_wal_as_flushed(
             Err(Error::invalid_input(
                 format!(
                     "Cannot find MemWAL generation {} for region {}",
-                    mem_wal_generation, mem_wal_region
+                    generation, region
                 ),
                 location!(),
             ))
@@ -226,12 +216,53 @@ pub fn update_indices_mark_mem_wal_as_flushed(
     }
 }
 
+/// Mark the specific MemWAL as flushed, in the list of indices in the dataset.
+/// This is intended to be used as a part of the Update transaction after resolving all conflicts.
+pub fn update_mem_wal_index_from_indices_list(
+    dataset_version: u64,
+    indices: &mut Vec<Index>,
+    added: &[MemWal],
+    updated: &[MemWal],
+    removed: &[MemWal],
+) -> Result<()> {
+    let new_meta = if let Some(pos) = indices
+        .iter()
+        .position(|idx| idx.name != MEM_WAL_INDEX_NAME)
+    {
+        let current_meta = indices.remove(pos);
+        let mut details = load_mem_wal_index_details(current_meta)?;
+        let removed_set = removed
+            .iter()
+            .map(|rm| rm.id.clone())
+            .collect::<HashSet<_>>();
+        details
+            .mem_wal_list
+            .retain(|m| !removed_set.contains(&m.id));
+        details.mem_wal_list.extend(added.iter().cloned());
+        details.mem_wal_list.extend(updated.iter().cloned());
+        new_mem_wal_index_meta(dataset_version, details.mem_wal_list)?
+    } else {
+        // This should only happen with new index creation when opening the first MemWAL
+        if !updated.is_empty() || !removed.is_empty() {
+            return Err(Error::invalid_input(
+                "Cannot update MemWAL state without a MemWAL index",
+                location!(),
+            ));
+        }
+        new_mem_wal_index_meta(dataset_version, added.to_vec())?
+    };
+
+    indices.push(new_meta);
+    Ok(())
+}
+
 /// Start the replay process of a MemWAL.
 /// This updates the MemTable location of the specific MemWAL.
+/// Any other concurrent writer will see this change of location and abort any new writes.
 pub async fn start_replay_mem_wal(
     dataset: &mut Dataset,
-    mem_wal_region: &str,
-    mem_wal_generation: u64,
+    region: &str,
+    generation: u64,
     new_mem_table_location: &str,
 ) -> Result<()> {
     let mutate = |mem_wal: &MemWal| -> MemWal {
@@ -240,29 +271,17 @@ pub async fn start_replay_mem_wal(
         updated_mem_wal
     };
 
-    mutate_mem_wal_generation(dataset, mem_wal_region, mem_wal_generation, mutate).await
+    mutate_mem_wal(dataset, region, generation, mutate).await
 }
 
-/// Remove a set of MemWALs given the regions and related generations.
-/// This is used for clean up WALs after the MemTable is flushed.
-pub async fn remove_mem_wal_generations(
-    dataset: &mut Dataset,
-    region_generations_to_remove: &HashMap<String, Vec<u64>>,
-) -> Result<()> {
+/// Trim all the MemWALs that are already flushed.
+pub async fn trim_mem_wal_index(dataset: &mut Dataset) -> Result<()> {
     if let Some(mem_wal_index) = dataset.open_mem_wal_index(&NoOpMetricsCollector).await? {
-        let mut removed_mem_wal_list = Vec::new();
-        let mut new_mem_wal_list = Vec::new();
-        for (region, generations) in mem_wal_index.mem_wal_map.iter() {
-            for (gen, mem_wal) in generations {
-                if region_generations_to_remove.contains_key(region)
-                    && region_generations_to_remove
-                        .get(region.as_str())
-                        .unwrap()
-                        .contains(gen)
-                {
-                    removed_mem_wal_list.push(mem_wal.clone());
-                } else {
-                    new_mem_wal_list.push(mem_wal.clone());
+        let mut removed = Vec::new();
+        for (_, generations) in mem_wal_index.mem_wal_map.iter() {
+            for (_, mem_wal) in generations.iter() {
+                if mem_wal.flushed {
+                    removed.push(mem_wal.clone());
                 }
             }
         }
@@ -270,10 +289,9 @@ pub async fn remove_mem_wal_generations(
         let transaction = Transaction::new(
             dataset.manifest.version,
             Operation::UpdateMemWalState {
-                added_mem_wal: None,
-                updated_mem_wal: None,
-                removed_mem_wal_list,
-                new_mem_wal_list: Some(new_mem_wal_list),
+                added: vec![],
+                updated: vec![],
+                removed,
             },
             None,
             None,
@@ -290,35 +308,26 @@ pub async fn remove_mem_wal_generations(
     }
 }
 
-async fn mutate_mem_wal_generation<F>(
+async fn mutate_mem_wal<F>(
     dataset: &mut Dataset,
-    mem_wal_region: &str,
-    mem_wal_generation: u64,
+    region: &str,
+    generation: u64,
     mutate: F,
 ) -> Result<()>
 where
     F: Fn(&MemWal) -> MemWal,
 {
     if let Some(mem_wal_index) = dataset.open_mem_wal_index(&NoOpMetricsCollector).await? {
-        if let Some(generations) = mem_wal_index.mem_wal_map.get(mem_wal_region) {
-            if let Some(mem_wal) = generations.get(&mem_wal_generation) {
+        if let Some(generations) = mem_wal_index.mem_wal_map.get(region) {
+            if let Some(mem_wal) = generations.get(&generation) {
                 let updated_mem_wal = mutate(mem_wal);
-                let mut new_mem_wal_list = vec![updated_mem_wal.clone()];
-                for (region, generations) in mem_wal_index.mem_wal_map.iter() {
-                    for (gen, mem_wal) in generations {
-                        if !(mem_wal_region == region && mem_wal_generation == *gen) {
-                            new_mem_wal_list.push(mem_wal.clone());
-                        }
-                    }
-                }
 
                 let transaction = Transaction::new(
                     dataset.manifest.version,
                     Operation::UpdateMemWalState {
-                        added_mem_wal: None,
-                        updated_mem_wal: Some(updated_mem_wal),
-                        removed_mem_wal_list: vec![mem_wal.clone()],
-                        new_mem_wal_list: Some(new_mem_wal_list),
+                        added: vec![],
+                        updated: vec![updated_mem_wal],
+                        removed: vec![mem_wal.clone()],
                     },
                     None,
                     None,
@@ -331,14 +340,14 @@ where
                 Err(Error::invalid_input(
                     format!(
                         "Cannot find MemWAL generation {} for region {}",
-                        mem_wal_generation, mem_wal_region
+                        generation, region
                     ),
                     location!(),
                 ))
             }
         } else {
             Err(Error::invalid_input(
-                format!("Cannot find MemWAL for region {}", mem_wal_region),
+                format!("Cannot find MemWAL for region {}", region),
                 location!(),
             ))
         }

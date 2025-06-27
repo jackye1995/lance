@@ -51,13 +51,13 @@ use std::{
 };
 
 use super::ManifestWriteConfig;
-use crate::index::mem_wal::{new_mem_wal_index_meta, update_indices_mark_mem_wal_as_flushed};
+use crate::index::mem_wal::update_mem_wal_index_from_indices_list;
 use crate::utils::temporal::timestamp_to_nanos;
 use deepsize::DeepSizeOf;
 use lance_core::{datatypes::Schema, Error, Result};
 use lance_file::{datatypes::Fields, version::LanceFileVersion};
 use lance_index::is_system_index;
-use lance_index::mem_wal::{MemWal, MEM_WAL_INDEX_NAME};
+use lance_index::mem_wal::MemWal;
 use lance_io::object_store::ObjectStore;
 use lance_table::feature_flags::{apply_feature_flags, FLAG_MOVE_STABLE_ROW_IDS};
 use lance_table::{
@@ -206,10 +206,8 @@ pub enum Operation {
         new_fragments: Vec<Fragment>,
         /// The fields that have been modified
         fields_modified: Vec<u32>,
-        /// The corresponding MemWAL region that should be marked as flushed
-        mem_wal_region: Option<String>,
-        /// The corresponding MemWAL generation that should be marked as flushed
-        mem_wal_generation: Option<u64>,
+        /// The MemWAL (pre-image) that should be marked as flushed after this transaction
+        mem_wal_to_flush: Option<MemWal>,
     },
 
     /// Project to a new schema. This only changes the schema, not the data.
@@ -224,11 +222,9 @@ pub enum Operation {
     },
     /// Update the state of MemWALs.
     UpdateMemWalState {
-        added_mem_wal: Option<MemWal>,
-        updated_mem_wal: Option<MemWal>,
-        removed_mem_wal_list: Vec<MemWal>,
-        // optional list of MemWALs after all the changes, not stored in the transaction file
-        new_mem_wal_list: Option<Vec<MemWal>>,
+        added: Vec<MemWal>,
+        updated: Vec<MemWal>,
+        removed: Vec<MemWal>,
     },
 }
 
@@ -343,24 +339,21 @@ impl PartialEq for Operation {
                     updated_fragments: a_updated,
                     new_fragments: a_new,
                     fields_modified: a_fields,
-                    mem_wal_region: a_mem_wal_region,
-                    mem_wal_generation: a_mem_wal_generation,
+                    mem_wal_to_flush: a_mem_wal_to_flush,
                 },
                 Self::Update {
                     removed_fragment_ids: b_removed,
                     updated_fragments: b_updated,
                     new_fragments: b_new,
                     fields_modified: b_fields,
-                    mem_wal_region: b_mem_wal_region,
-                    mem_wal_generation: b_mem_wal_generation,
+                    mem_wal_to_flush: b_mem_wal_to_flush,
                 },
             ) => {
                 compare_vec(a_removed, b_removed)
                     && compare_vec(a_updated, b_updated)
                     && compare_vec(a_new, b_new)
                     && compare_vec(a_fields, b_fields)
-                && a_mem_wal_region == b_mem_wal_region
-                && a_mem_wal_generation == b_mem_wal_generation
+                    && a_mem_wal_to_flush == b_mem_wal_to_flush
             }
             (Self::Project { schema: a }, Self::Project { schema: b }) => a == b,
             (
@@ -1214,8 +1207,7 @@ impl Transaction {
                 updated_fragments,
                 new_fragments,
                 fields_modified,
-                mem_wal_region,
-                mem_wal_generation,
+                mem_wal_to_flush,
             } => {
                 final_fragments.extend(maybe_existing_fragments?.iter().filter_map(|f| {
                     if removed_fragment_ids.contains(&f.id) {
@@ -1244,15 +1236,17 @@ impl Transaction {
                 final_fragments.extend(new_fragments);
                 Self::retain_relevant_indices(&mut final_indices, &schema, &final_fragments);
 
-                match (mem_wal_region, mem_wal_generation) {
-                    (Some(mem_wal_region), Some(mem_wal_generation)) => {
-                        update_indices_mark_mem_wal_as_flushed(
-                            self.read_version,
-                            &mut final_indices,
-                            mem_wal_region,
-                            *mem_wal_generation)?;
-                    }
-                    (_, _) => {}
+                if let Some(mem_wal_to_flush) = mem_wal_to_flush {
+                    update_mem_wal_index_from_indices_list(
+                        self.read_version,
+                        &mut final_indices,
+                        &[],
+                        &[MemWal {
+                            flushed: true,
+                            ..mem_wal_to_flush.clone()
+                        }],
+                        &[mem_wal_to_flush.clone()],
+                    )?;
                 }
             }
             Operation::Overwrite { ref fragments, .. } => {
@@ -1453,13 +1447,17 @@ impl Transaction {
                 final_fragments.extend(unmodified_fragments);
             }
             Operation::UpdateMemWalState {
-                new_mem_wal_list, ..
+                added,
+                updated,
+                removed,
             } => {
-                final_indices.retain(|idx| idx.name != MEM_WAL_INDEX_NAME);
-                final_indices.push(new_mem_wal_index_meta(
+                update_mem_wal_index_from_indices_list(
                     self.read_version,
-                    new_mem_wal_list.clone().unwrap(),
-                )?);
+                    &mut final_indices,
+                    added,
+                    updated,
+                    removed,
+                )?;
             }
         };
 
@@ -1891,8 +1889,7 @@ impl TryFrom<pb::Transaction> for Transaction {
                 updated_fragments,
                 new_fragments,
                 fields_modified,
-                mem_wal_region,
-                mem_wal_generation,
+                mem_wal_to_flush,
             })) => Operation::Update {
                 removed_fragment_ids,
                 updated_fragments: updated_fragments
@@ -1904,8 +1901,7 @@ impl TryFrom<pb::Transaction> for Transaction {
                     .map(Fragment::try_from)
                     .collect::<Result<Vec<_>>>()?,
                 fields_modified,
-                mem_wal_region,
-                mem_wal_generation,
+                mem_wal_to_flush: mem_wal_to_flush.map(|m| MemWal::try_from(m).unwrap()),
             },
             Some(pb::transaction::Operation::Project(pb::transaction::Project { schema })) => {
                 Operation::Project {
@@ -1958,18 +1954,23 @@ impl TryFrom<pb::Transaction> for Transaction {
             },
             Some(pb::transaction::Operation::UpdateMemWalState(
                 pb::transaction::UpdateMemWalState {
-                    added_mem_wal,
-                    updated_mem_wal,
-                    removed_mem_wal_list,
+                    added,
+                    updated,
+                    removed,
                 },
             )) => Operation::UpdateMemWalState {
-                added_mem_wal: added_mem_wal.map(|m| MemWal::try_from(m).unwrap()),
-                updated_mem_wal: updated_mem_wal.map(|m| MemWal::try_from(m).unwrap()),
-                removed_mem_wal_list: removed_mem_wal_list
+                added: added
                     .into_iter()
                     .map(|m| MemWal::try_from(m).unwrap())
                     .collect(),
-                new_mem_wal_list: None,
+                updated: updated
+                    .into_iter()
+                    .map(|m| MemWal::try_from(m).unwrap())
+                    .collect(),
+                removed: removed
+                    .into_iter()
+                    .map(|m| MemWal::try_from(m).unwrap())
+                    .collect(),
             },
             None => {
                 return Err(Error::Internal {
@@ -2150,8 +2151,7 @@ impl From<&Transaction> for pb::Transaction {
                 updated_fragments,
                 new_fragments,
                 fields_modified,
-                mem_wal_region,
-                mem_wal_generation,
+                mem_wal_to_flush,
             } => pb::transaction::Operation::Update(pb::transaction::Update {
                 removed_fragment_ids: removed_fragment_ids.clone(),
                 updated_fragments: updated_fragments
@@ -2160,8 +2160,9 @@ impl From<&Transaction> for pb::Transaction {
                     .collect(),
                 new_fragments: new_fragments.iter().map(pb::DataFragment::from).collect(),
                 fields_modified: fields_modified.clone(),
-                mem_wal_region: mem_wal_region.clone(),
-                mem_wal_generation: *mem_wal_generation,
+                mem_wal_to_flush: mem_wal_to_flush
+                    .as_ref()
+                    .map(pb::mem_wal_index_details::MemWal::from),
             }),
             Operation::Project { schema } => {
                 pb::transaction::Operation::Project(pb::transaction::Project {
@@ -2203,15 +2204,20 @@ impl From<&Transaction> for pb::Transaction {
                 })
             }
             Operation::UpdateMemWalState {
-                added_mem_wal,
-                updated_mem_wal,
-                removed_mem_wal_list,
-                ..
+                added,
+                updated,
+                removed,
             } => {
                 pb::transaction::Operation::UpdateMemWalState(pb::transaction::UpdateMemWalState {
-                    added_mem_wal: added_mem_wal.as_ref().map(pb::mem_wal_index_details::MemWal::from),
-                    updated_mem_wal: updated_mem_wal.as_ref().map(pb::mem_wal_index_details::MemWal::from),
-                    removed_mem_wal_list: removed_mem_wal_list
+                    added: added
+                        .iter()
+                        .map(pb::mem_wal_index_details::MemWal::from)
+                        .collect::<Vec<_>>(),
+                    updated: updated
+                        .iter()
+                        .map(pb::mem_wal_index_details::MemWal::from)
+                        .collect::<Vec<_>>(),
+                    removed: removed
                         .iter()
                         .map(pb::mem_wal_index_details::MemWal::from)
                         .collect::<Vec<_>>(),

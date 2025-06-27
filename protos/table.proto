@@ -425,9 +425,7 @@ message MemWalIndexDetails {
 
   repeated MemWal mem_wal_list = 1;
 
-  // A combination of MemTable and WAL for fast upsert.
-  message MemWal {
-
+  message MemWalId {
     // The name of the region that this specific MemWAL is responsible for.
     string region = 1;
 
@@ -437,18 +435,24 @@ message MemWalIndexDetails {
     // At any given point of time for all MemWALs of the same name,
     // there must be only 1 generation that is not sealed.
     uint64 generation = 2;
+  }
+
+  // A combination of MemTable and WAL for fast upsert.
+  message MemWal {
+
+    MemWalId id = 1;
 
     // The MemTable location, which is likely an in-memory address starting with memory://.
     // The actual details of how the MemTable is stored is outside the concern of Lance.
     // When the MemTable crashes, before starting to replay from the WAL,
     // the new writer must compare-and-swap this location.
     // After replay, any writer checks this location and commit must fail if this location has changed.
-    string mem_table_location = 3;
+    string mem_table_location = 2;
 
     // the root location of the WAL.
     // THe WAL storage durability determines the data durability.
     // This location is immutable once set at MemWAL creation time.
-    string wal_location = 4;
+    string wal_location = 3;
 
     // All entries in the WAL, serialized as U64Segment.
     // Each entry in the WAL has a uint64 sequence ID starting from 0.
@@ -460,18 +464,18 @@ message MemWalIndexDetails {
     // although one writer will fail to update this index at commit time,
     // the WAL entry is already written,
     // causing some holes within the U64Segment range.
-    bytes wal_entries = 5;
+    bytes wal_entries = 4;
 
     // Indicates if the MemWAL has been sealed.
     // When a MemTable is considered full, the writer should update this MemWAL as sealed
     // and create a new MemWAL to write to atomically.
-    bool sealed = 6;
+    bool sealed = 5;
 
     // Indicates if the MemWAL has been flushed to the source Lance table.
     // When a MemTable is sealed, it can be flushed asynchronously to the table.
     // When the flush completes, the process should commit the new dataset version
     // and mark this MemWAL as flushed atomically.
     // After a MemWAL is flushed, the cleanup process can delete the WAL.
-    bool flushed = 7;
+    bool flushed = 6;
   }
 }

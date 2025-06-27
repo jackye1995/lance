@@ -439,13 +439,13 @@ impl<'a> TransactionRebase<'a> {
                     self.incompatible_conflict_err(other_transaction, other_version, location!())
                 ),
                 Operation::UpdateMemWalState { added, updated, .. } => {
-                    self.check_update_mem_wal_state_not_changing_same_region(
+                    self.check_update_mem_wal_state_not_modify_same_mem_wal(
                         added,
                         mem_wal_to_flush.as_slice(),
                         other_transaction,
                         other_version,
                     )?;
-                    self.check_update_mem_wal_state_not_changing_same_region(
+                    self.check_update_mem_wal_state_not_modify_same_mem_wal(
                         updated,
                         mem_wal_to_flush.as_slice(),
                         other_transaction,
@@ -1039,25 +1039,25 @@ impl<'a> TransactionRebase<'a> {
                     }
 
                     // 2. MemWALs of different regions can be changed at the same time
-                    self.check_update_mem_wal_state_not_changing_same_region(
+                    self.check_update_mem_wal_state_not_modify_same_mem_wal(
                         committed_added,
                         added,
                         other_transaction,
                         other_version,
                     )?;
-                    self.check_update_mem_wal_state_not_changing_same_region(
+                    self.check_update_mem_wal_state_not_modify_same_mem_wal(
                         committed_added,
                         updated,
                         other_transaction,
                         other_version,
                     )?;
-                    self.check_update_mem_wal_state_not_changing_same_region(
+                    self.check_update_mem_wal_state_not_modify_same_mem_wal(
                         committed_updated,
                         added,
                         other_transaction,
                         other_version,
                     )?;
-                    self.check_update_mem_wal_state_not_changing_same_region(
+                    self.check_update_mem_wal_state_not_modify_same_mem_wal(
                         committed_updated,
                         updated,
                         other_transaction,
@@ -1099,7 +1099,7 @@ impl<'a> TransactionRebase<'a> {
         }
     }
 
-    fn check_update_mem_wal_state_not_changing_same_region(
+    fn check_update_mem_wal_state_not_modify_same_mem_wal(
         &self,
         committed: &[MemWal],
         to_commit: &[MemWal],

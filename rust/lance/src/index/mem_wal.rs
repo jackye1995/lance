@@ -294,6 +294,8 @@ pub(crate) fn update_mem_wal_index_in_indices_list(
 /// Each writer is required to keep an invariant of its MemTable location for a MemWAL.
 /// At any point in time, there should be only 1 writer that owns the right to mutate the MemWAL,
 /// and the MemTable location serves as the optimistic lock for it.
+/// Specifically, before a writer starts to replay a WAL, it should call this method to claim
+/// ownership and stop any additional writes to the MemWAL from other writers.
 ///
 /// Consider a distributed cluster which currently has node A writing to the table's MemWAL.
 /// A network partition happens, node A is not dead but fails the health check.
@@ -940,7 +942,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_start_replay_mem_wal() {
+    async fn test_update_mem_table_location() {
         // Create a dataset with some data
         let mut dataset = lance_datagen::gen()
             .col(
@@ -1814,5 +1816,284 @@ mod tests {
             merge_insert_result.is_err(),
             "Merge insert flush operation should fail due to version conflict"
         );
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_mem_wal_append_and_merge_insert_flush() {
+        // Create a dataset with some data
+        let mut dataset = lance_datagen::gen()
+            .col(
+                "vec",
+                lance_datagen::array::rand_vec::<Float32Type>(Dimension::from(128)),
+            )
+            .col("i", lance_datagen::array::step::<Int32Type>())
+            .into_ram_dataset(FragmentCount::from(2), FragmentRowCount::from(1000))
+            .await
+            .unwrap();
+
+        // Create MemWAL index and generation 0
+        advance_mem_wal_generation(
+            &mut dataset,
+            "GLOBAL",
+            "mem_table_location_0",
+            "wal_location_0",
+            None,
+        )
+        .await
+        .unwrap();
+
+        // Add some entries to generation 0
+        append_mem_wal_entry(&mut dataset, "GLOBAL", 0, 123, "mem_table_location_0")
+            .await
+            .unwrap();
+        append_mem_wal_entry(&mut dataset, "GLOBAL", 0, 456, "mem_table_location_0")
+            .await
+            .unwrap();
+
+        // Seal generation 0 (required for merge insert flush)
+        mark_mem_wal_as_sealed(&mut dataset, "GLOBAL", 0, "mem_table_location_0")
+            .await
+            .unwrap();
+
+        // Advance to generation 1
+        advance_mem_wal_generation(
+            &mut dataset,
+            "GLOBAL",
+            "mem_table_location_1",
+            "wal_location_1",
+            Some("mem_table_location_0"),
+        )
+        .await
+        .unwrap();
+
+        // Add some entries to generation 1
+        append_mem_wal_entry(&mut dataset, "GLOBAL", 1, 789, "mem_table_location_1")
+            .await
+            .unwrap();
+        append_mem_wal_entry(&mut dataset, "GLOBAL", 1, 790, "mem_table_location_1")
+            .await
+            .unwrap();
+
+        // Clone the dataset to simulate concurrent operations
+        let mut dataset_clone_append = dataset.clone();
+        let dataset_clone_merge_insert = dataset.clone();
+
+        // Test concurrent operations: append to generation 1 and merge_insert flush generation 0
+        let append_result = append_mem_wal_entry(&mut dataset_clone_append, "GLOBAL", 1, 791, "mem_table_location_1").await;
+        
+        // Create merge insert job that flushes generation 0
+        let mut merge_insert_job_builder = crate::dataset::MergeInsertBuilder::try_new(
+            Arc::new(dataset_clone_merge_insert),
+            vec!["i".to_string()],
+        ).unwrap();
+        
+        let merge_insert_job = merge_insert_job_builder
+            .when_matched(crate::dataset::WhenMatched::UpdateAll)
+            .when_not_matched(crate::dataset::WhenNotMatched::InsertAll)
+            .mark_mem_wal_as_flushed(MemWalId::new("GLOBAL", 0), "mem_table_location_0")
+            .await
+            .unwrap()
+            .try_build()
+            .unwrap();
+
+        // Create some data for the merge insert
+        let new_data = lance_datagen::gen()
+            .col(
+                "vec",
+                lance_datagen::array::rand_vec::<Float32Type>(Dimension::from(128)),
+            )
+            .col("i", lance_datagen::array::step_custom::<Int32Type>(2000, 1))
+            .into_df_stream(RowCount::from(50), BatchCount::from(5));
+
+        // Execute the merge insert
+        let merge_insert_result = merge_insert_job.execute_reader(new_data).await;
+
+        // Both operations should succeed since they operate on different generations
+        assert!(append_result.is_ok(), "Append to generation 1 should succeed");
+        assert!(merge_insert_result.is_ok(), "Merge insert flush of generation 0 should succeed");
+
+        // Get the updated dataset from the merge insert result
+        let (updated_dataset, _stats) = merge_insert_result.unwrap();
+
+        // Verify the final state using the updated dataset
+        let indices = updated_dataset.load_indices().await.unwrap();
+        let mem_wal_index_meta = indices
+            .iter()
+            .find(|idx| idx.name == MEM_WAL_INDEX_NAME)
+            .expect("MemWAL index should exist");
+
+        let mem_wal_details = load_mem_wal_index_details(mem_wal_index_meta.clone()).unwrap();
+        
+        // Find generation 0 and generation 1
+        let gen_0 = mem_wal_details
+            .mem_wal_list
+            .iter()
+            .find(|m| m.id.generation == 0)
+            .expect("Generation 0 should exist");
+        let gen_1 = mem_wal_details
+            .mem_wal_list
+            .iter()
+            .find(|m| m.id.generation == 1)
+            .expect("Generation 1 should exist");
+
+        // Verify generation 0 is sealed and flushed
+        assert!(gen_0.sealed, "Generation 0 should be sealed");
+        assert!(gen_0.flushed, "Generation 0 should be flushed");
+
+        // Verify generation 1 is unsealed and unflushed
+        assert!(!gen_1.sealed, "Generation 1 should be unsealed");
+        assert!(!gen_1.flushed, "Generation 1 should be unflushed");
+
+        // Verify that generation 1 has the new entry
+        let wal_entries = gen_1.wal_entries();
+        assert!(wal_entries.contains(791), "Generation 1 should contain the new entry 791");
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_mem_wal_advance_and_merge_insert_flush() {
+        // Create a dataset with some data
+        let mut dataset = lance_datagen::gen()
+            .col(
+                "vec",
+                lance_datagen::array::rand_vec::<Float32Type>(Dimension::from(128)),
+            )
+            .col("i", lance_datagen::array::step::<Int32Type>())
+            .into_ram_dataset(FragmentCount::from(2), FragmentRowCount::from(1000))
+            .await
+            .unwrap();
+
+        // Create MemWAL index and generation 0
+        advance_mem_wal_generation(
+            &mut dataset,
+            "GLOBAL",
+            "mem_table_location_0",
+            "wal_location_0",
+            None,
+        )
+        .await
+        .unwrap();
+
+        // Add some entries to generation 0
+        append_mem_wal_entry(&mut dataset, "GLOBAL", 0, 123, "mem_table_location_0")
+            .await
+            .unwrap();
+        append_mem_wal_entry(&mut dataset, "GLOBAL", 0, 456, "mem_table_location_0")
+            .await
+            .unwrap();
+
+        // Seal generation 0 (required for merge insert flush)
+        mark_mem_wal_as_sealed(&mut dataset, "GLOBAL", 0, "mem_table_location_0")
+            .await
+            .unwrap();
+
+        // Advance to generation 1
+        advance_mem_wal_generation(
+            &mut dataset,
+            "GLOBAL",
+            "mem_table_location_1",
+            "wal_location_1",
+            Some("mem_table_location_0"),
+        )
+        .await
+        .unwrap();
+
+        // Add some entries to generation 1
+        append_mem_wal_entry(&mut dataset, "GLOBAL", 1, 789, "mem_table_location_1")
+            .await
+            .unwrap();
+        append_mem_wal_entry(&mut dataset, "GLOBAL", 1, 790, "mem_table_location_1")
+            .await
+            .unwrap();
+
+        // Clone the dataset to simulate concurrent operations
+        let mut dataset_clone_advance = dataset.clone();
+        let dataset_clone_merge_insert = dataset.clone();
+
+        // Test concurrent operations: advance to generation 2 and merge_insert flush generation 0
+        let advance_result = advance_mem_wal_generation(
+            &mut dataset_clone_advance,
+            "GLOBAL",
+            "mem_table_location_2",
+            "wal_location_2",
+            Some("mem_table_location_1"),
+        )
+        .await;
+        
+        // Create merge insert job that flushes generation 0
+        let mut merge_insert_job_builder = crate::dataset::MergeInsertBuilder::try_new(
+            Arc::new(dataset_clone_merge_insert),
+            vec!["i".to_string()],
+        ).unwrap();
+        
+        let merge_insert_job = merge_insert_job_builder
+            .when_matched(crate::dataset::WhenMatched::UpdateAll)
+            .when_not_matched(crate::dataset::WhenNotMatched::InsertAll)
+            .mark_mem_wal_as_flushed(MemWalId::new("GLOBAL", 0), "mem_table_location_0")
+            .await
+            .unwrap()
+            .try_build()
+            .unwrap();
+
+        // Create some data for the merge insert
+        let new_data = lance_datagen::gen()
+            .col(
+                "vec",
+                lance_datagen::array::rand_vec::<Float32Type>(Dimension::from(128)),
+            )
+            .col("i", lance_datagen::array::step_custom::<Int32Type>(2000, 1))
+            .into_df_stream(RowCount::from(50), BatchCount::from(5));
+
+        // Execute the merge insert
+        let merge_insert_result = merge_insert_job.execute_reader(new_data).await;
+
+        // Both operations should succeed since they operate on different generations
+        assert!(advance_result.is_ok(), "Advance to generation 2 should succeed");
+        assert!(merge_insert_result.is_ok(), "Merge insert flush of generation 0 should succeed");
+
+        // Get the updated dataset from the merge insert result
+        let (updated_dataset, _stats) = merge_insert_result.unwrap();
+
+        // Verify the final state using the updated dataset
+        let indices = updated_dataset.load_indices().await.unwrap();
+        let mem_wal_index_meta = indices
+            .iter()
+            .find(|idx| idx.name == MEM_WAL_INDEX_NAME)
+            .expect("MemWAL index should exist");
+
+        let mem_wal_details = load_mem_wal_index_details(mem_wal_index_meta.clone()).unwrap();
+        
+        // Find all generations
+        let gen_0 = mem_wal_details
+            .mem_wal_list
+            .iter()
+            .find(|m| m.id.generation == 0)
+            .expect("Generation 0 should exist");
+        let gen_1 = mem_wal_details
+            .mem_wal_list
+            .iter()
+            .find(|m| m.id.generation == 1)
+            .expect("Generation 1 should exist");
+        let gen_2 = mem_wal_details
+            .mem_wal_list
+            .iter()
+            .find(|m| m.id.generation == 2)
+            .expect("Generation 2 should exist");
+
+        // Verify generation 0 is sealed and flushed
+        assert!(gen_0.sealed, "Generation 0 should be sealed");
+        assert!(gen_0.flushed, "Generation 0 should be flushed");
+
+        // Verify generation 1 is sealed (due to advance) but unflushed
+        assert!(gen_1.sealed, "Generation 1 should be sealed due to advance");
+        assert!(!gen_1.flushed, "Generation 1 should be unflushed");
+
+        // Verify generation 2 is unsealed and unflushed
+        assert!(!gen_2.sealed, "Generation 2 should be unsealed");
+        assert!(!gen_2.flushed, "Generation 2 should be unflushed");
+
+        // Verify that generation 1 has the expected entries
+        let wal_entries = gen_1.wal_entries();
+        assert!(wal_entries.contains(789), "Generation 1 should contain entry 789");
+        assert!(wal_entries.contains(790), "Generation 1 should contain entry 790");
     }
 }

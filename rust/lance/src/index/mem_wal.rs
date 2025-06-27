@@ -1879,14 +1879,22 @@ mod tests {
         let dataset_clone_merge_insert = dataset.clone();
 
         // Test concurrent operations: append to generation 1 and merge_insert flush generation 0
-        let append_result = append_mem_wal_entry(&mut dataset_clone_append, "GLOBAL", 1, 791, "mem_table_location_1").await;
-        
+        let append_result = append_mem_wal_entry(
+            &mut dataset_clone_append,
+            "GLOBAL",
+            1,
+            791,
+            "mem_table_location_1",
+        )
+        .await;
+
         // Create merge insert job that flushes generation 0
         let mut merge_insert_job_builder = crate::dataset::MergeInsertBuilder::try_new(
             Arc::new(dataset_clone_merge_insert),
             vec!["i".to_string()],
-        ).unwrap();
-        
+        )
+        .unwrap();
+
         let merge_insert_job = merge_insert_job_builder
             .when_matched(crate::dataset::WhenMatched::UpdateAll)
             .when_not_matched(crate::dataset::WhenNotMatched::InsertAll)
@@ -1909,8 +1917,14 @@ mod tests {
         let merge_insert_result = merge_insert_job.execute_reader(new_data).await;
 
         // Both operations should succeed since they operate on different generations
-        assert!(append_result.is_ok(), "Append to generation 1 should succeed");
-        assert!(merge_insert_result.is_ok(), "Merge insert flush of generation 0 should succeed");
+        assert!(
+            append_result.is_ok(),
+            "Append to generation 1 should succeed"
+        );
+        assert!(
+            merge_insert_result.is_ok(),
+            "Merge insert flush of generation 0 should succeed"
+        );
 
         // Get the updated dataset from the merge insert result
         let (updated_dataset, _stats) = merge_insert_result.unwrap();
@@ -1923,7 +1937,7 @@ mod tests {
             .expect("MemWAL index should exist");
 
         let mem_wal_details = load_mem_wal_index_details(mem_wal_index_meta.clone()).unwrap();
-        
+
         // Find generation 0 and generation 1
         let gen_0 = mem_wal_details
             .mem_wal_list
@@ -1946,7 +1960,10 @@ mod tests {
 
         // Verify that generation 1 has the new entry
         let wal_entries = gen_1.wal_entries();
-        assert!(wal_entries.contains(791), "Generation 1 should contain the new entry 791");
+        assert!(
+            wal_entries.contains(791),
+            "Generation 1 should contain the new entry 791"
+        );
     }
 
     #[tokio::test]
@@ -2018,13 +2035,14 @@ mod tests {
             Some("mem_table_location_1"),
         )
         .await;
-        
+
         // Create merge insert job that flushes generation 0
         let mut merge_insert_job_builder = crate::dataset::MergeInsertBuilder::try_new(
             Arc::new(dataset_clone_merge_insert),
             vec!["i".to_string()],
-        ).unwrap();
-        
+        )
+        .unwrap();
+
         let merge_insert_job = merge_insert_job_builder
             .when_matched(crate::dataset::WhenMatched::UpdateAll)
             .when_not_matched(crate::dataset::WhenNotMatched::InsertAll)
@@ -2047,8 +2065,14 @@ mod tests {
         let merge_insert_result = merge_insert_job.execute_reader(new_data).await;
 
         // Both operations should succeed since they operate on different generations
-        assert!(advance_result.is_ok(), "Advance to generation 2 should succeed");
-        assert!(merge_insert_result.is_ok(), "Merge insert flush of generation 0 should succeed");
+        assert!(
+            advance_result.is_ok(),
+            "Advance to generation 2 should succeed"
+        );
+        assert!(
+            merge_insert_result.is_ok(),
+            "Merge insert flush of generation 0 should succeed"
+        );
 
         // Get the updated dataset from the merge insert result
         let (updated_dataset, _stats) = merge_insert_result.unwrap();
@@ -2061,7 +2085,7 @@ mod tests {
             .expect("MemWAL index should exist");
 
         let mem_wal_details = load_mem_wal_index_details(mem_wal_index_meta.clone()).unwrap();
-        
+
         // Find all generations
         let gen_0 = mem_wal_details
             .mem_wal_list
@@ -2093,7 +2117,13 @@ mod tests {
 
         // Verify that generation 1 has the expected entries
         let wal_entries = gen_1.wal_entries();
-        assert!(wal_entries.contains(789), "Generation 1 should contain entry 789");
-        assert!(wal_entries.contains(790), "Generation 1 should contain entry 790");
+        assert!(
+            wal_entries.contains(789),
+            "Generation 1 should contain entry 789"
+        );
+        assert!(
+            wal_entries.contains(790),
+            "Generation 1 should contain entry 790"
+        );
     }
 }

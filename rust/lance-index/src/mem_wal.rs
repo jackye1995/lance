@@ -106,13 +106,12 @@ impl MemWal {
         U64Segment::try_from(pb::U64Segment::decode(self.wal_entries.as_slice()).unwrap()).unwrap()
     }
 
-    /// Check if the MemWAL is in the expected sealed state
-    pub fn check_sealed(&self, expected_sealed: bool) -> lance_core::Result<()> {
-        if self.sealed != expected_sealed {
+    pub fn check_sealed(&self, expected: bool) -> lance_core::Result<()> {
+        if self.sealed != expected {
             return Err(Error::invalid_input(
                 format!(
                     "MemWAL {:?} is sealed: {}, but expected {}",
-                    self.id, self.sealed, expected_sealed
+                    self.id, self.sealed, expected
                 ),
                 location!(),
             ));
@@ -120,16 +119,37 @@ impl MemWal {
         Ok(())
     }
 
-    /// Check if the MemWAL is in the expected flushed state
-    pub fn check_flushed(&self, expected_flushed: bool) -> lance_core::Result<()> {
-        if self.flushed != expected_flushed {
+    pub fn check_flushed(&self, expected: bool) -> lance_core::Result<()> {
+        if self.flushed != expected {
             return Err(Error::invalid_input(
                 format!(
                     "MemWAL {:?} is flushed: {}, but expected {}",
-                    self.id, self.flushed, expected_flushed
+                    self.id, self.flushed, expected
                 ),
                 location!(),
             ));
+        }
+        Ok(())
+    }
+
+    /// `expected_mem_table_location` serves as a pre-check that the MemTable has not changed before commit.
+    /// Each writer is required to keep an invariant of its operating MemTable location.
+    /// Consider a network partition which results in a node A failing the health check.
+    /// Node B will be newly assigned and start the WAL replay process and modify the MemTable location.
+    /// In this case, if node A is doing a modification to the same region including adding an entry,
+    /// sealing or flushing the region, it will receive a commit conflict failure.
+    /// In theory, all the writes from node A should just abort after seeing this failure without retrying.
+    /// However, if the writer decides to retry the operation for any reason, without the check,
+    /// the retry would succeed. The `expected_mem_table_location` serves as the guard to
+    /// make sure it continues to fail until the write traffic is fully redirected to node B.
+    pub fn check_expected_mem_table_location(&self, expected: &str) -> lance_core::Result<()> {
+        if self.mem_table_location != expected {
+            return Err(Error::invalid_input(
+                format!(
+                "MemWAL {:?} has MemTable location: {}, but expected {}",
+                self.id, self.mem_table_location, expected
+                ),
+                location!()));
         }
         Ok(())
     }

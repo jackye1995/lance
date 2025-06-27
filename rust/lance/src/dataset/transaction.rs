@@ -51,7 +51,7 @@ use std::{
 };
 
 use super::ManifestWriteConfig;
-use crate::index::mem_wal::update_mem_wal_index_from_indices_list;
+use crate::index::mem_wal::update_mem_wal_index_in_indices_list;
 use crate::utils::temporal::timestamp_to_nanos;
 use deepsize::DeepSizeOf;
 use lance_core::{datatypes::Schema, Error, Result};
@@ -1237,7 +1237,7 @@ impl Transaction {
                 Self::retain_relevant_indices(&mut final_indices, &schema, &final_fragments);
 
                 if let Some(mem_wal_to_flush) = mem_wal_to_flush {
-                    update_mem_wal_index_from_indices_list(
+                    update_mem_wal_index_in_indices_list(
                         self.read_version,
                         &mut final_indices,
                         &[],
@@ -1451,7 +1451,7 @@ impl Transaction {
                 updated,
                 removed,
             } => {
-                update_mem_wal_index_from_indices_list(
+                update_mem_wal_index_in_indices_list(
                     self.read_version,
                     &mut final_indices,
                     added,

@@ -44,7 +44,8 @@ pub(crate) fn open_mem_wal_index(index: Index) -> Result<Arc<MemWalIndex>> {
 }
 
 /// Advance the generation of the MemWAL for the given region.
-/// If the MemWAL does not exist, create one with generation 0.
+/// If the MemWAL does not exist, create one with generation 0, and
+/// `expected_mem_table_location` should be None in this case.
 /// If the MemWAL exists, seal the one with the latest generation,
 /// and open one with the same name and the next generation.
 /// If the MemWALIndex structure does not exist, create it along the way.
@@ -53,6 +54,7 @@ pub async fn advance_mem_wal_generation(
     region: &str,
     new_mem_table_location: &str,
     new_wal_location: &str,
+    expected_mem_table_location: Option<&str>,
 ) -> Result<()> {
     let transaction = if let Some(mem_wal_index) =
         dataset.open_mem_wal_index(&NoOpMetricsCollector).await?
@@ -72,6 +74,18 @@ pub async fn advance_mem_wal_generation(
                         location!(),
                     ));
                 }
+
+                if let Some(expected_mem_table_location) = expected_mem_table_location {
+                    latest_mem_wal.check_expected_mem_table_location(expected_mem_table_location)?;
+                } else {
+                    return Err(Error::invalid_input(
+                        format!(
+                            "Expected creating generation 0 for MemWAL region {}, but found current latest MemWAL: {:?}",
+                            region, latest_mem_wal
+                        ),
+                        location!()));
+                }
+
                 if latest_mem_wal.mem_table_location == new_mem_table_location {
                     return Err(Error::invalid_input(
                         format!(
@@ -104,6 +118,16 @@ pub async fn advance_mem_wal_generation(
                 })
             }
         } else {
+
+            if let Some(expected_mem_table_location) = expected_mem_table_location {
+                return Err(Error::invalid_input(
+                    format!(
+                        "Expected advancing MemWAL region {} from MemTable location {}, but found no generation yet",
+                        region, expected_mem_table_location
+                    ),
+                    location!()));
+            }
+
             Ok((
                 MemWal::new_empty(
                     MemWalId::new(region, 0),
@@ -127,6 +151,15 @@ pub async fn advance_mem_wal_generation(
         )
     } else {
         // this is the first time the MemWAL index is created
+        if let Some(expected_mem_table_location) = expected_mem_table_location {
+            return Err(Error::invalid_input(
+                format!(
+                    "Expected advancing MemWAL region {} from MemTable location {}, but found no MemTable index",
+                    region, expected_mem_table_location
+                ),
+                location!()));
+        }
+
         Transaction::new(
             dataset.manifest.version,
             Operation::UpdateMemWalState {
@@ -154,11 +187,13 @@ pub async fn append_mem_wal_entry(
     mem_wal_region: &str,
     mem_wal_generation: u64,
     entry_id: u64,
+    expected_mem_table_location: &str,
 ) -> Result<()> {
     let mutate = |mem_wal: &MemWal| -> Result<MemWal> {
         // Can only append to unsealed and unflushed MemWALs
         mem_wal.check_flushed(false)?;
         mem_wal.check_sealed(false)?;
+        mem_wal.check_expected_mem_table_location(expected_mem_table_location)?;
 
         let mut updated_mem_wal = mem_wal.clone();
         let wal_entries = updated_mem_wal.wal_entries();
@@ -178,11 +213,13 @@ pub async fn mark_mem_wal_as_sealed(
     dataset: &mut Dataset,
     mem_wal_region: &str,
     mem_wal_generation: u64,
+    expected_mem_table_location: &str,
 ) -> Result<()> {
     let mutate = |mem_wal: &MemWal| -> Result<MemWal> {
         // Can only seal unsealed or flushed MemWALs
         mem_wal.check_flushed(false)?;
         mem_wal.check_sealed(false)?;
+        mem_wal.check_expected_mem_table_location(expected_mem_table_location)?;
 
         let mut updated_mem_wal = mem_wal.clone();
         updated_mem_wal.sealed = true;
@@ -197,11 +234,13 @@ pub async fn mark_mem_wal_as_flushed(
     dataset: &mut Dataset,
     mem_wal_region: &str,
     mem_wal_generation: u64,
+    expected_mem_table_location: &str,
 ) -> Result<()> {
     let mutate = |mem_wal: &MemWal| -> Result<MemWal> {
         // Can only flush sealed but unflushed MemWALs
         mem_wal.check_sealed(true)?;
         mem_wal.check_flushed(false)?;
+        mem_wal.check_expected_mem_table_location(expected_mem_table_location)?;
 
         let mut updated_mem_wal = mem_wal.clone();
         updated_mem_wal.flushed = true;
@@ -213,7 +252,7 @@ pub async fn mark_mem_wal_as_flushed(
 
 /// Mark the specific MemWAL as flushed, in the list of indices in the dataset.
 /// This is intended to be used as a part of the Update transaction after resolving all conflicts.
-pub(crate) fn update_mem_wal_index_from_indices_list(
+pub(crate) fn update_mem_wal_index_in_indices_list(
     dataset_version: u64,
     indices: &mut Vec<Index>,
     added: &[MemWal],
@@ -422,6 +461,7 @@ mod tests {
             "GLOBAL",
             "mem_table_location_0",
             "wal_location_0",
+            None,
         )
         .await
         .unwrap();
@@ -451,6 +491,7 @@ mod tests {
             "GLOBAL",
             "mem_table_location_1",
             "wal_location_1",
+            Some("mem_table_location_0"),
         )
         .await
         .unwrap();
@@ -499,6 +540,7 @@ mod tests {
             "GLOBAL",
             "mem_table_location_1", // Same as current generation
             "wal_location_2",       // Different WAL location
+            Some("mem_table_location_0"),
         )
         .await;
         assert!(
@@ -512,6 +554,7 @@ mod tests {
             "GLOBAL",
             "mem_table_location_2", // Different MemTable location
             "wal_location_1",       // Same as current generation
+            Some("mem_table_location_0"),
         )
         .await;
         assert!(
@@ -534,7 +577,7 @@ mod tests {
             .unwrap();
 
         // Test failure case: MemWAL is not enabled
-        let result = append_mem_wal_entry(&mut dataset, "GLOBAL", 0, 123).await;
+        let result = append_mem_wal_entry(&mut dataset, "GLOBAL", 0, 123, "wal_location_0").await;
         assert!(result.is_err(), "Should fail when MemWAL is not enabled");
 
         // Create MemWAL index and generation 0
@@ -543,20 +586,21 @@ mod tests {
             "GLOBAL",
             "mem_table_location_0",
             "wal_location_0",
+            None,
         )
         .await
         .unwrap();
 
         // Test failure case: region doesn't exist
-        let result = append_mem_wal_entry(&mut dataset, "NONEXISTENT", 0, 123).await;
+        let result = append_mem_wal_entry(&mut dataset, "NONEXISTENT", 0, 123, "wal_location_0").await;
         assert!(result.is_err(), "Should fail when region doesn't exist");
 
         // Test failure case: generation doesn't exist
-        let result = append_mem_wal_entry(&mut dataset, "GLOBAL", 999, 123).await;
+        let result = append_mem_wal_entry(&mut dataset, "GLOBAL", 999, 123, "wal_location_0").await;
         assert!(result.is_err(), "Should fail when generation doesn't exist");
 
         // Test success case: append entry to generation 0
-        append_mem_wal_entry(&mut dataset, "GLOBAL", 0, 123)
+        append_mem_wal_entry(&mut dataset, "GLOBAL", 0, 123, "mem_table_location_0")
             .await
             .unwrap();
 
@@ -578,10 +622,10 @@ mod tests {
         );
 
         // Test appending multiple entries
-        append_mem_wal_entry(&mut dataset, "GLOBAL", 0, 456)
+        append_mem_wal_entry(&mut dataset, "GLOBAL", 0, 456, "mem_table_location_0")
             .await
             .unwrap();
-        append_mem_wal_entry(&mut dataset, "GLOBAL", 0, 789)
+        append_mem_wal_entry(&mut dataset, "GLOBAL", 0, 789, "mem_table_location_0")
             .await
             .unwrap();
 
@@ -610,10 +654,10 @@ mod tests {
         );
 
         // Test failure case: cannot append to sealed MemWAL
-        mark_mem_wal_as_sealed(&mut dataset, "GLOBAL", 0)
+        mark_mem_wal_as_sealed(&mut dataset, "GLOBAL", 0, "mem_table_location_0")
             .await
             .unwrap();
-        let result = append_mem_wal_entry(&mut dataset, "GLOBAL", 0, 999).await;
+        let result = append_mem_wal_entry(&mut dataset, "GLOBAL", 0, 999, "mem_table_location_0").await;
         assert!(
             result.is_err(),
             "Should fail when trying to append to sealed MemWAL"
@@ -625,10 +669,10 @@ mod tests {
                 "Error message should indicate the MemWAL is sealed, got: {}", error);
 
         // Test failure case: cannot append to flushed MemWAL
-        mark_mem_wal_as_flushed(&mut dataset, "GLOBAL", 0)
+        mark_mem_wal_as_flushed(&mut dataset, "GLOBAL", 0, "mem_table_location_0")
             .await
             .unwrap();
-        let result = append_mem_wal_entry(&mut dataset, "GLOBAL", 0, 999).await;
+        let result = append_mem_wal_entry(&mut dataset, "GLOBAL", 0, 999, "mem_table_location_0").await;
         assert!(
             result.is_err(),
             "Should fail when trying to append to flushed MemWAL"
@@ -654,7 +698,7 @@ mod tests {
             .unwrap();
 
         // Test failure case: MemWAL is not enabled
-        let result = mark_mem_wal_as_sealed(&mut dataset, "GLOBAL", 0).await;
+        let result = mark_mem_wal_as_sealed(&mut dataset, "GLOBAL", 0, "mem_table_location_0").await;
         assert!(result.is_err(), "Should fail when MemWAL is not enabled");
 
         // Create MemWAL index and generation 0
@@ -662,17 +706,18 @@ mod tests {
             &mut dataset,
             "GLOBAL",
             "mem_table_location_0",
-            "wal_location_0",
+            "mem_table_location_0",
+            None,
         )
         .await
         .unwrap();
 
         // Test failure case: region doesn't exist
-        let result = mark_mem_wal_as_sealed(&mut dataset, "NONEXISTENT", 0).await;
+        let result = mark_mem_wal_as_sealed(&mut dataset, "NONEXISTENT", 0, "mem_table_location_0").await;
         assert!(result.is_err(), "Should fail when region doesn't exist");
 
         // Test failure case: generation doesn't exist
-        let result = mark_mem_wal_as_sealed(&mut dataset, "GLOBAL", 999).await;
+        let result = mark_mem_wal_as_sealed(&mut dataset, "GLOBAL", 999, "mem_table_location_0").await;
         assert!(result.is_err(), "Should fail when generation doesn't exist");
 
         // Verify generation 0 is initially unsealed
@@ -687,7 +732,7 @@ mod tests {
         assert!(!mem_wal.sealed, "Generation 0 should initially be unsealed");
 
         // Test success case: seal generation 0
-        mark_mem_wal_as_sealed(&mut dataset, "GLOBAL", 0)
+        mark_mem_wal_as_sealed(&mut dataset, "GLOBAL", 0, "mem_table_location_0")
             .await
             .unwrap();
 
@@ -708,6 +753,7 @@ mod tests {
             "GLOBAL",
             "mem_table_location_1",
             "wal_location_1",
+            Some("mem_table_location_0"),
         )
         .await
         .unwrap();
@@ -729,7 +775,7 @@ mod tests {
         assert!(!gen_1.sealed, "Generation 1 should be unsealed");
 
         // Seal generation 1
-        mark_mem_wal_as_sealed(&mut dataset, "GLOBAL", 1)
+        mark_mem_wal_as_sealed(&mut dataset, "GLOBAL", 1, "mem_table_location_1")
             .await
             .unwrap();
 
@@ -750,7 +796,7 @@ mod tests {
         assert!(gen_1.sealed, "Generation 1 should be sealed");
 
         // Test that sealing an already sealed MemWAL should fail
-        let result = mark_mem_wal_as_sealed(&mut dataset, "GLOBAL", 1).await;
+        let result = mark_mem_wal_as_sealed(&mut dataset, "GLOBAL", 1, "mem_table_location_1").await;
         assert!(
             result.is_err(),
             "Should fail when trying to seal an already sealed MemWAL"
@@ -762,10 +808,10 @@ mod tests {
                 "Error message should indicate the MemWAL is already sealed, got: {}", error);
 
         // Test that sealing an already flushed MemWAL should fail
-        mark_mem_wal_as_flushed(&mut dataset, "GLOBAL", 0)
+        mark_mem_wal_as_flushed(&mut dataset, "GLOBAL", 0, "mem_table_location_1")
             .await
             .unwrap();
-        let result = mark_mem_wal_as_sealed(&mut dataset, "GLOBAL", 0).await;
+        let result = mark_mem_wal_as_sealed(&mut dataset, "GLOBAL", 0, "mem_table_location_1").await;
         assert!(
             result.is_err(),
             "Should fail when trying to seal an already flushed MemWAL"
@@ -791,7 +837,7 @@ mod tests {
             .unwrap();
 
         // Test failure case: MemWAL is not enabled
-        let result = mark_mem_wal_as_flushed(&mut dataset, "GLOBAL", 0).await;
+        let result = mark_mem_wal_as_flushed(&mut dataset, "GLOBAL", 0, "mem_table_location_0").await;
         assert!(result.is_err(), "Should fail when MemWAL is not enabled");
 
         // Create MemWAL index and generation 0
@@ -800,16 +846,17 @@ mod tests {
             "GLOBAL",
             "mem_table_location_0",
             "wal_location_0",
+            None,
         )
         .await
         .unwrap();
 
         // Test failure case: region doesn't exist
-        let result = mark_mem_wal_as_flushed(&mut dataset, "NONEXISTENT", 0).await;
+        let result = mark_mem_wal_as_flushed(&mut dataset, "NONEXISTENT", 0, "mem_table_location_0").await;
         assert!(result.is_err(), "Should fail when region doesn't exist");
 
         // Test failure case: generation doesn't exist
-        let result = mark_mem_wal_as_flushed(&mut dataset, "GLOBAL", 999).await;
+        let result = mark_mem_wal_as_flushed(&mut dataset, "GLOBAL", 999, "mem_table_location_0").await;
         assert!(result.is_err(), "Should fail when generation doesn't exist");
 
         // Verify generation 0 is initially unflushed
@@ -827,7 +874,7 @@ mod tests {
         );
 
         // Test failure case: cannot flush unsealed MemWAL
-        let result = mark_mem_wal_as_flushed(&mut dataset, "GLOBAL", 0).await;
+        let result = mark_mem_wal_as_flushed(&mut dataset, "GLOBAL", 0, "mem_table_location_0").await;
         assert!(
             result.is_err(),
             "Should fail when trying to flush unsealed MemWAL"
@@ -839,12 +886,12 @@ mod tests {
                 "Error message should indicate the MemWAL is not sealed, got: {}", error);
 
         // Seal generation 0 first
-        mark_mem_wal_as_sealed(&mut dataset, "GLOBAL", 0)
+        mark_mem_wal_as_sealed(&mut dataset, "GLOBAL", 0, "mem_table_location_0")
             .await
             .unwrap();
 
         // Test success case: mark sealed generation 0 as flushed
-        mark_mem_wal_as_flushed(&mut dataset, "GLOBAL", 0)
+        mark_mem_wal_as_flushed(&mut dataset, "GLOBAL", 0, "mem_table_location_0")
             .await
             .unwrap();
 
@@ -860,7 +907,7 @@ mod tests {
         assert!(mem_wal.flushed, "Generation 0 should now be flushed");
 
         // Test failure case: cannot flush already flushed MemWAL
-        let result = mark_mem_wal_as_flushed(&mut dataset, "GLOBAL", 0).await;
+        let result = mark_mem_wal_as_flushed(&mut dataset, "GLOBAL", 0, "mem_table_location_0").await;
         assert!(
             result.is_err(),
             "Should fail when trying to flush already flushed MemWAL"
@@ -896,6 +943,7 @@ mod tests {
             "GLOBAL",
             "mem_table_location_0",
             "wal_location_0",
+            None,
         )
         .await
         .unwrap();
@@ -947,7 +995,7 @@ mod tests {
         );
 
         // Test failure case: cannot replay sealed MemWAL
-        mark_mem_wal_as_sealed(&mut dataset, "GLOBAL", 0)
+        mark_mem_wal_as_sealed(&mut dataset, "GLOBAL", 0, "new_mem_table_location")
             .await
             .unwrap();
         let result =
@@ -969,12 +1017,13 @@ mod tests {
             "GLOBAL",
             "mem_table_location_1",
             "wal_location_1",
+            Some("new_mem_table_location"),
         )
         .await
         .unwrap();
 
         // Now generation 0 is sealed, so we can flush it
-        mark_mem_wal_as_flushed(&mut dataset, "GLOBAL", 0)
+        mark_mem_wal_as_flushed(&mut dataset, "GLOBAL", 0, "mem_table_location_1")
             .await
             .unwrap();
 
@@ -1038,6 +1087,7 @@ mod tests {
             "GLOBAL",
             "mem_table_location_0",
             "wal_location_0",
+            None,
         )
         .await
         .unwrap();
@@ -1047,6 +1097,7 @@ mod tests {
             "GLOBAL",
             "mem_table_location_1",
             "wal_location_1",
+            Some("mem_table_location_0"),
         )
         .await
         .unwrap();
@@ -1056,6 +1107,7 @@ mod tests {
             "GLOBAL",
             "mem_table_location_2",
             "wal_location_2",
+            Some("mem_table_location_1"),
         )
         .await
         .unwrap();
@@ -1075,7 +1127,7 @@ mod tests {
         );
 
         // flush generation 0
-        mark_mem_wal_as_flushed(&mut dataset, "GLOBAL", 0)
+        mark_mem_wal_as_flushed(&mut dataset, "GLOBAL", 0, "mem_table_location_2")
             .await
             .unwrap();
 
@@ -1180,15 +1232,16 @@ mod tests {
             "REGION_A",
             "mem_table_location_a_0",
             "wal_location_a_0",
+            None,
         )
         .await
         .unwrap();
 
         // Seal and flush the region A MemWAL
-        mark_mem_wal_as_sealed(&mut dataset, "REGION_A", 0)
+        mark_mem_wal_as_sealed(&mut dataset, "REGION_A", 0, "wal_location_a_0")
             .await
             .unwrap();
-        mark_mem_wal_as_flushed(&mut dataset, "REGION_A", 0)
+        mark_mem_wal_as_flushed(&mut dataset, "REGION_A", 0, "wal_location_a_0")
             .await
             .unwrap();
 
@@ -1241,20 +1294,21 @@ mod tests {
             "GLOBAL",
             "mem_table_location_0",
             "wal_location_0",
+            None,
         )
         .await
         .unwrap();
 
         // Add some entries to the MemWAL
-        append_mem_wal_entry(&mut dataset, "GLOBAL", 0, 123)
+        append_mem_wal_entry(&mut dataset, "GLOBAL", 0, 123, "mem_table_location_0")
             .await
             .unwrap();
-        append_mem_wal_entry(&mut dataset, "GLOBAL", 0, 456)
+        append_mem_wal_entry(&mut dataset, "GLOBAL", 0, 456, "mem_table_location_0")
             .await
             .unwrap();
 
         // Seal the MemWAL (required before flushing)
-        mark_mem_wal_as_sealed(&mut dataset, "GLOBAL", 0)
+        mark_mem_wal_as_sealed(&mut dataset, "GLOBAL", 0, "mem_table_location_0")
             .await
             .unwrap();
 
@@ -1287,7 +1341,7 @@ mod tests {
         .unwrap()
         .when_matched(crate::dataset::WhenMatched::UpdateAll)
         .when_not_matched(crate::dataset::WhenNotMatched::InsertAll)
-        .mark_mem_wal_as_flushed(MemWalId::new("GLOBAL", 0))
+        .mark_mem_wal_as_flushed(MemWalId::new("GLOBAL", 0), "mem_table_location_0")
         .await
         .unwrap()
         .try_build()
@@ -1319,7 +1373,7 @@ mod tests {
             .when_not_matched(crate::dataset::WhenNotMatched::InsertAll);
 
         let result = merge_insert_job
-            .mark_mem_wal_as_flushed(MemWalId::new("GLOBAL", 999))
+            .mark_mem_wal_as_flushed(MemWalId::new("GLOBAL", 999), "mem_table_location_0")
             .await;
         assert!(
             result.is_err(),
@@ -1328,7 +1382,7 @@ mod tests {
 
         // Test that trying to mark a MemWAL from non-existent region fails
         let result = merge_insert_job
-            .mark_mem_wal_as_flushed(MemWalId::new("NONEXISTENT", 0))
+            .mark_mem_wal_as_flushed(MemWalId::new("NONEXISTENT", 0), "mem_table_location_0")
             .await;
         assert!(
             result.is_err(),
@@ -1343,6 +1397,7 @@ mod tests {
             "GLOBAL",
             "mem_table_location_1",
             "wal_location_1",
+            Some("mem_table_location_0"),
         )
         .await
         .unwrap();
@@ -1375,7 +1430,7 @@ mod tests {
             .when_not_matched(crate::dataset::WhenNotMatched::InsertAll);
 
         let result = merge_insert_job_unsealed
-            .mark_mem_wal_as_flushed(MemWalId::new("GLOBAL", 1))
+            .mark_mem_wal_as_flushed(MemWalId::new("GLOBAL", 1), "mem_table_location_1")
             .await;
         assert!(
             result.is_err(),
@@ -1398,7 +1453,7 @@ mod tests {
             .when_not_matched(crate::dataset::WhenNotMatched::InsertAll);
 
         let result = merge_insert_job_flushed
-            .mark_mem_wal_as_flushed(MemWalId::new("GLOBAL", 0))
+            .mark_mem_wal_as_flushed(MemWalId::new("GLOBAL", 0), "mem_table_location_1")
             .await;
         assert!(
             result.is_err(),
@@ -1413,7 +1468,7 @@ mod tests {
         // Test that merge insert with mark_mem_wal_as_flushed works correctly when MemWAL is in proper state
         // Seal generation 1 and then test the merge insert
         let mut dataset_for_seal = updated_dataset.as_ref().clone();
-        mark_mem_wal_as_sealed(&mut dataset_for_seal, "GLOBAL", 1)
+        mark_mem_wal_as_sealed(&mut dataset_for_seal, "GLOBAL", 1, "wal_location_1")
             .await
             .unwrap();
         let updated_dataset = Arc::new(dataset_for_seal);
@@ -1450,7 +1505,7 @@ mod tests {
         .unwrap()
         .when_matched(crate::dataset::WhenMatched::UpdateAll)
         .when_not_matched(crate::dataset::WhenNotMatched::InsertAll)
-        .mark_mem_wal_as_flushed(MemWalId::new("GLOBAL", 1))
+        .mark_mem_wal_as_flushed(MemWalId::new("GLOBAL", 1), "mem_table_location_1")
         .await
         .unwrap()
         .try_build()
@@ -1462,7 +1517,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Verify that generation 1 is now flushed
+        // Verify that the MemWAL is now marked as flushed
         let indices = final_dataset.load_indices().await.unwrap();
         let mem_wal_index_meta = indices
             .iter()
@@ -1477,5 +1532,135 @@ mod tests {
             .expect("Generation 1 should still exist");
         assert!(gen_1.sealed, "Generation 1 should still be sealed");
         assert!(gen_1.flushed, "Generation 1 should now be flushed");
+    }
+
+    #[tokio::test]
+    async fn test_replay_mem_wal_with_split_brain_writer() {
+        // Create a dataset with some data
+        let mut dataset = lance_datagen::gen()
+            .col(
+                "vec",
+                lance_datagen::array::rand_vec::<Float32Type>(Dimension::from(128)),
+            )
+            .col("i", lance_datagen::array::step::<Int32Type>())
+            .into_ram_dataset(FragmentCount::from(2), FragmentRowCount::from(1000))
+            .await
+            .unwrap();
+
+        // Create MemWAL index and generation 0
+        advance_mem_wal_generation(
+            &mut dataset,
+            "GLOBAL",
+            "mem_table_location_0",
+            "wal_location_0",
+            None,
+        )
+        .await
+        .unwrap();
+
+        // Add some entries to the MemWAL
+        append_mem_wal_entry(&mut dataset, "GLOBAL", 0, 123, "mem_table_location_0")
+            .await
+            .unwrap();
+        append_mem_wal_entry(&mut dataset, "GLOBAL", 0, 456, "mem_table_location_0")
+            .await
+            .unwrap();
+
+        // Simulate a network partition scenario where another node starts replay
+        // This changes the MemTable location from "mem_table_location_0" to "new_mem_table_location"
+        start_replay_mem_wal(&mut dataset, "GLOBAL", 0, "new_mem_table_location")
+            .await
+            .unwrap();
+
+        // Verify the MemTable location was updated
+        let indices = dataset.load_indices().await.unwrap();
+        let mem_wal_index_meta = indices
+            .iter()
+            .find(|idx| idx.name == MEM_WAL_INDEX_NAME)
+            .expect("MemWAL index should exist");
+
+        let mem_wal_details = load_mem_wal_index_details(mem_wal_index_meta.clone()).unwrap();
+        let mem_wal = &mem_wal_details.mem_wal_list[0];
+        assert_eq!(
+            mem_wal.mem_table_location, "new_mem_table_location",
+            "MemTable location should be updated after replay"
+        );
+
+        // Now simulate a split-brain scenario where the original writer (node A) 
+        // tries to perform operations using the old MemTable location
+
+        // Test 1: append_mem_wal_entry with old MemTable location should fail
+        let result = append_mem_wal_entry(&mut dataset, "GLOBAL", 0, 789, "mem_table_location_0").await;
+        assert!(result.is_err(), "Should fail when using old MemTable location for append");
+        
+        // Check the specific error message
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("MemWAL MemWalId { region: \"GLOBAL\", generation: 0 } has MemTable location: new_mem_table_location, but expected mem_table_location_0"), 
+                "Error message should indicate MemTable location mismatch, got: {}", error);
+
+        // Test 2: mark_mem_wal_as_sealed with old MemTable location should fail
+        let result = mark_mem_wal_as_sealed(&mut dataset, "GLOBAL", 0, "mem_table_location_0").await;
+        assert!(result.is_err(), "Should fail when using old MemTable location for seal");
+        
+        // Check the specific error message
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("MemWAL MemWalId { region: \"GLOBAL\", generation: 0 } has MemTable location: new_mem_table_location, but expected mem_table_location_0"), 
+                "Error message should indicate MemTable location mismatch, got: {}", error);
+
+        // Test 3: mark_mem_wal_as_flushed with old MemTable location should fail
+        // First seal the MemWAL using the correct location
+        mark_mem_wal_as_sealed(&mut dataset, "GLOBAL", 0, "new_mem_table_location")
+            .await
+            .unwrap();
+        
+        let result = mark_mem_wal_as_flushed(&mut dataset, "GLOBAL", 0, "mem_table_location_0").await;
+        assert!(result.is_err(), "Should fail when using old MemTable location for flush");
+        
+        // Check the specific error message
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("MemWAL MemWalId { region: \"GLOBAL\", generation: 0 } has MemTable location: new_mem_table_location, but expected mem_table_location_0"), 
+                "Error message should indicate MemTable location mismatch for merge insert, got: {}", error);
+
+        // Test 4: advance_mem_wal_generation with old MemTable location should fail
+        let result = advance_mem_wal_generation(
+            &mut dataset,
+            "GLOBAL",
+            "mem_table_location_1",
+            "wal_location_1",
+            Some("mem_table_location_0"), // Using old location
+        )
+        .await;
+        assert!(result.is_err(), "Should fail when using old MemTable location for advance generation");
+        
+        // Check the specific error message
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("MemWAL MemWalId { region: \"GLOBAL\", generation: 0 } has MemTable location: new_mem_table_location, but expected mem_table_location_0"), 
+                "Error message should indicate MemTable location mismatch, got: {}", error);
+
+        // Test 5: merge_insert with mark_mem_wal_as_flushed using old MemTable location should fail
+        // First, seal the MemWAL using the correct location so it can be flushed
+        mark_mem_wal_as_sealed(&mut dataset, "GLOBAL", 0, "new_mem_table_location")
+            .await
+            .unwrap();
+
+        // Try to create merge insert job that flushes using the old MemTable location
+        let mut merge_insert_job_builder = crate::dataset::MergeInsertBuilder::try_new(
+            Arc::new(dataset.clone()),
+            vec!["i".to_string()],
+        )
+        .unwrap();
+
+        let build_result = merge_insert_job_builder
+        .when_matched(crate::dataset::WhenMatched::UpdateAll)
+        .when_not_matched(crate::dataset::WhenNotMatched::InsertAll)
+        .mark_mem_wal_as_flushed(MemWalId::new("GLOBAL", 0), "mem_table_location_0") // Using old location
+        .await;
+
+        assert!(build_result.is_err(), "Should fail when using old MemTable location for merge insert flush");
+        
+        // Check the specific error message
+        let error = build_result.unwrap_err();
+        assert!(error.to_string().contains("MemWAL MemWalId { region: \"GLOBAL\", generation: 0 } has MemTable location: new_mem_table_location, but expected mem_table_location_0"), 
+                "Error message should indicate MemTable location mismatch for merge insert, got: {}", error);
     }
 }

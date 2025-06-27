@@ -132,24 +132,15 @@ impl MemWal {
         Ok(())
     }
 
-    /// `expected_mem_table_location` serves as a pre-check that the MemTable has not changed before commit.
-    /// Each writer is required to keep an invariant of its operating MemTable location.
-    /// Consider a network partition which results in a node A failing the health check.
-    /// Node B will be newly assigned and start the WAL replay process and modify the MemTable location.
-    /// In this case, if node A is doing a modification to the same region including adding an entry,
-    /// sealing or flushing the region, it will receive a commit conflict failure.
-    /// In theory, all the writes from node A should just abort after seeing this failure without retrying.
-    /// However, if the writer decides to retry the operation for any reason, without the check,
-    /// the retry would succeed. The `expected_mem_table_location` serves as the guard to
-    /// make sure it continues to fail until the write traffic is fully redirected to node B.
     pub fn check_expected_mem_table_location(&self, expected: &str) -> lance_core::Result<()> {
         if self.mem_table_location != expected {
             return Err(Error::invalid_input(
                 format!(
-                "MemWAL {:?} has MemTable location: {}, but expected {}",
-                self.id, self.mem_table_location, expected
+                    "MemWAL {:?} has MemTable location: {}, but expected {}",
+                    self.id, self.mem_table_location, expected
                 ),
-                location!()));
+                location!(),
+            ));
         }
         Ok(())
     }

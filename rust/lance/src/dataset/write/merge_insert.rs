@@ -380,7 +380,11 @@ impl MergeInsertBuilder {
 
     /// Indicate that this merge-insert uses data in a sealed MemTable.
     /// Once write is completed, the corresponding MemTable should also be marked as flushed.
-    pub async fn mark_mem_wal_as_flushed(&mut self, mem_wal_id: MemWalId, expected_mem_table_location: &str) -> Result<&mut Self> {
+    pub async fn mark_mem_wal_as_flushed(
+        &mut self,
+        mem_wal_id: MemWalId,
+        expected_mem_table_location: &str,
+    ) -> Result<&mut Self> {
         if let Some(mem_wal_index) = self
             .dataset
             .open_mem_wal_index(&NoOpMetricsCollector)

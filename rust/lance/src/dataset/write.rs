@@ -43,7 +43,7 @@ mod commit;
 mod insert;
 pub mod merge_insert;
 pub mod update;
-mod lsm_upsert;
+mod lsm;
 
 pub use commit::CommitBuilder;
 pub use insert::InsertBuilder;

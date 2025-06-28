@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The Lance Authors
 
+mod mem_table;
+mod wal;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -10,6 +13,7 @@ use std::pin::Pin;
 use std::future::Future;
 use std::task::{Context, Poll};
 use datafusion::execution::SendableRecordBatchStream;
+use datafusion::prelude::*;
 use lance_datafusion::utils::StreamingWriteSource;
 use crate::Dataset;
 use lance_core::{Error, Result};
@@ -17,14 +21,17 @@ use lance_index::mem_wal::MemWalId;
 use object_store::path::Path;
 use arrow::ipc::writer::StreamWriter;
 use arrow_array::RecordBatch;
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use tokio::io::AsyncWriteExt;
 use tokio::runtime::Runtime;
 use uuid::Uuid;
 use snafu::location;
 use tokio::sync::oneshot;
+use crate::dataset::write::lsm::mem_table::MemTableStore;
+use crate::dataset::write::lsm::wal::WalStore;
+use crate::index::DatasetIndexInternalExt;
+use crate::index::mem_wal::advance_mem_wal_generation;
 
-// Message types for the worker thread
 enum WorkerMessage {
     Write {
         source: SendableRecordBatchStream,
@@ -33,12 +40,11 @@ enum WorkerMessage {
     Shutdown,
 }
 
-// Future that represents the result of a write operation
-pub struct WriteExecFuture {
+pub struct LogStructuredMergeWriteFuture {
     receiver: oneshot::Receiver<Result<()>>,
 }
 
-impl Future for WriteExecFuture {
+impl Future for LogStructuredMergeWriteFuture {
     type Output = Result<()>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -53,32 +59,38 @@ impl Future for WriteExecFuture {
     }
 }
 
-/// Parameters for configuring a LogStructuredMergeJob
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Hash)]
 pub struct LogStructuredMergeParams {
     /// The region for this LSM job. Defaults to "GLOBAL" if not provided.
     pub region: String,
+
     /// The size threshold in bytes for flushing MemTables. Defaults to 128MB.
     pub mem_table_flush_size: u64,
+
+    /// The number of writes to accumulate before writing to the WAL and MemTable.
+    /// This helps the case of many concurrent tiny-size writes,
+    /// trading off the durability because all writes in a batch either all succeed or all fail.
+    /// Defaults to 10.
+    pub batch_size: u64,
 }
 
 impl Default for LogStructuredMergeParams {
     fn default() -> Self {
         Self {
             region: "GLOBAL".to_string(),
-            mem_table_flush_size: 128 * 1024 * 1024, // 128MB
+            mem_table_flush_size: 128 * 1024 * 1024,
+            batch_size: 10,
         }
     }
 }
 
-/// Builder for creating LogStructuredMergeJob instances
 pub struct LogStructuredMergeJobBuilder {
     dataset: Arc<Dataset>,
     params: LogStructuredMergeParams,
 }
 
 impl LogStructuredMergeJobBuilder {
-    /// Create a new builder with the given dataset
+
     pub fn new(dataset: Arc<Dataset>) -> Self {
         Self {
             dataset,
@@ -86,327 +98,127 @@ impl LogStructuredMergeJobBuilder {
         }
     }
 
-    /// Set the region for the LSM job
     pub fn region(mut self, region: impl Into<String>) -> Self {
         self.params.region = region.into();
         self
     }
 
-    /// Set the MemTable flush size threshold in bytes
-    pub fn mem_table_flush_size(mut self, size_bytes: usize) -> Self {
-        self.params.mem_table_flush_size = size_bytes as u64;
+    pub fn mem_table_flush_size(mut self, size_bytes: u64) -> Self {
+        self.params.mem_table_flush_size = size_bytes;
+        self
+    }
+    
+    pub fn batch_size(mut self, size: u64) -> Self {
+        self.params.batch_size = size;
         self
     }
 
-    /// Build and start the LogStructuredMergeJob
-    pub fn try_start(self) -> Result<LogStructuredMergeJob> {
-        let mut job = LogStructuredMergeJob::new(self.dataset, self.params);
-        job.start()?;
-        Ok(job)
+    pub async fn try_start(self) -> Result<LogStructuredMergeJob> {
+        LogStructuredMergeJob::start(self.dataset, self.params).await
     }
 }
 
 pub struct LogStructuredMergeJob {
-    dataset: Arc<Dataset>,
     job_id: Uuid,
-    region: String,
-    generation: u64,
-    entry_id: std::sync::Mutex<u64>,
-    mem_table_location: String,
-    wal_location: String,
-    sender: Option<Sender<WorkerMessage>>,
-    worker_handle: Option<thread::JoinHandle<()>>,
+    dataset: Arc<Dataset>,
+    params: LogStructuredMergeParams,
+    mem_table_store: Arc<MemTableStore>,
+    wal_store: Arc<WalStore>,
+
     runtime: Arc<Runtime>,
-    mem_table_store: Arc<Mutex<HashMap<String, Arc<Dataset>>>>,
-    mem_table_flush_size: u64,
+    sender: Sender<WorkerMessage>,
+    worker_handle: thread::JoinHandle<()>,
 }
 
+/// Log-structured Merge (LSM) Job is a long-running job.
+/// It is expected that there is only 1 LSM job per region writing globally.
+/// If there are concurrent LSM jobs against the same region, one is guaranteed to fail all the time.
+///
+/// Once started, it continues to receive writes to the underlying dataset.
+/// Writes are queued and executed sequentially following the LSM semantics:
+/// (1) write to WAL first for durability
+/// (2) write to MemTable for fast access
+/// (3) when the MemTable reaches `mem_table_flush_size`, asynchronously flush it and
+/// create a new MemTable and WAL to write to (a.k.a. advance MemWAL generation).
+/// Note that currently this is a simple 2-level LSM tree.
+/// A flush directly runs merge_insert to merge data into the underlying Lance dataset.
+///
+/// When reading a dataset, the job can be supplied to the scanner.
+/// The scanner will produce a N-way merge execution plan to merge results of MemTables and
+/// the underlying Lance dataset.
 impl LogStructuredMergeJob {
-    fn new(dataset: Arc<Dataset>, params: LogStructuredMergeParams) -> Self {
+    async fn start(dataset: Arc<Dataset>, params: LogStructuredMergeParams) -> Result<(Self)> {
         let job_id = Uuid::new_v4();
-        let entry_id = std::sync::Mutex::new(0); // Start with entry 0
-        
-        // Create a tokio runtime for the worker thread
-        let runtime = Arc::new(Runtime::new().expect("Failed to create tokio runtime"));
-        
-        // Determine generation from MemWAL index
-        let (generation, mem_table_location, wal_location) = {
-            let runtime_clone = runtime.clone();
-            runtime.block_on(async {
-                Self::determine_generation_and_locations(&dataset, &params.region, &job_id).await
-            })
-        };
-        
-        let mut job = Self {
-            dataset,
-            job_id,
-            region: params.region,
-            generation,
-            entry_id,
-            mem_table_location,
-            wal_location,
-            sender: None,
-            worker_handle: None,
-            runtime,
-            mem_table_store: Arc::new(Mutex::new(HashMap::new())),
-            mem_table_flush_size: params.mem_table_flush_size,
-        };
-        
-        // Start the worker thread immediately
-        job.start().expect("Failed to start worker thread");
-        job
-    }
-
-    /// Determine the generation and locations based on existing MemWAL index
-    async fn determine_generation_and_locations(
-        dataset: &Arc<Dataset>,
-        region: &str,
-        job_id: &Uuid,
-    ) -> (u64, String, String) {
-        // Try to open existing MemWAL index
-        let mem_wal_index = match dataset.open_mem_wal_index(&lance_index::metrics::NoOpMetricsCollector).await {
-            Ok(Some(index)) => index,
-            Ok(None) => {
-                // No MemWAL index exists, start with generation 0
-                let generation = 0;
-                let mem_table_location = format!("memory://{}/{}/{}/{}", 
-                    job_id, dataset.base.to_string(), region, generation);
-                let wal_location = format!("{}/_wal/{}/{}", 
-                    dataset.base.to_string(), region, generation);
-                
-                // Advance the generation to create generation 0
-                let mut dataset_clone = (**dataset).clone();
-                if let Err(e) = crate::index::mem_wal::advance_mem_wal_generation(
-                    &mut dataset_clone,
-                    region,
-                    &mem_table_location,
-                    &wal_location,
-                    None,
-                ).await {
-                    eprintln!("Failed to advance MemWAL generation: {}", e);
-                }
-                
-                return (generation, mem_table_location, wal_location);
-            }
-            Err(_) => {
-                // Failed to load indices, start with generation 0
-                let generation = 0;
-                let mem_table_location = format!("memory://{}/{}/{}/{}", 
-                    job_id, dataset.base.to_string(), region, generation);
-                let wal_location = format!("{}/_wal/{}/{}", 
-                    dataset.base.to_string(), region, generation);
-                
-                // Advance the generation to create generation 0
-                let mut dataset_clone = (**dataset).clone();
-                if let Err(e) = crate::index::mem_wal::advance_mem_wal_generation(
-                    &mut dataset_clone,
-                    region,
-                    &mem_table_location,
-                    &wal_location,
-                    None,
-                ).await {
-                    eprintln!("Failed to advance MemWAL generation: {}", e);
-                }
-                
-                return (generation, mem_table_location, wal_location);
-            }
-        };
-
-        // Check if there are MemWALs for this region
-        let region_mem_wals = mem_wal_index.mem_wal_map.get(region);
-        
-        if let Some(generations) = region_mem_wals {
-            if generations.is_empty() {
-                // No MemWAL for this region, advance to create generation 0
-                let generation = 0;
-                let mem_table_location = format!("memory://{}/{}/{}/{}", 
-                    job_id, dataset.base.to_string(), region, generation);
-                let wal_location = format!("{}/_wal/{}/{}", 
-                    dataset.base.to_string(), region, generation);
-                
-                // Advance the generation to create generation 0
-                let mut dataset_clone = (**dataset).clone();
-                if let Err(e) = crate::index::mem_wal::advance_mem_wal_generation(
-                    &mut dataset_clone,
-                    region,
-                    &mem_table_location,
-                    &wal_location,
-                    None,
-                ).await {
-                    eprintln!("Failed to advance MemWAL generation: {}", e);
-                }
-                
-                return (generation, mem_table_location, wal_location);
-            } else {
-                // Find the latest generation
-                let latest_mem_wal = generations.values()
-                    .max_by_key(|mem_wal| mem_wal.id.generation)
-                    .unwrap();
-                
-                if !latest_mem_wal.sealed {
-                    // Use the unsealed latest generation and replay WAL
-                    let generation = latest_mem_wal.id.generation;
-                    let mem_table_location = latest_mem_wal.mem_table_location.clone();
-                    let wal_location = latest_mem_wal.wal_location.clone();
-                    
-                    // TODO: Replay WAL entries to populate MemTable
-                    // This would involve reading the WAL files and reconstructing the MemTable
-                    
-                    return (generation, mem_table_location, wal_location);
-                } else {
-                    // All MemWALs are sealed, advance to create new generation
-                    let new_generation = latest_mem_wal.id.generation + 1;
-                    let mem_table_location = format!("memory://{}/{}/{}/{}", 
-                        job_id, dataset.base.to_string(), region, new_generation);
-                    let wal_location = format!("{}/_wal/{}/{}", 
-                        dataset.base.to_string(), region, new_generation);
-                    
-                    // Advance the generation
-                    let mut dataset_clone = (**dataset).clone();
-                    if let Err(e) = crate::index::mem_wal::advance_mem_wal_generation(
-                        &mut dataset_clone,
-                        region,
-                        &mem_table_location,
-                        &wal_location,
-                        Some(&latest_mem_wal.mem_table_location),
-                    ).await {
-                        eprintln!("Failed to advance MemWAL generation: {}", e);
-                    }
-                    
-                    return (new_generation, mem_table_location, wal_location);
-                }
-            }
-        } else {
-            // No MemWAL for this region, advance to create generation 0
-            let generation = 0;
-            let mem_table_location = format!("memory://{}/{}/{}/{}", 
-                job_id, dataset.base.to_string(), region, generation);
-            let wal_location = format!("{}/_wal/{}/{}", 
-                dataset.base.to_string(), region, generation);
-            
-            // Advance the generation to create generation 0
-            let mut dataset_clone = (**dataset).clone();
-            if let Err(e) = crate::index::mem_wal::advance_mem_wal_generation(
-                &mut dataset_clone,
-                region,
-                &mem_table_location,
-                &wal_location,
-                None,
-            ).await {
-                eprintln!("Failed to advance MemWAL generation: {}", e);
-            }
-            
-            return (generation, mem_table_location, wal_location);
-        }
-    }
-
-    /// Create a new builder for LogStructuredMergeJob
-    pub fn builder(dataset: Arc<Dataset>) -> LogStructuredMergeJobBuilder {
-        LogStructuredMergeJobBuilder::new(dataset)
-    }
-
-    /// Start the background worker thread that processes execution tasks sequentially.
-    fn start(&mut self) -> Result<()> {
-        if self.sender.is_some() {
-            return Err(Error::invalid_input("Worker already started", location!()));
-        }
+        let runtime = Arc::new(Runtime::new()
+            .expect(&format!("Failed to create tokio runtime for LogStructuredMergeJob {}", job_id)));
 
         let (sender, receiver) = mpsc::channel();
-        let dataset = self.dataset.clone();
-        let region = self.region.clone();
-        let generation = self.generation;
-        let entry_id = self.entry_id.clone();
-        let mem_table_location = self.mem_table_location.clone();
-        let wal_location = self.wal_location.clone();
-        let runtime = self.runtime.clone();
-        let mem_table_store = self.mem_table_store.clone();
-        let mem_table_flush_size = self.mem_table_flush_size;
+        let mem_table_store = Arc::new(MemTableStore::new(dataset.clone(), params.region.clone().as_str()));
+        let wal_store = Arc::new(WalStore::new());
 
+        // advance the generation.
+        // if there is an unsealed MemWAL, it will be sealed.
+        let gen_dir = Uuid::new_v4().to_string();
+        let new_mem_table_location = format!("memory://{}/{}", job_id, gen_dir);
+        let new_wal_location = dataset.base.child("_wal").child(job_id.to_string()).child(gen_dir).to_string();
+
+        advance_mem_wal_generation(
+            &mut dataset,
+            params.region,
+            new_mem_table_location,
+            new_wal_location,
+
+        ).await?;
+
+        let worker_runtime = runtime.clone();
+        let worker_dataset = dataset.clone();
+        let worker_params = params.clone();
+        let worker_mem_table_store = mem_table_store.clone();
+        let worker_wal_store = wal_store.clone();
         let worker_handle = thread::spawn(move || {
             Self::worker_loop(
+                worker_runtime,
                 receiver,
-                dataset,
-                region,
-                generation,
-                entry_id,
-                mem_table_location,
-                wal_location,
-                runtime,
-                mem_table_store,
-                mem_table_flush_size,
+                worker_dataset,
+                worker_params,
+                worker_mem_table_store,
+                worker_wal_store,
             );
         });
 
-        self.sender = Some(sender);
-        self.worker_handle = Some(worker_handle);
-        Ok(())
+        Ok(Self {
+            job_id,
+            dataset,
+            params,
+            mem_table_store,
+            wal_store,
+            runtime,
+            sender,
+            worker_handle,
+        })
     }
 
-    /// Stop the background worker thread.
-    pub fn stop(&mut self) -> Result<()> {
-        if let Some(sender) = self.sender.take() {
-            let _ = sender.send(WorkerMessage::Shutdown);
-        }
-        
-        if let Some(handle) = self.worker_handle.take() {
-            let _ = handle.join();
-        }
-        
-        Ok(())
-    }
-
-    /// Submit an execution task and return a future that resolves when the task completes.
-    pub fn write(&self, source: SendableRecordBatchStream) -> WriteExecFuture {
-        let (response_sender, response_receiver) = oneshot::channel();
-        
-        if let Some(ref sender) = self.sender {
-            let _ = sender.send(WorkerMessage::Write {
-                source,
-                response_sender,
-            });
-        } else {
-            // If worker is not started, immediately return an error
-            let _ = response_sender.send(Err(Error::invalid_input(
-                "Worker not started. Call start() first.",
-                location!(),
-            )));
-        }
-        
-        WriteExecFuture {
-            receiver: response_receiver,
-        }
-    }
-
-    /// Background worker loop that processes execution tasks sequentially.
     fn worker_loop(
+        runtime: Arc<Runtime>,
         receiver: Receiver<WorkerMessage>,
         dataset: Arc<Dataset>,
-        region: String,
-        generation: u64,
-        entry_id: std::sync::Mutex<u64>,
-        mem_table_location: String,
-        wal_location: String,
-        runtime: Arc<Runtime>,
-        mem_table_store: Arc<Mutex<HashMap<String, Arc<Dataset>>>>,
-        mem_table_flush_size: u64,
+        params: LogStructuredMergeParams,
+        mem_table_store: Arc<MemTableStore>,
+        wal_store: Arc<WalStore>,
     ) {
         for message in receiver {
+            // TODO: can accumulate a batch before executing.
             match message {
                 WorkerMessage::Write { source, response_sender } => {
                     let result = runtime.block_on(async {
-                        Self::execute_internal(
-                            &dataset,
-                            &region,
-                            generation,
-                            &entry_id,
-                            &mem_table_location,
-                            &wal_location,
-                            &mem_table_store,
-                            mem_table_flush_size,
+                        Self::do_execute(
+                            dataset.clone(),
+                            params.clone(),
+                            mem_table_store.clone(),
+                            wal_store.clone(),
                             source,
                         ).await
                     });
-                    
                     let _ = response_sender.send(result);
                 }
                 WorkerMessage::Shutdown => {
@@ -416,19 +228,61 @@ impl LogStructuredMergeJob {
         }
     }
 
-    /// Internal execution logic (moved from the original execute method).
-    async fn execute_internal(
-        dataset: &Arc<Dataset>,
-        region: &str,
-        generation: u64,
-        entry_id: &std::sync::Mutex<u64>,
-        mem_table_location: &str,
-        wal_location: &str,
-        mem_table_store: &Arc<Mutex<HashMap<String, Arc<Dataset>>>>,
-        mem_table_flush_size: u64,
+    /// Stop the background worker thread.
+    pub fn stop(&mut self) -> Result<()> {
+        self.sender.send(WorkerMessage::Shutdown)?;
+
+        
+        if let Some(handle) = self.worker_handle.take() {
+            let _ = handle.join();
+        }
+        
+        Ok(())
+    }
+
+    /// Submit an execution task and return a future that resolves when the task completes.
+    pub fn write(&self, source: SendableRecordBatchStream) -> Result<LogStructuredMergeWriteFuture> {
+        let (response_sender, response_receiver) = oneshot::channel();
+        let send_result = self.sender.send(WorkerMessage::Write {
+            source,
+            response_sender,
+        });
+        if send_result.is_err() {
+            Err(Error::Execution {
+                message: format!("LogStructuredMerge worker thread was dropped: {:?}", send_result.unwrap()),
+                location: location!(),
+            })
+        } else {
+            Ok(LogStructuredMergeWriteFuture {
+                receiver: response_receiver,
+            })
+        }
+    }
+
+    /// Get all MemTables for the current region
+    async fn mem_tables_for_region(&self) -> Result<Vec<Arc<Dataset>>> {
+        let store = self.mem_table_store.lock().unwrap();
+        let mut mem_tables = Vec::new();
+        
+        // Collect all MemTables for this region
+        for (mem_wal_id, mem_table) in store.iter() {
+            if mem_wal_id.starts_with(&format!("{}_{}", self.region, self.generation)) {
+                mem_tables.push(mem_table.clone());
+            }
+        }
+        
+        Ok(mem_tables)
+    }
+
+    /// Actual execution logic for a batch of
+    async fn do_execute(
+        dataset: Arc<Dataset>,
+        params: LogStructuredMergeParams,
+        mem_table_store: Arc<MemTableStore>,
+        wal_store: Arc<WalStore>,
         source: SendableRecordBatchStream,
     ) -> Result<()> {
-        // Retry WAL write until success, incrementing entry_id on each retry
+        // 1. Retry WAL write until success, incrementing entry_id on each retry
         let (batches, final_entry_id) = loop {
             let current_entry_id = {
                 let mut entry_id_guard = entry_id.lock().unwrap();
@@ -437,9 +291,9 @@ impl LogStructuredMergeJob {
                 current
             };
 
-            // 1. write to WAL and collect batches simultaneously
+            // 1-1. write to WAL and collect batches simultaneously
             let wal_file_path = Self::wal_file_path_with_entry_id(region, generation, current_entry_id);
-            match Self::write_to_wal_and_collect_batches(dataset, source.clone(), &wal_file_path).await {
+            match Self::write_to_wal_and_collect_batches(dataset, source, &wal_file_path).await {
                 Ok(batches) => {
                     if batches.is_empty() {
                         return Err(Error::invalid_input("Empty source stream", location!()));
@@ -447,7 +301,7 @@ impl LogStructuredMergeJob {
                     break (batches, current_entry_id);
                 }
                 Err(e) => {
-                    eprintln!("Failed to write to WAL with entry_id {}: {}", current_entry_id, e);
+                    log::warn!("Failed to write to WAL with entry ID {}: {}", current_entry_id, e);
                     // Continue to next iteration with incremented entry_id
                 }
             }
@@ -494,13 +348,6 @@ impl LogStructuredMergeJob {
     fn wal_file_path(&self) -> Path {
         let entry_id = *self.entry_id.lock().unwrap();
         Self::wal_file_path_with_entry_id(&self.region, self.generation, entry_id)
-    }
-
-    /// Generate the WAL file path for a specific entry_id using the reversed 64-bit binary value.
-    fn wal_file_path_with_entry_id(region: &str, generation: u64, entry_id: u64) -> Path {
-        let reversed = entry_id.reverse_bits();
-        let reversed_bits = format!("{:064b}", reversed);
-        Path::from(format!("_wal/{}/{}/{}.arrow", region, generation, reversed_bits))
     }
 
     /// Write batches to WAL while simultaneously collecting them in memory for later use.
@@ -642,13 +489,6 @@ impl LogStructuredMergeJob {
         mem_table_store: &Arc<Mutex<HashMap<String, Arc<Dataset>>>>,
     ) -> Result<()> {
         let new_generation = generation + 1;
-        let new_mem_table_location = format!("memory://{}/{}/{}/{}", 
-            Uuid::new_v4(), dataset.base.to_string(), region, new_generation);
-        let new_wal_location = format!("{}/_wal/{}/{}", 
-            dataset.base.to_string(), region, new_generation);
-        
-        let mut dataset_clone = (**dataset).clone();
-        
         // Advance the MemWAL generation
         crate::index::mem_wal::advance_mem_wal_generation(
             &mut dataset_clone,
@@ -702,18 +542,15 @@ impl LogStructuredMergeJob {
             // Create merge insert job to flush the MemTable to the main dataset
             let merge_insert_job = crate::dataset::MergeInsertBuilder::try_new(
                 dataset.clone(),
-                vec!["id".to_string()], // Assuming 'id' is the primary key
+                dataset.unenforced_primary_key(),
             )?
             .when_matched(crate::dataset::WhenMatched::UpdateAll)
             .when_not_matched(crate::dataset::WhenNotMatched::InsertAll)
             .mark_mem_wal_as_flushed(mem_wal_id, expected_mem_table_location)
             .await?
             .try_build()?;
-
-            // Execute the merge insert to flush the MemTable
-            // Convert the dataset scan to a proper stream
-            let scan = mem_table.scan();
-            let stream = scan.try_into_stream().await?;
+            
+            let stream = mem_table.scan().try_into_stream().await?;
             let (_, _) = merge_insert_job.execute(stream.into()).await?;
             
             // Remove the MemTable from the store after successful flush
@@ -786,5 +623,4 @@ impl Drop for LogStructuredMergeJob {
         let _ = self.stop();
     }
 }
-
 

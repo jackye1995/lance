@@ -18,6 +18,7 @@ use lance_index::mem_wal::{MemWal, MemWalId};
 use object_store::path::Path;
 use arrow::ipc::writer::StreamWriter;
 use arrow_array::{RecordBatch, RecordBatchIterator, RecordBatchWriter};
+use datafusion_expr::{col, UserDefinedLogicalNode};
 use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use futures::{FutureExt, StreamExt};
 use itertools::Itertools;
@@ -34,7 +35,15 @@ use lance_index::optimize::OptimizeOptions;
 use lance_io::object_store::ObjectStore;
 use lance_table::rowids::segment::U64Segment;
 use crate::dataset::{MergeInsertBuilder, WhenMatched, WhenNotMatched};
-use crate::index::mem_wal::{find_latest_mem_wal_generation, create_mem_wal_generation, mark_mem_wal_as_sealed, update_mem_table_location, append_mem_wal_entry};
+use crate::index::mem_wal::{find_latest_mem_wal_generation, create_mem_wal_generation, mark_mem_wal_as_sealed, update_mem_table_location, append_mem_wal_entry, advance_mem_wal_generation};
+use lance_index::{IndexType, IndexParams, vector::VectorIndexParams, scalar::ScalarIndexParams, infer_index_type};
+use lance_index::metrics::NoOpMetricsCollector;
+use lance_io::object_writer::ObjectWriterAsSyncAdapter;
+use lance_linalg::distance::MetricType;
+use lance_table::format::Index;
+use crate::index::DatasetIndexInternalExt;
+use crate::index::scalar::infer_index_type;
+use crate::index::vector::VectorIndexParams;
 
 enum WorkerMessage {
     Write {
@@ -139,19 +148,9 @@ impl LogStructuredMergeJobBuilder {
 pub struct LogStructuredMergeJob {
     // store job ID for logging purpose during shutdown
     job_id: String,
-
     runtime: Arc<Runtime>,
     sender: Sender<WorkerMessage>,
     worker_handle: JoinHandle<()>,
-
-    // // latest generation
-    // current_generation: Arc<AtomicU64>,
-    // // MemWALs maintained within this job
-    // mem_wal_map: Arc<RwLock<HashMap<u64, MemWal>>>,
-    // // A mapping of MemTable location to its dataset
-    // mem_table_map: Arc<RwLock<HashMap<u64, Arc<RwLock<Dataset>>>>>,
-    // // A mapping of the latest used WAL entry ID
-    // wal_watermark_map: Arc<RwLock<HashMap<u64, AtomicU64>>>,
 }
 
 /// Log-structured Merge (LSM) Job is a long-running job.
@@ -179,6 +178,7 @@ impl LogStructuredMergeJob {
         let (sender, receiver) = mpsc::channel::<WorkerMessage>(100);
         let mut mem_wal_map: HashMap<u64, MemWal> = HashMap::new();
         let mut mem_table_map: HashMap<u64, Arc<RwLock<Dataset>>> = HashMap::new();
+        let mut mem_table_size_map: HashMap<u64, AtomicU64> = HashMap::new();
         let mut wal_watermark_map: HashMap<u64, AtomicU64> = HashMap::new();
         let current_generation =
             if let Some(latest_gen) = find_latest_mem_wal_generation(dataset.read().unwrap().deref(), &params.region).await? {
@@ -197,7 +197,7 @@ impl LogStructuredMergeJob {
 
                     mem_wal_map.insert(new_gen, new_mem_wal);
                     mem_table_map.insert(new_gen, Arc::new(RwLock::new(empty_mem_table)));
-
+                    mem_table_size_map.insert(new_gen, AtomicU64::new(0));
                     new_gen
                 } else {
                     // MemWAL is unsealed. This is likely from a crash,
@@ -209,7 +209,7 @@ impl LogStructuredMergeJob {
                         current_gen,
                         &new_mem_table_location).await?;
 
-                    let mem_table = Self::replay_wal_entries_to_mem_table(
+                    let (mem_table, mem_table_size) = Self::replay_wal_entries_to_mem_table(
                         dataset.read().unwrap().deref(),
                         &latest_gen.wal_location,
                         latest_gen.wal_entries(),
@@ -221,18 +221,19 @@ impl LogStructuredMergeJob {
 
                     mem_wal_map.insert(current_gen, current_mem_wal);
                     mem_table_map.insert(current_gen, Arc::new(RwLock::new(mem_table)));
-
+                    mem_table_size_map.insert(current_gen, AtomicU64::new(mem_table_size));
                     current_gen
                 }
             } else {
                 let new_mem_table_location = Self::mem_table_location(&params.job_id, &params.region, 0);
-                create_mem_wal_generation(
+                let new_mem_wal = create_mem_wal_generation(
                     dataset.write().unwrap().deref_mut(),
                     &params.region,
                     0,
                     &Self::mem_table_location(&params.job_id, &params.region, 0),
                     &Self::wal_location(dataset.read().unwrap().deref(), &params.region, 0),
                 ).await?;
+                mem_wal_map.insert(0, new_mem_wal);
 
                 let empty_mem_table = Self::init_empty_mem_table(dataset.read().unwrap().deref(), &new_mem_table_location).await?;
                 mem_table_map.insert(0, Arc::new(RwLock::new(empty_mem_table)));
@@ -243,17 +244,8 @@ impl LogStructuredMergeJob {
         let current_generation = Arc::new(AtomicU64::new(current_generation));
         let mem_wal_map = Arc::new(RwLock::new(mem_wal_map));
         let mem_table_map = Arc::new(RwLock::new(mem_table_map));
+        let mem_table_size_map = Arc::new(RwLock::new(mem_table_size_map));
         let wal_watermark_map = Arc::new(RwLock::new(wal_watermark_map));
-
-        // let worker_runtime = runtime.clone();
-        // let worker_dataset = dataset.clone();
-
-        // let worker_current_generation = current_generation.clone();
-        // let worker_mem_wal_map =  mem_wal_map.clone();
-        // let worker_mem_table_map = mem_table_map.clone();
-        // let worker_wal_watermark_map = wal_watermark_map.clone();
-
-        // let worker_params = params.clone();
         let worker_handle = tokio::spawn(Self::write_worker_loop(
             receiver,
             dataset,
@@ -261,6 +253,7 @@ impl LogStructuredMergeJob {
             current_generation,
             mem_wal_map,
             mem_table_map,
+            mem_table_size_map,
             wal_watermark_map,
         ));
 
@@ -320,6 +313,7 @@ impl LogStructuredMergeJob {
         current_generation: Arc<AtomicU64>,
         mem_wal_map: Arc<RwLock<HashMap<u64, MemWal>>>,
         mem_table_map: Arc<RwLock<HashMap<u64, Arc<RwLock<Dataset>>>>>,
+        mem_table_size_map: Arc<RwLock<HashMap<u64, AtomicU64>>>,
         wal_watermark_map: Arc<RwLock<HashMap<u64, AtomicU64>>>,
     ) {
         let mut batch: Vec<SendableRecordBatchStream> = Vec::with_capacity(params.batch_size as usize);
@@ -342,6 +336,7 @@ impl LogStructuredMergeJob {
                             current_generation.clone(),
                             mem_wal_map.clone(),
                             mem_table_map.clone(),
+                            mem_table_size_map.clone(),
                             wal_watermark_map.clone(),
                         ).await;
                         let _ = response_sender.send(result);
@@ -372,6 +367,7 @@ impl LogStructuredMergeJob {
         current_generation: Arc<AtomicU64>,
         mem_wal_map: Arc<RwLock<HashMap<u64, MemWal>>>,
         mem_table_map: Arc<RwLock<HashMap<u64, Arc<RwLock<Dataset>>>>>,
+        mem_table_size_map: Arc<RwLock<HashMap<u64, AtomicU64>>>,
         wal_watermark_map: Arc<RwLock<HashMap<u64, AtomicU64>>>) -> Result<()> {
 
         let current_gen_id = current_generation.load(Ordering::Relaxed);
@@ -385,7 +381,7 @@ impl LogStructuredMergeJob {
 
         // 1. write and commit to WAL.
         // in case of failure, this writer should continue to try writing to the next entry ID.
-        loop {
+        let write_size = loop {
             entry_id.fetch_add(1, Ordering::SeqCst);
             let current_entry_id = entry_id.load(Ordering::SeqCst);
 
@@ -394,7 +390,7 @@ impl LogStructuredMergeJob {
                 &dataset.read().unwrap().object_store,
                 source_iter.next().unwrap(),
                 &wal_file_path.into()).await {
-                Ok(_) => {
+                Ok(write_size) => {
                     match append_mem_wal_entry(
                         dataset.write().unwrap().deref_mut(),
                         &params.region,
@@ -404,7 +400,7 @@ impl LogStructuredMergeJob {
                     ).await {
                         Ok(mem_wal) => {
                             mem_wal_map.write().unwrap().deref_mut().insert(current_gen_id, mem_wal);
-                            break;
+                            break write_size;
                         }
                         Err(e) => {
                             // this should only happen during a failover case that
@@ -420,6 +416,9 @@ impl LogStructuredMergeJob {
                 }
             }
         };
+        // use the buffer size from write to estimate MemTable size
+        let mut current_size = mem_table_size_map.read().unwrap().get(&current_gen_id).unwrap();
+        current_size.fetch_add(write_size, Ordering::SeqCst);
 
         // 2. write to MemTable
         let mem_table = &mem_table_map.read().unwrap().deref()[&current_gen_id];
@@ -430,16 +429,22 @@ impl LogStructuredMergeJob {
             source_iter.next().unwrap()).await?;
 
         // 3. check for MemTable size, flush and advance MemWAL generation
-        let mem_table_size = Self::get_mem_table_size_internal(region, generation, mem_table_store).await?;
-        if mem_table_size > mem_table_flush_size {
-            Self::advance_mem_wal_generation_internal(
-                dataset,
-                region,
-                generation,
-                mem_table_location,
-                wal_location,
-                mem_table_store,
+        if current_size.load(Ordering::SeqCst) > params.mem_table_flush_size {
+            let new_gen_id = current_gen_id + 1;
+            let new_mem_wal = advance_mem_wal_generation(
+                dataset.write().unwrap().deref_mut(),
+                &params.region,
+                &Self::mem_table_location(&params.job_id, &params.region,  new_gen_id),
+                &Self::wal_location(dataset.read().unwrap().deref(), &params.region,  new_gen_id),
+                Some(&curr_mem_wal.mem_table_location),
             ).await?;
+
+            tokio::spawn(Self::flush_sealed_mem_wal(
+                dataset.clone(),
+                sealed_mem_wal_id,
+                &mem_table_location,
+                mem_table_store,
+            ));
         }
 
         Ok(())
@@ -461,23 +466,126 @@ impl LogStructuredMergeJob {
         ).await?;
 
         // Configure all the indexes in the same way as the source dataset
-        for index in dataset.load_indices().await?.iter() {
-            if !is_system_index(index) {
-                let columns = index.fields.iter()
+        // Use batch processing for better performance when there are many indexes
+        let indices = dataset.load_indices().await?;
+        let non_system_indices: Vec<_> = indices.iter()
+            .filter(|idx| !is_system_index(idx))
+            .collect();
+        
+        if !non_system_indices.is_empty() {
+            for index_meta in non_system_indices {
+                let columns = index_meta.fields.iter()
                     .map(|idx| dataset.schema().field_ancestry_by_id(*idx))
-                    .map(|fields| fields.unwrap().iter().map(|f| f.name.clone()).join(".").as_str())
+                    .map(|fields| fields.unwrap().iter().map(|f| f.name.clone()).join("."))
                     .collect::<Vec<_>>();
+                let column = columns[0].as_str();
+                let uuid = index_meta.uuid.to_string();
+                let index = dataset.open_generic_index(column, &uuid, &NoOpMetricsCollector).await?;
+                let index_type = index.index_type();
+                let params = Self::get_index_params(dataset, column, index_type, index_meta).await?;
+
                 mem_table.create_index(
-                    columns.as_slice(),
-                    ,
-                    Some(index.name),
-                    index.
-                );
+                        columns.iter().map(|s| s.as_str()).collect::<Vec<_>>().as_slice(),
+                        index.index_type(),
+                        Some(index_meta.name.clone()),
+                        params.as_ref(),
+                        true,
+                    ).await?;
+                
+                // Get the index type and create appropriate parameters
+                let (index_type, params) = Self::get_index_params(dataset, index).await?;
+                
+
             }
         }
 
         mem_table.optimize_indices(&OptimizeOptions::default()).await?;
         Ok(mem_table)
+    }
+
+    async fn get_index_params(
+        dataset: &Dataset,
+        column_name: &str,
+        index_type: IndexType,
+        index: &Index) -> Result<(Box<dyn IndexParams>)> {
+        // Create appropriate parameters based on the index type
+        let params: Box<dyn IndexParams> = match index_type {
+            IndexType::Vector => {
+                // For vector indices, try to open the index to get its parameters
+                if let Ok(vector_index) = dataset.open_vector_index(column_name, &index.uuid.to_string(), &lance_index::metrics::NoOpMetricsCollector).await {
+                    // Get the index type from the actual index
+                    let actual_index_type = vector_index.index_type();
+                    
+                    // Create parameters based on the actual index type
+                    match actual_index_type {
+                        IndexType::IvfPq => {
+                            // Try to extract parameters from the index statistics
+                            if let Ok(stats) = vector_index.statistics() {
+                                // Parse statistics to get parameters
+                                if let Some(num_partitions) = stats.get("num_partitions").and_then(|v| v.as_u64()) {
+                                    if let Some(num_sub_vectors) = stats.get("num_sub_vectors").and_then(|v| v.as_u64()) {
+                                        if let Some(num_bits) = stats.get("num_bits").and_then(|v| v.as_u64()) {
+                                            let metric = if let Some(metric_str) = stats.get("metric_type").and_then(|v| v.as_str()) {
+                                                match metric_str {
+                                                    "L2" => MetricType::L2,
+                                                    "Cosine" => MetricType::Cosine,
+                                                    "Dot" => MetricType::Dot,
+                                                    "Hamming" => MetricType::Hamming,
+                                                    _ => MetricType::L2,
+                                                }
+                                            } else {
+                                                MetricType::L2
+                                            };
+                                            
+                                            return Ok((index_type, Box::new(VectorIndexParams::ivf_pq(
+                                                num_partitions as usize,
+                                                num_sub_vectors as usize,
+                                                num_bits as usize,
+                                                metric,
+                                                1,
+                                            ))));
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            // Fallback to defaults if we can't extract parameters
+                            Box::new(VectorIndexParams::ivf_pq(256, 8, 8, MetricType::L2, 1))
+                        }
+                        _ => {
+                            // For other vector index types, use defaults
+                            Box::new(VectorIndexParams::ivf_pq(256, 8, 8, MetricType::L2, 1))
+                        }
+                    }
+                } else {
+                    // If we can't open the vector index, use defaults
+                    Box::new(VectorIndexParams::ivf_pq(256, 8, 8, MetricType::L2, 1))
+                }
+            }
+            IndexType::Inverted => {
+                // For inverted indices, try to open the index to get its parameters
+                if let Ok(inverted_index) = dataset.open_scalar_index(&column_name, &index.uuid.to_string(), &lance_index::metrics::NoOpMetricsCollector).await {
+                    // Try to get parameters from the inverted index
+                    if let Some(inverted_impl) = inverted_index.as_any().downcast_ref::<lance_index::scalar::inverted::InvertedIndex>() {
+                        // Get the parameters from the actual inverted index
+                        let params = inverted_impl.params().clone();
+                        Box::new(params)
+                    } else {
+                        Box::new(lance_index::scalar::inverted::tokenizer::InvertedIndexParams::default())
+                    }
+                } else {
+                    Box::new(lance_index::scalar::inverted::tokenizer::InvertedIndexParams::default())
+                }
+            }
+            IndexType::Bitmap | IndexType::BTree | IndexType::LabelList | IndexType::NGram => {
+                Box::new(ScalarIndexParams::default())
+            }
+            _ => {
+                Box::new(ScalarIndexParams::default())
+            }
+        };
+
+        Ok(params)
     }
 
     async fn write_to_mem_table(
@@ -524,15 +632,19 @@ impl LogStructuredMergeJob {
         todo!()
     }
 
+
+    /// Write a WAL entry file to object store.
+    /// We write to IPC since this is a direct dump,
+    /// there is no need to optimize it to a Lance file.
     async fn write_wal_entry(
         object_store: &ObjectStore,
         source: SendableRecordBatchStream,
-        wal_path: &Path,
-    ) -> Result<()> {
-
-        let mut obj_writer = object_store.create(wal_path).await?;
+        wal_entry_path: &Path,
+    ) -> Result<u64> {
+        let obj_writer = object_store.create(wal_entry_path).await?;
+        let sync_writer = ObjectWriterAsSyncAdapter::new(obj_writer);
         let schema_ref = source.schema().clone();
-        let mut ipc_writer = StreamWriter::try_new(obj_writer, &schema_ref)?;
+        let mut ipc_writer = StreamWriter::try_new_buffered(sync_writer, &schema_ref)?;
         let mut source_pinned = source;
 
         while let Some(batch) = source_pinned.next().await {
@@ -541,9 +653,21 @@ impl LogStructuredMergeJob {
         }
 
         ipc_writer.finish()?;
-        obj_writer.shutdown().await?;
 
-        Ok(())
+        match ipc_writer.into_inner()?.into_inner() {
+            Ok(mut sync_writer) => Ok(sync_writer.shutdown().await?.size as u64),
+            Err(err) => Err(Error::Execution {
+                message: err.to_string(),
+                location: location!()
+            })
+        }
+    }
+    
+    async fn read_wal_entry(
+        object_store: &ObjectStore,
+        wal_entry_path: &Path,
+    ) -> Result<SendableRecordBatchStream> {
+        
     }
 
     async fn replay_wal_entries_to_mem_table(
@@ -551,7 +675,7 @@ impl LogStructuredMergeJob {
         wal_location: &str,
         wal_entries: U64Segment,
         mem_table_location: &str,
-    ) -> Result<Dataset> {
+    ) -> Result<(Dataset, u64)> {
         // 1. for each WAL entry, do read_wal_entry_file to get its stream
         // 2. concatenate them using stream::iter(streams).flatten()
         // 3. init_empty_mem_table
@@ -560,170 +684,38 @@ impl LogStructuredMergeJob {
         todo!()
     }
 
-    fn get_primary_key_column_internal(dataset: &Arc<Dataset>) -> Result<String> {
-        // Get the primary key column from the dataset
-        // This is a simplified implementation - in practice, you'd need to get the actual primary key
-        let schema = dataset.schema();
-        if let Some(field) = schema.fields.first() {
-            Ok(field.name.clone())
-        } else {
-            Err(Error::invalid_input("No fields in schema", location!()))
-        }
-    }
-
-    fn mem_table_size(dataset: &Arc<RwLock<Dataset>>) -> u64 {
-        let dataset = dataset.read().unwrap();
-        let dataset_read = dataset.deref();
-        dataset_read.fragments().as_ref().iter()
-            .flat_map(|f| f.files.iter())
-            .map(|f| f.file_size_bytes.get().unwrap_or(NonZeroU64::new(1).unwrap()).get())
-            .sum::<u64>()
-    }
-
-    async fn advance_mem_wal_generation_internal(
-        dataset: &Arc<Dataset>,
-        region: &str,
-        generation: u64,
-        mem_table_location: &str,
-        wal_location: &str,
-        mem_table_store: &Arc<Mutex<HashMap<String, Arc<Dataset>>>>,
-    ) -> Result<()> {
-        let new_generation = generation + 1;
-        // Advance the MemWAL generation
-        crate::index::mem_wal::advance_mem_wal_generation(
-            &mut dataset_clone,
-            region,
-            &new_mem_table_location,
-            &new_wal_location,
-            Some(mem_table_location),
-        ).await?;
-        
-        // Seal the current MemWAL
-        crate::index::mem_wal::mark_mem_wal_as_sealed(
-            &mut dataset_clone,
-            region,
-            generation,
-            mem_table_location,
-        ).await?;
-        
-        // Spawn a background task to flush the sealed MemWAL
-        let sealed_mem_wal_id = MemWalId::new(region, generation);
-        let dataset_clone_for_flush = dataset.clone();
-        let mem_table_location = mem_table_location.to_string();
-        
-        tokio::spawn(async move {
-            if let Err(e) = Self::flush_sealed_mem_wal(
-                dataset_clone_for_flush,
-                sealed_mem_wal_id,
-                &mem_table_location,
-                mem_table_store,
-            ).await {
-                eprintln!("Failed to flush sealed MemWAL: {}", e);
-            }
-        });
-        
-        Ok(())
-    }
-
     async fn flush_sealed_mem_wal(
-        dataset: Arc<Dataset>,
+        dataset: Arc<RwLock<Dataset>>,
+        mem_table: Arc<RwLock<Dataset>>,
         mem_wal_id: MemWalId,
         expected_mem_table_location: &str,
         mem_table_store: &Arc<Mutex<HashMap<String, Arc<Dataset>>>>,
     ) -> Result<()> {
-        // Get the MemTable data
-        let mem_wal_id_str = format!("{}_{}", mem_wal_id.region, mem_wal_id.generation);
-        let mem_table = {
-            let store = mem_table_store.lock().unwrap();
-            store.get(&mem_wal_id_str).cloned()
-        };
-        
-        if let Some(mem_table) = mem_table {
-            // Create merge insert job to flush the MemTable to the main dataset
-            let merge_insert_job = crate::dataset::MergeInsertBuilder::try_new(
-                dataset.clone(),
-                // TODO: this currently only support top level fields
-                dataset.schema().unenforced_primary_key().iter().map(|f| f.to_string()).collect(),
-            )?
+
+        let merge_insert_job = crate::dataset::MergeInsertBuilder::try_new(
+            dataset.clone(),
+            // TODO: this currently only support top level fields
+            dataset.schema().unenforced_primary_key().iter().map(|f| f.to_string()).collect(),
+        )?
             .when_matched(crate::dataset::WhenMatched::UpdateAll)
             .when_not_matched(crate::dataset::WhenNotMatched::InsertAll)
             .mark_mem_wal_as_flushed(mem_wal_id, expected_mem_table_location)
             .await?
             .try_build()?;
 
-            let stream = mem_table.scan().try_into_stream().await?;
-            let (dataset, _) = merge_insert_job.execute(stream.into()).await?;
+        let stream = mem_table.scan().try_into_stream().await?;
 
-            // Remove the MemTable from the store after successful flush
-            // TODO: how to ensure the flushed data is indexed?
-            // we track the transaction file to know what are the newly produced fragments.
-            // we also track the version of this new dataset
-            // the next round of flush, we check for each previous flushed MemWAL,
-            // compare the transactions from current version to latest version
-            // if there is a compaction, readjust the fragments
-            // and then check the frag coverage bitmap
-            // if for all indexes, the index is covered by the bitmap, we can finally drop the MemWAL.
-            let mut store = mem_table_store.lock().unwrap();
-            store.remove(&mem_wal_id_str);
-        }
-        
+        // TODO: how to ensure the flushed data is indexed?
+        // we track the transaction file to know what are the newly produced fragments.
+        // we also track the version of this new dataset
+        // the next round of flush, we check for each previous flushed MemWAL,
+        // compare the transactions from current version to latest version
+        // if there is a compaction, readjust the fragments
+        // and then check the frag coverage bitmap
+        // if for all indexes, the index is covered by the bitmap, we can finally drop the MemWAL.
+        let (dataset, _) = merge_insert_job.execute(stream.into()).await?;
+
         Ok(())
-    }
-
-    // Keep the old methods for backward compatibility
-    async fn write_to_wal(&self, batches: &[RecordBatch], wal_path: &Path) -> Result<()> {
-        let object_store = self.dataset.object_store();
-        let mut writer = object_store.create(wal_path).await?;
-        
-        if batches.is_empty() {
-            return Err(Error::invalid_input("Empty batches", location!()));
-        }
-        
-        let schema = batches[0].schema();
-        let batches = batches.to_vec();
-        
-        // Write all batches using async write operations
-        let mut buffer = Vec::new();
-        {
-            let mut ipc_writer = StreamWriter::try_new(&mut buffer, &schema)?;
-            for batch in batches {
-                ipc_writer.write(&batch)?;
-            }
-            ipc_writer.finish()?;
-        }
-        
-        // Write the buffer to the object store
-        writer.write_all(&buffer).await?;
-        writer.shutdown().await?;
-        
-        Ok(())
-    }
-
-    // async fn write_to_mem_table(&self, batches: &[RecordBatch]) -> Result<()> {
-    //     Self::write_to_mem_table_internal(&self.dataset, &self.region, self.generation, &self.mem_table_store, batches).await
-    // }
-
-    async fn create_mem_table_dataset(&self) -> Result<Dataset> {
-        Self::create_mem_table_dataset_internal(&self.dataset).await
-    }
-
-    fn get_primary_key_column(&self) -> Result<String> {
-        Self::get_primary_key_column_internal(&self.dataset)
-    }
-
-    async fn get_mem_table_size(&self) -> Result<usize> {
-        Self::get_mem_table_size_internal(&self.region, self.generation, &self.mem_table_store).await
-    }
-
-    async fn advance_mem_wal_generation(&self) -> Result<()> {
-        Self::advance_mem_wal_generation_internal(
-            &self.dataset,
-            &self.region,
-            self.generation,
-            &self.mem_table_location,
-            &self.wal_location,
-            &self.mem_table_store,
-        ).await
     }
 }
 

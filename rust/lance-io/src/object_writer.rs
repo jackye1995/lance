@@ -22,6 +22,7 @@ use tracing::Instrument;
 
 use crate::traits::Writer;
 use snafu::location;
+use tokio::runtime::Handle;
 
 /// Start at 5MB.
 const INITIAL_UPLOAD_STEP: usize = 1024 * 1024 * 5;
@@ -493,6 +494,48 @@ impl AsyncWrite for ObjectWriter {
 impl Writer for ObjectWriter {
     async fn tell(&mut self) -> Result<usize> {
         Ok(self.cursor)
+    }
+}
+
+/// Adapter to use AsyncWrite as std::io::Write
+pub struct ObjectWriterAsSyncAdapter {
+    writer: Arc<tokio::sync::Mutex<ObjectWriter>>,
+    rt_handle: Handle,
+}
+
+impl ObjectWriterAsSyncAdapter {
+    pub fn new(writer: ObjectWriter) -> Self {
+        Self {
+            writer: Arc::new(tokio::sync::Mutex::new(writer)),
+            rt_handle: Handle::current(),
+        }
+    }
+
+    pub async fn shutdown(&mut self) -> Result<WriteResult> {
+        let mut guard = self.writer.lock().await;
+        guard.shutdown().await
+    }
+}
+
+impl std::io::Write for ObjectWriterAsSyncAdapter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let writer = self.writer.clone();
+        let fut = async move {
+            let mut guard = writer.lock().await;
+            guard.write(buf).await
+        };
+
+        self.rt_handle.block_on(fut)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let writer = self.writer.clone();
+        let fut = async move {
+            let mut guard = writer.lock().await;
+            guard.flush().await
+        };
+
+        self.rt_handle.block_on(fut)
     }
 }
 

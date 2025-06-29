@@ -43,6 +43,65 @@ pub(crate) fn open_mem_wal_index(index: Index) -> Result<Arc<MemWalIndex>> {
     )?)))
 }
 
+/// Find the latest generation
+pub async fn find_latest_mem_wal_generation(
+    dataset: &Dataset,
+    region: &str
+) -> Result<(Option<MemWal>)> {
+    if let Some(mem_wal_index) =
+        dataset.open_mem_wal_index(&NoOpMetricsCollector).await?
+    {
+        if let Some(generations) =
+            mem_wal_index.mem_wal_map.get(region)
+        {
+            // MemWALs of the same region is ordered increasingly by its generation
+            let mut values_iter = generations.values().rev();
+            if let Some(latest_mem_wal) = values_iter.next() {
+                Ok((Some(latest_mem_wal.clone())))
+            } else {
+                Err(Error::Internal {
+                    message: format!("Encountered MemWAL index mapping that has a region with an empty list of generations: {}", region),
+                    location: location!(),
+                })
+            }
+        } else {
+            Ok(None)
+        }
+    } else {
+        Ok(None)
+    }
+}
+
+pub async fn create_mem_wal_generation(
+    dataset: &mut Dataset,
+    region: &str,
+    generation: u64,
+    new_mem_table_location: &str,
+    new_wal_location: &str,
+) -> Result<MemWal> {
+    let mem_wal = MemWal::new_empty(
+        MemWalId::new(region, generation),
+        new_mem_table_location,
+        new_wal_location,
+    );
+    let txn = Transaction::new(
+        dataset.manifest.version,
+        Operation::UpdateMemWalState {
+            added: vec![mem_wal.clone()],
+            updated: vec![],
+            removed: vec![],
+        },
+        None,
+        None,
+    );
+
+    dataset
+        .apply_commit(txn, &Default::default(), &Default::default())
+        .await?;
+
+    Ok(mem_wal)
+}
+
 /// Advance the generation of the MemWAL for the given region.
 /// If the MemWAL does not exist, create one with generation 0, and
 /// `expected_mem_table_location` should be None in this case.
@@ -188,7 +247,7 @@ pub async fn append_mem_wal_entry(
     mem_wal_generation: u64,
     entry_id: u64,
     expected_mem_table_location: &str,
-) -> Result<()> {
+) -> Result<MemWal> {
     let mutate = |mem_wal: &MemWal| -> Result<MemWal> {
         // Can only append to unsealed and unflushed MemWALs
         mem_wal.check_flushed(false)?;
@@ -214,7 +273,7 @@ pub async fn mark_mem_wal_as_sealed(
     mem_wal_region: &str,
     mem_wal_generation: u64,
     expected_mem_table_location: &str,
-) -> Result<()> {
+) -> Result<MemWal> {
     let mutate = |mem_wal: &MemWal| -> Result<MemWal> {
         // Can only seal unsealed or flushed MemWALs
         mem_wal.check_flushed(false)?;
@@ -235,7 +294,7 @@ pub async fn mark_mem_wal_as_flushed(
     mem_wal_region: &str,
     mem_wal_generation: u64,
     expected_mem_table_location: &str,
-) -> Result<()> {
+) -> Result<MemWal> {
     let mutate = |mem_wal: &MemWal| -> Result<MemWal> {
         // Can only flush sealed but unflushed MemWALs
         mem_wal.check_sealed(true)?;
@@ -311,7 +370,7 @@ pub async fn update_mem_table_location(
     region: &str,
     generation: u64,
     new_mem_table_location: &str,
-) -> Result<()> {
+) -> Result<MemWal> {
     let mutate = |mem_wal: &MemWal| -> Result<MemWal> {
         if new_mem_table_location == mem_wal.mem_table_location {
             return Err(Error::invalid_input(
@@ -370,7 +429,7 @@ async fn mutate_mem_wal<F>(
     region: &str,
     generation: u64,
     mutate: F,
-) -> Result<()>
+) -> Result<MemWal>
 where
     F: Fn(&MemWal) -> Result<MemWal>,
 {
@@ -392,7 +451,9 @@ where
 
                 dataset
                     .apply_commit(transaction, &Default::default(), &Default::default())
-                    .await
+                    .await?;
+
+                Ok(updated_mem_wal)
             } else {
                 Err(Error::invalid_input(
                     format!(

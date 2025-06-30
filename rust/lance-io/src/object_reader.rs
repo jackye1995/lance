@@ -315,3 +315,48 @@ impl DeepSizeOf for SmallReader {
         size
     }
 }
+
+pub struct ObjectReaderAsSyncAdapter {
+    reader: Arc<tokio::sync::Mutex<Box<dyn Reader>>>,
+    rt_handle: tokio::runtime::Handle,
+    current_offset: usize,
+}
+
+impl ObjectReaderAsSyncAdapter {
+    pub fn new(reader: Box<dyn Reader>) -> Self {
+        Self {
+            reader: Arc::new(tokio::sync::Mutex::new(reader)),
+            rt_handle: tokio::runtime::Handle::current(),
+            current_offset: 0,
+        }
+    }
+}
+
+impl std::io::Read for ObjectReaderAsSyncAdapter {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
+        let reader = self.reader.clone();
+        let current_offset = self.current_offset;
+        let range = current_offset..current_offset + buf.len();
+        
+        let fut = async move {
+            let guard = reader.lock().await;
+            guard.get_range(range).await
+        };
+
+        match self.rt_handle.block_on(fut) {
+            Ok(bytes) => {
+                let bytes_read = bytes.len();
+                buf[..bytes_read].copy_from_slice(&bytes);
+                self.current_offset += bytes_read;
+                Ok(bytes_read)
+            }
+            Err(e) => {
+                Err(std::io::Error::new(std::io::ErrorKind::Other, e))
+            }
+        }
+    }
+}

@@ -13,14 +13,16 @@ use std::task::{Context, Poll};
 use datafusion::execution::SendableRecordBatchStream;
 use lance_datafusion::utils::StreamingWriteSource;
 use crate::Dataset;
-use lance_core::{Error, Result};
+use lance_core::{ArrowResult, Error, Result};
 use lance_index::mem_wal::{MemWal, MemWalId};
 use object_store::path::Path;
-use arrow::ipc::writer::StreamWriter;
 use arrow_array::{RecordBatch, RecordBatchIterator, RecordBatchWriter};
+use arrow_schema::SchemaRef;
+use datafusion::error::DataFusionError;
+use datafusion::physical_plan::RecordBatchStream;
 use datafusion_expr::{col, UserDefinedLogicalNode};
 use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
-use futures::{FutureExt, StreamExt};
+use futures::{FutureExt, Stream, StreamExt};
 use itertools::Itertools;
 use tokio::io::AsyncWriteExt;
 use tokio::runtime::Runtime;
@@ -38,12 +40,19 @@ use crate::dataset::{MergeInsertBuilder, WhenMatched, WhenNotMatched};
 use crate::index::mem_wal::{find_latest_mem_wal_generation, create_mem_wal_generation, mark_mem_wal_as_sealed, update_mem_table_location, append_mem_wal_entry, advance_mem_wal_generation};
 use lance_index::{IndexType, IndexParams, vector::VectorIndexParams, scalar::ScalarIndexParams, infer_index_type};
 use lance_index::metrics::NoOpMetricsCollector;
-use lance_io::object_writer::ObjectWriterAsSyncAdapter;
 use lance_linalg::distance::MetricType;
 use lance_table::format::Index;
 use crate::index::DatasetIndexInternalExt;
 use crate::index::scalar::infer_index_type;
 use crate::index::vector::VectorIndexParams;
+use lance_file::writer::FileWriter;
+use lance_file::reader::FileReader;
+use lance_encoding::decoder::DecoderPlugins;
+use lance_core::cache::LanceCache;
+use lance_file::writer::ManifestDescribing;
+use lance_file::reader::FileReaderOptions;
+use lance_file::v2::reader::FileReaderOptions;
+use lance_table::io::manifest::ManifestDescribing;
 
 enum WorkerMessage {
     Write {
@@ -626,48 +635,59 @@ impl LogStructuredMergeJob {
         dataset.base.child(region).child(generation.to_string()).to_string()
     }
 
-    async fn read_wal_entry_file(
-        dataset: &Dataset,
-        wal_entry_location: &str) -> Result<SendableRecordBatchStream> {
-        todo!()
-    }
-
 
     /// Write a WAL entry file to object store.
-    /// We write to IPC since this is a direct dump,
-    /// there is no need to optimize it to a Lance file.
+    /// We write to Lance format since this is a direct dump,
+    /// there is no need to optimize it to a different format.
     async fn write_wal_entry(
         object_store: &ObjectStore,
         source: SendableRecordBatchStream,
         wal_entry_path: &Path,
     ) -> Result<u64> {
         let obj_writer = object_store.create(wal_entry_path).await?;
-        let sync_writer = ObjectWriterAsSyncAdapter::new(obj_writer);
         let schema_ref = source.schema().clone();
-        let mut ipc_writer = StreamWriter::try_new_buffered(sync_writer, &schema_ref)?;
+        let lance_schema = lance_core::datatypes::Schema::try_from(schema_ref.as_ref())?;
+        let mut file_writer = FileWriter::<ManifestDescribing>::with_object_writer(
+            obj_writer,
+            lance_schema,
+            &Default::default(),
+        )?;
         let mut source_pinned = source;
 
         while let Some(batch) = source_pinned.next().await {
             let batch = batch?;
-            ipc_writer.write(&batch)?;
+            file_writer.write(&[batch]).await?;
         }
 
-        ipc_writer.finish()?;
-
-        match ipc_writer.into_inner()?.into_inner() {
-            Ok(mut sync_writer) => Ok(sync_writer.shutdown().await?.size as u64),
-            Err(err) => Err(Error::Execution {
-                message: err.to_string(),
-                location: location!()
-            })
-        }
+        file_writer.finish().await?;
+        let size_bytes = file_writer.tell().await?;
+        
+        Ok(size_bytes as u64)
     }
     
     async fn read_wal_entry(
         object_store: &ObjectStore,
         wal_entry_path: &Path,
     ) -> Result<SendableRecordBatchStream> {
+        let obj_reader = object_store.open(wal_entry_path).await?;
+        let file_reader = FileReader::with_object_reader(
+            obj_reader,
+            None,
+            Arc::new(DecoderPlugins::default()),
+            Arc::new(LanceCache::new()),
+            FileReaderOptions::default(),
+        ).await?;
         
+        let schema_ref = Arc::new(file_reader.schema().as_ref().into());
+        let stream = file_reader.read_stream(
+            lance_io::ReadBatchParams::RangeFull,
+            1024, // batch_size
+            16,   // batch_readahead
+            lance_encoding::decoder::FilterExpression::no_filter(),
+        )?;
+        
+        let stream: SendableRecordBatchStream = Box::pin(stream);
+        Ok(stream)
     }
 
     async fn replay_wal_entries_to_mem_table(

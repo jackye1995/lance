@@ -10,13 +10,13 @@
       
       
       
-        <link rel="canonical" href="https://lancedb.github.io/lance/integrations/huggingface/">
+        <link rel="canonical" href="https://lancedb.github.io/lance/guide/tokenizer/">
       
       
-        <link rel="prev" href="../../format/format/">
+        <link rel="prev" href="../performance/">
       
       
-        <link rel="next" href="../tensorflow/">
+        <link rel="next" href="../arrays/">
       
       
       <link rel="icon" href="../../logo/logo.png">
@@ -24,7 +24,7 @@
     
     
       
-        <title>Huggingface - Lance</title>
+        <title>Tokenizer - Lance</title>
       
     
     
@@ -76,7 +76,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#lance-huggingface" class="md-skip">
+        <a href="#tokenizers" class="md-skip">
           Skip to content
         </a>
       
@@ -111,7 +111,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Huggingface
+              Tokenizer
             
           </span>
         </div>
@@ -302,8 +302,10 @@
       
   
   
+    
   
   
+  
     
     
     
@@ -314,13 +316,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-          
-        
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
         
           
           <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
@@ -336,7 +336,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_3">
             <span class="md-nav__icon md-icon"></span>
             User Guide
@@ -350,7 +350,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guide/read_and_write/" class="md-nav__link">
+      <a href="../read_and_write/" class="md-nav__link">
         
   
   
@@ -373,7 +373,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guide/data_evolution/" class="md-nav__link">
+      <a href="../data_evolution/" class="md-nav__link">
         
   
   
@@ -396,7 +396,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guide/blob/" class="md-nav__link">
+      <a href="../blob/" class="md-nav__link">
         
   
   
@@ -419,7 +419,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guide/tags/" class="md-nav__link">
+      <a href="../tags/" class="md-nav__link">
         
   
   
@@ -442,7 +442,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guide/object_store/" class="md-nav__link">
+      <a href="../object_store/" class="md-nav__link">
         
   
   
@@ -465,7 +465,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guide/distributed_write/" class="md-nav__link">
+      <a href="../distributed_write/" class="md-nav__link">
         
   
   
@@ -488,7 +488,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guide/performance/" class="md-nav__link">
+      <a href="../performance/" class="md-nav__link">
         
   
   
@@ -508,10 +508,32 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../../guide/tokenizer/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    Tokenizer
+    
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -522,6 +544,119 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#language-models-of-jieba" class="md-nav__link">
+    <span class="md-ellipsis">
+      Language Models of Jieba
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Language Models of Jieba">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#downloading-the-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      Downloading the Model
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#using-the-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      Using the Model
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#user-dictionaries" class="md-nav__link">
+    <span class="md-ellipsis">
+      User Dictionaries
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#language-models-of-lindera" class="md-nav__link">
+    <span class="md-ellipsis">
+      Language Models of Lindera
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Language Models of Lindera">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#downloading-the-model_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      Downloading the Model
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#using-the-model_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      Using the Model
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#user-dictionaries_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      User Dictionaries
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#create-your-own-language-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      Create your own language model
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -534,7 +669,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guide/arrays/" class="md-nav__link">
+      <a href="../arrays/" class="md-nav__link">
         
   
   
@@ -636,8 +771,6 @@
       
   
   
-    
-  
   
   
     
@@ -650,11 +783,13 @@
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
         
           
           <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
@@ -670,7 +805,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_5">
             <span class="md-nav__icon md-icon"></span>
             Integrations
@@ -681,19 +816,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../../integrations/huggingface/" class="md-nav__link">
         
   
   
@@ -704,7 +830,6 @@
   
 
       </a>
-      
     </li>
   
 
@@ -717,7 +842,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../tensorflow/" class="md-nav__link">
+      <a href="../../integrations/tensorflow/" class="md-nav__link">
         
   
   
@@ -740,7 +865,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../pytorch/" class="md-nav__link">
+      <a href="../../integrations/pytorch/" class="md-nav__link">
         
   
   
@@ -763,7 +888,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../ray/" class="md-nav__link">
+      <a href="../../integrations/ray/" class="md-nav__link">
         
   
   
@@ -1384,6 +1509,107 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#language-models-of-jieba" class="md-nav__link">
+    <span class="md-ellipsis">
+      Language Models of Jieba
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Language Models of Jieba">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#downloading-the-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      Downloading the Model
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#using-the-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      Using the Model
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#user-dictionaries" class="md-nav__link">
+    <span class="md-ellipsis">
+      User Dictionaries
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#language-models-of-lindera" class="md-nav__link">
+    <span class="md-ellipsis">
+      Language Models of Lindera
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Language Models of Lindera">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#downloading-the-model_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      Downloading the Model
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#using-the-model_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      Using the Model
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#user-dictionaries_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      User Dictionaries
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#create-your-own-language-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      Create your own language model
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -1401,17 +1627,55 @@
   
 
 
-<h1 id="lance-huggingface">Lance ❤️ HuggingFace<a class="headerlink" href="#lance-huggingface" title="Permanent link">&para;</a></h1>
-<p>The HuggingFace Hub has become the go to place for ML practitioners to find pre-trained models and useful datasets.</p>
-<p>HuggingFace datasets can be written directly into Lance format by using the
-<code>lance.write_dataset</code> method. You can write the entire dataset or a particular split. For example:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">datasets</span> <span class="c1"># pip install datasets</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">lance</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">lance</span><span class="o">.</span><span class="n">write_dataset</span><span class="p">(</span><span class="n">datasets</span><span class="o">.</span><span class="n">load_dataset</span><span class="p">(</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="s2">&quot;poloclub/diffusiondb&quot;</span><span class="p">,</span> <span class="n">split</span><span class="o">=</span><span class="s2">&quot;train[:10]&quot;</span><span class="p">,</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="p">),</span> <span class="s2">&quot;diffusiondb_train.lance&quot;</span><span class="p">)</span>
+<h1 id="tokenizers">Tokenizers<a class="headerlink" href="#tokenizers" title="Permanent link">&para;</a></h1>
+<p>Currently, Lance has built-in support for Jieba and Lindera. However, it doesn't come with its own language models.
+If tokenization is needed, you can download language models by yourself.
+You can specify the location where the language models are stored by setting the environment variable LANCE_LANGUAGE_MODEL_HOME.
+If it's not set, the default value is</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="si">${</span><span class="nv">system</span><span class="p"> data directory</span><span class="si">}</span>/lance/language_models
 </span></code></pre></div>
+<p>It also supports configuring user dictionaries,
+which makes it convenient for users to expand their own dictionaries without retraining the language models.</p>
+<h2 id="language-models-of-jieba">Language Models of Jieba<a class="headerlink" href="#language-models-of-jieba" title="Permanent link">&para;</a></h2>
+<h3 id="downloading-the-model">Downloading the Model<a class="headerlink" href="#downloading-the-model" title="Permanent link">&para;</a></h3>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>python<span class="w"> </span>-m<span class="w"> </span>lance.download<span class="w"> </span>jieba
+</span></code></pre></div>
+<p>The language model is stored by default in <code>${LANCE_LANGUAGE_MODEL_HOME}/jieba/default</code>.</p>
+<h3 id="using-the-model">Using the Model<a class="headerlink" href="#using-the-model" title="Permanent link">&para;</a></h3>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">ds</span><span class="o">.</span><span class="n">create_scalar_index</span><span class="p">(</span><span class="s2">&quot;text&quot;</span><span class="p">,</span> <span class="s2">&quot;INVERTED&quot;</span><span class="p">,</span> <span class="n">base_tokenizer</span><span class="o">=</span><span class="s2">&quot;jieba/default&quot;</span><span class="p">)</span>
+</span></code></pre></div>
+<h3 id="user-dictionaries">User Dictionaries<a class="headerlink" href="#user-dictionaries" title="Permanent link">&para;</a></h3>
+<p>Create a file named config.json in the root directory of the current model.</p>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="p">{</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">    </span><span class="nt">&quot;main&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;dict.txt&quot;</span><span class="p">,</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span><span class="nt">&quot;users&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;path/to/user/dict.txt&quot;</span><span class="p">]</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="p">}</span>
+</span></code></pre></div>
+<ul>
+<li>The "main" field is optional. If not filled, the default is "dict.txt".</li>
+<li>"users" is the path of the user dictionary. For the format of the user dictionary, please refer to https://github.com/messense/jieba-rs/blob/main/src/data/dict.txt.</li>
+</ul>
+<h2 id="language-models-of-lindera">Language Models of Lindera<a class="headerlink" href="#language-models-of-lindera" title="Permanent link">&para;</a></h2>
+<h3 id="downloading-the-model_1">Downloading the Model<a class="headerlink" href="#downloading-the-model_1" title="Permanent link">&para;</a></h3>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>python<span class="w"> </span>-m<span class="w"> </span>lance.download<span class="w"> </span>lindera<span class="w"> </span>-l<span class="w"> </span><span class="o">[</span>ipadic<span class="p">|</span>ko-dic<span class="p">|</span>unidic<span class="o">]</span>
+</span></code></pre></div>
+<p>Note that the language models of Lindera need to be compiled. Please install lindera-cli first. For detailed steps, please refer to https://github.com/lindera/lindera/tree/main/lindera-cli.</p>
+<p>The language model is stored by default in ${LANCE_LANGUAGE_MODEL_HOME}/lindera/[ipadic|ko-dic|unidic]</p>
+<h3 id="using-the-model_1">Using the Model<a class="headerlink" href="#using-the-model_1" title="Permanent link">&para;</a></h3>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">ds</span><span class="o">.</span><span class="n">create_scalar_index</span><span class="p">(</span><span class="s2">&quot;text&quot;</span><span class="p">,</span> <span class="s2">&quot;INVERTED&quot;</span><span class="p">,</span> <span class="n">base_tokenizer</span><span class="o">=</span><span class="s2">&quot;lindera/ipadic&quot;</span><span class="p">)</span>
+</span></code></pre></div>
+<h3 id="user-dictionaries_1">User Dictionaries<a class="headerlink" href="#user-dictionaries_1" title="Permanent link">&para;</a></h3>
+<p>Create a file named config.yml in the root directory of your model, or specify a custom YAML file using the <code>LINDERA_CONFIG_PATH</code> environment variable.
+If both are provided, the config.yml in the root directory will be used.
+For more detailed configuration methods, see the lindera documentation at https://github.com/lindera/lindera/.</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="nt">segmenter</span><span class="p">:</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">    </span><span class="nt">mode</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;normal&quot;</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">    </span><span class="nt">dictionary</span><span class="p">:</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">        </span><span class="c1"># Note: in lance, the `kind` field is not supported. You need to specify the model path using the `path` field instead.</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">        </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/path/to/lindera/ipadic/main</span>
+</span></code></pre></div>
+<h2 id="create-your-own-language-model">Create your own language model<a class="headerlink" href="#create-your-own-language-model" title="Permanent link">&para;</a></h2>
+<p>Put your language model into <code>LANCE_LANGUAGE_MODEL_HOME</code>. </p>
 
 
 

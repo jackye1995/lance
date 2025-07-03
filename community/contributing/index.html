@@ -10,13 +10,9 @@
       
       
       
-        <link rel="canonical" href="https://lancedb.github.io/lance/integrations/huggingface/">
+        <link rel="canonical" href="https://lancedb.github.io/lance/community/contributing/">
       
       
-        <link rel="prev" href="../../format/format/">
-      
-      
-        <link rel="next" href="../tensorflow/">
       
       
       <link rel="icon" href="../../logo/logo.png">
@@ -24,7 +20,7 @@
     
     
       
-        <title>Huggingface - Lance</title>
+        <title>Guide for New Contributors - Lance</title>
       
     
     
@@ -76,7 +72,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#lance-huggingface" class="md-skip">
+        <a href="#guide-for-new-contributors" class="md-skip">
           Skip to content
         </a>
       
@@ -111,7 +107,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Huggingface
+              Guide for New Contributors
             
           </span>
         </div>
@@ -636,8 +632,6 @@
       
   
   
-    
-  
   
   
     
@@ -650,11 +644,13 @@
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
         
           
           <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
@@ -670,7 +666,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_5">
             <span class="md-nav__icon md-icon"></span>
             Integrations
@@ -681,19 +677,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../../integrations/huggingface/" class="md-nav__link">
         
   
   
@@ -704,7 +691,6 @@
   
 
       </a>
-      
     </li>
   
 
@@ -717,7 +703,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../tensorflow/" class="md-nav__link">
+      <a href="../../integrations/tensorflow/" class="md-nav__link">
         
   
   
@@ -740,7 +726,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../pytorch/" class="md-nav__link">
+      <a href="../../integrations/pytorch/" class="md-nav__link">
         
   
   
@@ -763,7 +749,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../ray/" class="md-nav__link">
+      <a href="../../integrations/ray/" class="md-nav__link">
         
   
   
@@ -1384,6 +1370,143 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#getting-started" class="md-nav__link">
+    <span class="md-ellipsis">
+      Getting Started
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#development-environment" class="md-nav__link">
+    <span class="md-ellipsis">
+      Development Environment
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sample-workflow" class="md-nav__link">
+    <span class="md-ellipsis">
+      Sample Workflow
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#python-development" class="md-nav__link">
+    <span class="md-ellipsis">
+      Python Development
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rust-development" class="md-nav__link">
+    <span class="md-ellipsis">
+      Rust Development
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Rust Development">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#core-format" class="md-nav__link">
+    <span class="md-ellipsis">
+      Core Format
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#documentation" class="md-nav__link">
+    <span class="md-ellipsis">
+      Documentation
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Documentation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#main-website" class="md-nav__link">
+    <span class="md-ellipsis">
+      Main website
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#python-generated-doc" class="md-nav__link">
+    <span class="md-ellipsis">
+      Python Generated Doc
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rust-generated-doc" class="md-nav__link">
+    <span class="md-ellipsis">
+      Rust Generated Doc
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#example-notebooks" class="md-nav__link">
+    <span class="md-ellipsis">
+      Example Notebooks
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#benchmarks" class="md-nav__link">
+    <span class="md-ellipsis">
+      Benchmarks
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#code-of-conduct" class="md-nav__link">
+    <span class="md-ellipsis">
+      Code of Conduct
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -1401,17 +1524,104 @@
   
 
 
-<h1 id="lance-huggingface">Lance ❤️ HuggingFace<a class="headerlink" href="#lance-huggingface" title="Permanent link">&para;</a></h1>
-<p>The HuggingFace Hub has become the go to place for ML practitioners to find pre-trained models and useful datasets.</p>
-<p>HuggingFace datasets can be written directly into Lance format by using the
-<code>lance.write_dataset</code> method. You can write the entire dataset or a particular split. For example:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">datasets</span> <span class="c1"># pip install datasets</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">lance</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">lance</span><span class="o">.</span><span class="n">write_dataset</span><span class="p">(</span><span class="n">datasets</span><span class="o">.</span><span class="n">load_dataset</span><span class="p">(</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="s2">&quot;poloclub/diffusiondb&quot;</span><span class="p">,</span> <span class="n">split</span><span class="o">=</span><span class="s2">&quot;train[:10]&quot;</span><span class="p">,</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="p">),</span> <span class="s2">&quot;diffusiondb_train.lance&quot;</span><span class="p">)</span>
+<h1 id="guide-for-new-contributors">Guide for New Contributors<a class="headerlink" href="#guide-for-new-contributors" title="Permanent link">&para;</a></h1>
+<p>This is a guide for new contributors to the Lance project.
+Even if you have no previous experience with python, rust, and open source, you can still make an non-trivial
+impact by helping us improve documentation, examples, and more.
+For experienced developers, the issues you can work on run the gamut from warm-ups to serious challenges in python and rust.</p>
+<p>If you have any questions, please join our <a href="https://discord.gg/zMM32dvNtd">Discord</a> for real-time support. Your feedback is always welcome!</p>
+<h2 id="getting-started">Getting Started<a class="headerlink" href="#getting-started" title="Permanent link">&para;</a></h2>
+<ol>
+<li>Join our Discord and say hi</li>
+<li>Setup your development environment</li>
+<li>Pick an issue to work on. See https://github.com/lancedb/lance/contribute for good first issues.</li>
+<li>Have fun!</li>
+</ol>
+<h2 id="development-environment">Development Environment<a class="headerlink" href="#development-environment" title="Permanent link">&para;</a></h2>
+<p>Currently Lance is implemented in Rust and comes with a Python wrapper. So you'll want to make sure you setup both.</p>
+<ol>
+<li>Install Rust: https://www.rust-lang.org/tools/install</li>
+<li>Install Python 3.9+: https://www.python.org/downloads/</li>
+<li>Install protoctol buffers: https://grpc.io/docs/protoc-installation/ (make sure you have version 3.20 or higher)</li>
+<li>Install commit hooks:
+    a. Install pre-commit: https://pre-commit.com/#install
+    b. Run <code>pre-commit install</code> in the root of the repo</li>
+</ol>
+<h2 id="sample-workflow">Sample Workflow<a class="headerlink" href="#sample-workflow" title="Permanent link">&para;</a></h2>
+<ol>
+<li>Fork the repo</li>
+<li>Pick <a href="https://github.com/lancedb/lance/issues">Github issue</a></li>
+<li>Create a branch for the issue</li>
+<li>Make your changes</li>
+<li>Create a pull request from your fork to lancedb/lance</li>
+<li>Get feedback and iterate</li>
+<li>Merge!</li>
+<li>Go back to step 2</li>
+</ol>
+<h2 id="python-development">Python Development<a class="headerlink" href="#python-development" title="Permanent link">&para;</a></h2>
+<p>The python integration is done via pyo3 + custom python code:</p>
+<ol>
+<li>The Rust code that directly supports the Python bindings are under <code>python/src</code> while the pure Python code lives under <code>python/python</code>.</li>
+<li>We make wrapper classes in Rust for Dataset/Scanner/RecordBatchReader that's exposed to python.</li>
+<li>These are then used by LanceDataset / LanceScanner implementations that extend pyarrow Dataset/Scanner for duckdb compat.</li>
+<li>Data is delivered via the Arrow C Data Interface</li>
+</ol>
+<p>To build the Python bindings, first install requirements:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>pip<span class="w"> </span>install<span class="w"> </span>maturin
 </span></code></pre></div>
+<p>To make a dev install:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nb">cd</span><span class="w"> </span>python
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>maturin<span class="w"> </span>develop
+</span></code></pre></div>
+<p>After installing, you can run <code>import lance</code> in a Python shell within the virtual environment.</p>
+<p>To run tests and integration tests:
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>make<span class="w"> </span><span class="nb">test</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>make<span class="w"> </span>integtest
+</span></code></pre></div></p>
+<h2 id="rust-development">Rust Development<a class="headerlink" href="#rust-development" title="Permanent link">&para;</a></h2>
+<p>To format and lint Rust code:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>cargo<span class="w"> </span>fmt<span class="w"> </span>--all
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>cargo<span class="w"> </span>clippy<span class="w"> </span>--all-features<span class="w"> </span>--tests<span class="w"> </span>--benches
+</span></code></pre></div>
+<h3 id="core-format">Core Format<a class="headerlink" href="#core-format" title="Permanent link">&para;</a></h3>
+<p>The core format is implemented in Rust under the <code>rust</code> directory. Once you've setup Rust you can build the core format with:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>cargo<span class="w"> </span>build
+</span></code></pre></div>
+<p>This builds the debug build. For the optimized release build:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>cargo<span class="w"> </span>build<span class="w"> </span>-r
+</span></code></pre></div>
+<p>To run the Rust unit tests:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>cargo<span class="w"> </span><span class="nb">test</span>
+</span></code></pre></div>
+<p>If you're working on a performance related feature, benchmarks can be run via:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>cargo<span class="w"> </span>bench
+</span></code></pre></div>
+<h2 id="documentation">Documentation<a class="headerlink" href="#documentation" title="Permanent link">&para;</a></h2>
+<h3 id="main-website">Main website<a class="headerlink" href="#main-website" title="Permanent link">&para;</a></h3>
+<p>The main documentation website is built using <a href="https://squidfunk.github.io/mkdocs-material/">mkdocs-material</a>.
+To build the docs, first install requirements:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>pip<span class="w"> </span>install<span class="w"> </span>-r<span class="w"> </span>docs/requirements.txt
+</span></code></pre></div>
+<p>Then build and start the docs server:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="nb">cd</span><span class="w"> </span>docs
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>mkdocs<span class="w"> </span>serve
+</span></code></pre></div>
+<h3 id="python-generated-doc">Python Generated Doc<a class="headerlink" href="#python-generated-doc" title="Permanent link">&para;</a></h3>
+<p>Python code documentation is built using Sphinx in <a href="https://github.com/lancedb/lance-python-doc">lance-python-doc</a>,
+and published through <a href="https://lancedb.github.io/lance-python-doc/">Github Pages</a> in ReadTheDocs style.</p>
+<h3 id="rust-generated-doc">Rust Generated Doc<a class="headerlink" href="#rust-generated-doc" title="Permanent link">&para;</a></h3>
+<p>Rust code documentation is built and published to the <a href="https://docs.rs/lance/latest/lance/">Rust official docs website</a>
+as a part of the release process.</p>
+<h2 id="example-notebooks">Example Notebooks<a class="headerlink" href="#example-notebooks" title="Permanent link">&para;</a></h2>
+<p>Example notebooks are under <code>examples</code>. 
+These are standalone notebooks you should be able to download and run.</p>
+<h2 id="benchmarks">Benchmarks<a class="headerlink" href="#benchmarks" title="Permanent link">&para;</a></h2>
+<p>Our Rust benchmarks are run multiple times a day and the history can be found <a href="https://github.com/lancedb/lance-benchmark-results">here</a>.</p>
+<p>Separately, we have vector index benchmarks that test against the sift1m dataset, as well as benchmarks for tpch.
+These live under <code>benchmarks</code>.</p>
+<h2 id="code-of-conduct">Code of Conduct<a class="headerlink" href="#code-of-conduct" title="Permanent link">&para;</a></h2>
+<p>We follow the Code of Conduct of <a href="https://www.python.org/psf/conduct/">Python Foundation</a> and 
+<a href="https://www.rust-lang.org/policies/code-of-conduct">Rust Foundation</a>. </p>
 
 
 

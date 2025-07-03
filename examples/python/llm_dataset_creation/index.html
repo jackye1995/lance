@@ -10,28 +10,28 @@
       
       
       
-        <link rel="canonical" href="https://lancedb.github.io/lance/integrations/huggingface/">
+        <link rel="canonical" href="https://lancedb.github.io/lance/examples/python/llm_dataset_creation/">
       
       
-        <link rel="prev" href="../../format/format/">
+        <link rel="prev" href="../../../integrations/ray/">
       
       
-        <link rel="next" href="../tensorflow/">
+        <link rel="next" href="../llm_training/">
       
       
-      <link rel="icon" href="../../logo/logo.png">
+      <link rel="icon" href="../../../logo/logo.png">
       <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.6.14">
     
     
       
-        <title>Huggingface - Lance</title>
+        <title>LLM Dataset Creation - Lance</title>
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.342714a4.min.css">
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.342714a4.min.css">
       
         
-        <link rel="stylesheet" href="../../assets/stylesheets/palette.06af60db.min.css">
+        <link rel="stylesheet" href="../../../assets/stylesheets/palette.06af60db.min.css">
       
       
 
@@ -50,7 +50,7 @@
       
     
     
-    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -76,7 +76,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#lance-huggingface" class="md-skip">
+        <a href="#creating-text-dataset-for-llm-training-using-lance" class="md-skip">
           Skip to content
         </a>
       
@@ -92,9 +92,9 @@
 
 <header class="md-header md-header--shadow" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="../.." title="Lance" class="md-header__button md-logo" aria-label="Lance" data-md-component="logo">
+    <a href="../../.." title="Lance" class="md-header__button md-logo" aria-label="Lance" data-md-component="logo">
       
-  <img src="../../logo/white.png" alt="logo">
+  <img src="../../../logo/white.png" alt="logo">
 
     </a>
     <label class="md-header__button md-icon" for="__drawer">
@@ -111,7 +111,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Huggingface
+              LLM Dataset Creation
             
           </span>
         </div>
@@ -232,9 +232,9 @@
 
 <nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="../.." title="Lance" class="md-nav__button md-logo" aria-label="Lance" data-md-component="logo">
+    <a href="../../.." title="Lance" class="md-nav__button md-logo" aria-label="Lance" data-md-component="logo">
       
-  <img src="../../logo/white.png" alt="logo">
+  <img src="../../../logo/white.png" alt="logo">
 
     </a>
     Lance
@@ -261,7 +261,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../.." class="md-nav__link">
+      <a href="../../.." class="md-nav__link">
         
   
   
@@ -283,7 +283,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../quickstart/" class="md-nav__link">
+      <a href="../../../quickstart/" class="md-nav__link">
         
   
   
@@ -350,7 +350,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guide/read_and_write/" class="md-nav__link">
+      <a href="../../../guide/read_and_write/" class="md-nav__link">
         
   
   
@@ -373,7 +373,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guide/data_evolution/" class="md-nav__link">
+      <a href="../../../guide/data_evolution/" class="md-nav__link">
         
   
   
@@ -396,7 +396,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guide/blob/" class="md-nav__link">
+      <a href="../../../guide/blob/" class="md-nav__link">
         
   
   
@@ -419,7 +419,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guide/tags/" class="md-nav__link">
+      <a href="../../../guide/tags/" class="md-nav__link">
         
   
   
@@ -442,7 +442,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guide/object_store/" class="md-nav__link">
+      <a href="../../../guide/object_store/" class="md-nav__link">
         
   
   
@@ -465,7 +465,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guide/distributed_write/" class="md-nav__link">
+      <a href="../../../guide/distributed_write/" class="md-nav__link">
         
   
   
@@ -488,7 +488,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guide/performance/" class="md-nav__link">
+      <a href="../../../guide/performance/" class="md-nav__link">
         
   
   
@@ -511,7 +511,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guide/tokenizer/" class="md-nav__link">
+      <a href="../../../guide/tokenizer/" class="md-nav__link">
         
   
   
@@ -534,7 +534,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guide/arrays/" class="md-nav__link">
+      <a href="../../../guide/arrays/" class="md-nav__link">
         
   
   
@@ -609,7 +609,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../format/format/" class="md-nav__link">
+      <a href="../../../format/format/" class="md-nav__link">
         
   
   
@@ -636,8 +636,6 @@
       
   
   
-    
-  
   
   
     
@@ -650,11 +648,13 @@
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
         
           
           <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
@@ -670,7 +670,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_5">
             <span class="md-nav__icon md-icon"></span>
             Integrations
@@ -681,19 +681,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../../../integrations/huggingface/" class="md-nav__link">
         
   
   
@@ -704,7 +695,6 @@
   
 
       </a>
-      
     </li>
   
 
@@ -717,7 +707,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../tensorflow/" class="md-nav__link">
+      <a href="../../../integrations/tensorflow/" class="md-nav__link">
         
   
   
@@ -740,7 +730,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../pytorch/" class="md-nav__link">
+      <a href="../../../integrations/pytorch/" class="md-nav__link">
         
   
   
@@ -763,7 +753,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../ray/" class="md-nav__link">
+      <a href="../../../integrations/ray/" class="md-nav__link">
         
   
   
@@ -907,7 +897,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../contributing.md" class="md-nav__link">
+      <a href="../../../contributing.md" class="md-nav__link">
         
   
   
@@ -934,8 +924,10 @@
       
   
   
+    
   
   
+  
     
     
     
@@ -946,13 +938,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-          
-        
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" checked>
         
           
           <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
@@ -968,7 +958,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_7">
             <span class="md-nav__icon md-icon"></span>
             Examples
@@ -979,6 +969,8 @@
                 
   
   
+    
+  
   
   
     
@@ -988,13 +980,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
       
         
         
-          
-        
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7_1" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7_1" checked>
         
           
           <label class="md-nav__link" for="__nav_7_1" id="__nav_7_1_label" tabindex="0">
@@ -1010,7 +1000,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_7_1_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_7_1_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_7_1">
             <span class="md-nav__icon md-icon"></span>
             Python
@@ -1021,10 +1011,32 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../../examples/python/llm_dataset_creation/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    LLM Dataset Creation
+    
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -1035,6 +1047,44 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#preparing-and-pre-processing-the-raw-dataset" class="md-nav__link">
+    <span class="md-ellipsis">
+      Preparing and pre-processing the raw dataset
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#creating-a-lance-dataset" class="md-nav__link">
+    <span class="md-ellipsis">
+      Creating a Lance dataset
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1047,7 +1097,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../examples/python/llm_training/" class="md-nav__link">
+      <a href="../llm_training/" class="md-nav__link">
         
   
   
@@ -1070,7 +1120,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../examples/python/flickr8k_dataset_creation/" class="md-nav__link">
+      <a href="../flickr8k_dataset_creation/" class="md-nav__link">
         
   
   
@@ -1093,7 +1143,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../examples/python/clip_training/" class="md-nav__link">
+      <a href="../clip_training/" class="md-nav__link">
         
   
   
@@ -1116,7 +1166,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../examples/python/artifact_management/" class="md-nav__link">
+      <a href="../artifact_management/" class="md-nav__link">
         
   
   
@@ -1189,7 +1239,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../examples/rust/write_read_dataset/" class="md-nav__link">
+      <a href="../../rust/write_read_dataset/" class="md-nav__link">
         
   
   
@@ -1212,7 +1262,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../examples/rust/hnsw/" class="md-nav__link">
+      <a href="../../rust/hnsw/" class="md-nav__link">
         
   
   
@@ -1235,7 +1285,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../examples/rust/llm_dataset_creation/" class="md-nav__link">
+      <a href="../../rust/llm_dataset_creation/" class="md-nav__link">
         
   
   
@@ -1384,6 +1434,32 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#preparing-and-pre-processing-the-raw-dataset" class="md-nav__link">
+    <span class="md-ellipsis">
+      Preparing and pre-processing the raw dataset
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#creating-a-lance-dataset" class="md-nav__link">
+    <span class="md-ellipsis">
+      Creating a Lance dataset
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -1401,17 +1477,85 @@
   
 
 
-<h1 id="lance-huggingface">Lance ❤️ HuggingFace<a class="headerlink" href="#lance-huggingface" title="Permanent link">&para;</a></h1>
-<p>The HuggingFace Hub has become the go to place for ML practitioners to find pre-trained models and useful datasets.</p>
-<p>HuggingFace datasets can be written directly into Lance format by using the
-<code>lance.write_dataset</code> method. You can write the entire dataset or a particular split. For example:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">datasets</span> <span class="c1"># pip install datasets</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">lance</span>
+<h1 id="creating-text-dataset-for-llm-training-using-lance">Creating text dataset for LLM training using Lance<a class="headerlink" href="#creating-text-dataset-for-llm-training-using-lance" title="Permanent link">&para;</a></h1>
+<p>Lance can be used for creating and caching a text (or code) dataset for pre-training / fine-tuning of Large Language Models.
+The need for this arises when one needs to train a model on a subset of data or process the data in chunks without downloading
+all of it on the disk at once. This becomes a considerable problem when you just want a subset of a Terabyte or Petabyte-scale dataset.</p>
+<p>In this example, we will be bypassing this problem by downloading a text dataset in parts, tokenizing it and saving it as a Lance dataset. 
+This can be done for as many or as few data samples as you wish with average memory consumption approximately 3-4 GBs!</p>
+<p>For this example, we are working with the <a href="https://huggingface.co/datasets/Salesforce/wikitext">wikitext</a> dataset,
+which is a collection of over 100 million tokens extracted from the set of verified Good and Featured articles on Wikipedia.</p>
+<h2 id="preparing-and-pre-processing-the-raw-dataset">Preparing and pre-processing the raw dataset<a class="headerlink" href="#preparing-and-pre-processing-the-raw-dataset" title="Permanent link">&para;</a></h2>
+<p>Let's first define the dataset and the tokenizer</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">lance</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">pyarrow</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pa</span>
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">lance</span><span class="o">.</span><span class="n">write_dataset</span><span class="p">(</span><span class="n">datasets</span><span class="o">.</span><span class="n">load_dataset</span><span class="p">(</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="s2">&quot;poloclub/diffusiondb&quot;</span><span class="p">,</span> <span class="n">split</span><span class="o">=</span><span class="s2">&quot;train[:10]&quot;</span><span class="p">,</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="p">),</span> <span class="s2">&quot;diffusiondb_train.lance&quot;</span><span class="p">)</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="kn">from</span><span class="w"> </span><span class="nn">datasets</span><span class="w"> </span><span class="kn">import</span> <span class="n">load_dataset</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="kn">from</span><span class="w"> </span><span class="nn">transformers</span><span class="w"> </span><span class="kn">import</span> <span class="n">AutoTokenizer</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="kn">from</span><span class="w"> </span><span class="nn">tqdm.auto</span><span class="w"> </span><span class="kn">import</span> <span class="n">tqdm</span>  <span class="c1"># optional for progress tracking</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="n">tokenizer</span> <span class="o">=</span> <span class="n">AutoTokenizer</span><span class="o">.</span><span class="n">from_pretrained</span><span class="p">(</span><span class="s1">&#39;gpt2&#39;</span><span class="p">)</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="n">dataset</span> <span class="o">=</span> <span class="n">load_dataset</span><span class="p">(</span><span class="s1">&#39;wikitext&#39;</span><span class="p">,</span> <span class="s1">&#39;wikitext-103-raw-v1&#39;</span><span class="p">,</span> <span class="n">streaming</span><span class="o">=</span><span class="kc">True</span><span class="p">)[</span><span class="s1">&#39;train&#39;</span><span class="p">]</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="n">dataset</span> <span class="o">=</span> <span class="n">dataset</span><span class="o">.</span><span class="n">shuffle</span><span class="p">(</span><span class="n">seed</span><span class="o">=</span><span class="mi">1337</span><span class="p">)</span>
 </span></code></pre></div>
+<p>The <code>streaming</code> argument in <code>load_dataset</code> is especially important because if you run it without setting it to 
+<code>True</code>, the datasets library will download the entire dataset first, even though you only wish to use a subset of it.
+With <code>streaming</code> set to <code>True</code>, the samples will be downloaded as they are needed.</p>
+<p>Now we will define a function to help us with tokenizing our samples, one-by-one.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">tokenize</span><span class="p">(</span><span class="n">sample</span><span class="p">,</span> <span class="n">field</span><span class="o">=</span><span class="s1">&#39;text&#39;</span><span class="p">):</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>    <span class="k">return</span> <span class="n">tokenizer</span><span class="p">(</span><span class="n">sample</span><span class="p">[</span><span class="n">field</span><span class="p">])[</span><span class="s1">&#39;input_ids&#39;</span><span class="p">]</span>
+</span></code></pre></div>
+<p>This function will receive a sample from a huggingface dataset and tokenize the values in the <code>field</code> column. This is the main text you want 
+to tokenize.</p>
+<h2 id="creating-a-lance-dataset">Creating a Lance dataset<a class="headerlink" href="#creating-a-lance-dataset" title="Permanent link">&para;</a></h2>
+<p>Now that we have set up our raw dataset and pre-processing code, 
+let's define the main function that takes in the dataset, number of samples and field, and returns a pyarrow batch that will later be written into a lance dataset.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">process_samples</span><span class="p">(</span><span class="n">dataset</span><span class="p">,</span> <span class="n">num_samples</span><span class="o">=</span><span class="mi">100_000</span><span class="p">,</span> <span class="n">field</span><span class="o">=</span><span class="s1">&#39;text&#39;</span><span class="p">):</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>    <span class="n">current_sample</span> <span class="o">=</span> <span class="mi">0</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>    <span class="k">for</span> <span class="n">sample</span> <span class="ow">in</span> <span class="n">tqdm</span><span class="p">(</span><span class="n">dataset</span><span class="p">,</span> <span class="n">total</span><span class="o">=</span><span class="n">num_samples</span><span class="p">):</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>        <span class="c1"># If we have added all 5M samples, stop</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>        <span class="k">if</span> <span class="n">current_sample</span> <span class="o">==</span> <span class="n">num_samples</span><span class="p">:</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>            <span class="k">break</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>        <span class="k">if</span> <span class="ow">not</span> <span class="n">sample</span><span class="p">[</span><span class="n">field</span><span class="p">]:</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>            <span class="k">continue</span>
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>        <span class="c1"># Tokenize the current sample</span>
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>        <span class="n">tokenized_sample</span> <span class="o">=</span> <span class="n">tokenize</span><span class="p">(</span><span class="n">sample</span><span class="p">,</span> <span class="n">field</span><span class="p">)</span>
+</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>        <span class="c1"># Increment the counter</span>
+</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>        <span class="n">current_sample</span> <span class="o">+=</span> <span class="mi">1</span>
+</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>        <span class="c1"># Yield a PyArrow RecordBatch</span>
+</span><span id="__span-2-14"><a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>        <span class="k">yield</span> <span class="n">pa</span><span class="o">.</span><span class="n">RecordBatch</span><span class="o">.</span><span class="n">from_arrays</span><span class="p">(</span>
+</span><span id="__span-2-15"><a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a>            <span class="p">[</span><span class="n">tokenized_sample</span><span class="p">],</span> 
+</span><span id="__span-2-16"><a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a>            <span class="n">names</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;input_ids&quot;</span><span class="p">]</span>
+</span><span id="__span-2-17"><a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a>        <span class="p">)</span>
+</span></code></pre></div>
+<p>This function will be iterating over the huggingface dataset, one sample at a time, tokenizing the sample and yielding a pyarrow <code>RecordBatch</code>
+with all the tokens. We will do this until we have reached the <code>num_samples</code> number of samples or the end of the dataset, whichever comes first.</p>
+<p>Please note that by 'sample', we mean one example (row) in the original dataset. What one example exactly means will depend on the dataset itself as it could 
+be one line or an entire file of text. In this example, it varies in length between a line and a paragraph of text.</p>
+<p>We also need to define a schema to tell Lance what type of data we are expecting in our table. Since our dataset consists only of tokens which are long integers, <code>int64</code> is the suitable datatype.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">schema</span> <span class="o">=</span> <span class="n">pa</span><span class="o">.</span><span class="n">schema</span><span class="p">([</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>    <span class="n">pa</span><span class="o">.</span><span class="n">field</span><span class="p">(</span><span class="s2">&quot;input_ids&quot;</span><span class="p">,</span> <span class="n">pa</span><span class="o">.</span><span class="n">int64</span><span class="p">())</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="p">])</span>
+</span></code></pre></div>
+<p>Finally, we need to define a <code>reader</code> that will be reading a stream of record batches from our <code>process_samples</code> function that yields 
+said record batches consisting of individual tokenized samples.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">reader</span> <span class="o">=</span> <span class="n">pa</span><span class="o">.</span><span class="n">RecordBatchReader</span><span class="o">.</span><span class="n">from_batches</span><span class="p">(</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>    <span class="n">schema</span><span class="p">,</span> 
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    <span class="n">process_samples</span><span class="p">(</span><span class="n">dataset</span><span class="p">,</span> <span class="n">num_samples</span><span class="o">=</span><span class="mi">500_000</span><span class="p">,</span> <span class="n">field</span><span class="o">=</span><span class="s1">&#39;text&#39;</span><span class="p">)</span> <span class="c1"># For 500K samples</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="p">)</span>
+</span></code></pre></div>
+<p>And finally we use the <code>lance.write_dataset</code> which will write the dataset to the disk.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># Write the dataset to disk</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">lance</span><span class="o">.</span><span class="n">write_dataset</span><span class="p">(</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>    <span class="n">reader</span><span class="p">,</span> 
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="s2">&quot;wikitext_500K.lance&quot;</span><span class="p">,</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>    <span class="n">schema</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="p">)</span>
+</span></code></pre></div>
+<p>If you want to apply some other pre-processing to the tokens before saving it to the disk (like masking, etc), you may add it in the 
+<code>process_samples</code> function.</p>
+<p>And that's it! Your dataset has been tokenized and saved to the disk! </p>
 
 
 
@@ -1503,10 +1647,10 @@
     
     
       
-      <script id="__config" type="application/json">{"base": "../..", "features": ["navigation.sections", "navigation.expand", "navigation.top", "search.highlight", "search.share", "content.code.copy", "content.code.annotate"], "search": "../../assets/javascripts/workers/search.d50fe291.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"base": "../../..", "features": ["navigation.sections", "navigation.expand", "navigation.top", "search.highlight", "search.share", "content.code.copy", "content.code.annotate"], "search": "../../../assets/javascripts/workers/search.d50fe291.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../../assets/javascripts/bundle.13a4f30d.min.js"></script>
+      <script src="../../../assets/javascripts/bundle.13a4f30d.min.js"></script>
       
     
   </body>

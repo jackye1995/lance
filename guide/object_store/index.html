@@ -10,13 +10,13 @@
       
       
       
-        <link rel="canonical" href="https://lancedb.github.io/lance/integrations/huggingface/">
+        <link rel="canonical" href="https://lancedb.github.io/lance/guide/object_store/">
       
       
-        <link rel="prev" href="../../format/format/">
+        <link rel="prev" href="../tags/">
       
       
-        <link rel="next" href="../tensorflow/">
+        <link rel="next" href="../distributed_write/">
       
       
       <link rel="icon" href="../../logo/logo.png">
@@ -24,7 +24,7 @@
     
     
       
-        <title>Huggingface - Lance</title>
+        <title>Object Store Configuration - Lance</title>
       
     
     
@@ -76,7 +76,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#lance-huggingface" class="md-skip">
+        <a href="#object-store-configuration" class="md-skip">
           Skip to content
         </a>
       
@@ -111,7 +111,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Huggingface
+              Object Store Configuration
             
           </span>
         </div>
@@ -302,8 +302,10 @@
       
   
   
+    
   
   
+  
     
     
     
@@ -314,13 +316,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-          
-        
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
         
           
           <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
@@ -336,7 +336,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_3">
             <span class="md-nav__icon md-icon"></span>
             User Guide
@@ -350,7 +350,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guide/read_and_write/" class="md-nav__link">
+      <a href="../read_and_write/" class="md-nav__link">
         
   
   
@@ -373,7 +373,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guide/data_evolution/" class="md-nav__link">
+      <a href="../data_evolution/" class="md-nav__link">
         
   
   
@@ -396,7 +396,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guide/blob/" class="md-nav__link">
+      <a href="../blob/" class="md-nav__link">
         
   
   
@@ -419,7 +419,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guide/tags/" class="md-nav__link">
+      <a href="../tags/" class="md-nav__link">
         
   
   
@@ -439,10 +439,32 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../../guide/object_store/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    Object Store Configuration
+    
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -453,6 +475,86 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#general-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      General Configuration
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#s3-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      S3 Configuration
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="S3 Configuration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#s3-compatible-stores" class="md-nav__link">
+    <span class="md-ellipsis">
+      S3-compatible stores
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#s3-express-directory-bucket" class="md-nav__link">
+    <span class="md-ellipsis">
+      S3 Express (Directory Bucket)
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#google-cloud-storage-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      Google Cloud Storage Configuration
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#azure-blob-storage-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      Azure Blob Storage Configuration
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -465,7 +567,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guide/distributed_write/" class="md-nav__link">
+      <a href="../distributed_write/" class="md-nav__link">
         
   
   
@@ -488,7 +590,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guide/performance/" class="md-nav__link">
+      <a href="../performance/" class="md-nav__link">
         
   
   
@@ -511,7 +613,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guide/tokenizer/" class="md-nav__link">
+      <a href="../tokenizer/" class="md-nav__link">
         
   
   
@@ -534,7 +636,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guide/arrays/" class="md-nav__link">
+      <a href="../arrays/" class="md-nav__link">
         
   
   
@@ -636,8 +738,6 @@
       
   
   
-    
-  
   
   
     
@@ -650,11 +750,13 @@
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
         
           
           <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
@@ -670,7 +772,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_5">
             <span class="md-nav__icon md-icon"></span>
             Integrations
@@ -681,19 +783,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../../integrations/huggingface/" class="md-nav__link">
         
   
   
@@ -704,7 +797,6 @@
   
 
       </a>
-      
     </li>
   
 
@@ -717,7 +809,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../tensorflow/" class="md-nav__link">
+      <a href="../../integrations/tensorflow/" class="md-nav__link">
         
   
   
@@ -740,7 +832,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../pytorch/" class="md-nav__link">
+      <a href="../../integrations/pytorch/" class="md-nav__link">
         
   
   
@@ -763,7 +855,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../ray/" class="md-nav__link">
+      <a href="../../integrations/ray/" class="md-nav__link">
         
   
   
@@ -1384,6 +1476,74 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#general-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      General Configuration
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#s3-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      S3 Configuration
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="S3 Configuration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#s3-compatible-stores" class="md-nav__link">
+    <span class="md-ellipsis">
+      S3-compatible stores
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#s3-express-directory-bucket" class="md-nav__link">
+    <span class="md-ellipsis">
+      S3 Express (Directory Bucket)
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#google-cloud-storage-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      Google Cloud Storage Configuration
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#azure-blob-storage-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      Azure Blob Storage Configuration
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -1401,17 +1561,310 @@
   
 
 
-<h1 id="lance-huggingface">Lance ❤️ HuggingFace<a class="headerlink" href="#lance-huggingface" title="Permanent link">&para;</a></h1>
-<p>The HuggingFace Hub has become the go to place for ML practitioners to find pre-trained models and useful datasets.</p>
-<p>HuggingFace datasets can be written directly into Lance format by using the
-<code>lance.write_dataset</code> method. You can write the entire dataset or a particular split. For example:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">datasets</span> <span class="c1"># pip install datasets</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">lance</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">lance</span><span class="o">.</span><span class="n">write_dataset</span><span class="p">(</span><span class="n">datasets</span><span class="o">.</span><span class="n">load_dataset</span><span class="p">(</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="s2">&quot;poloclub/diffusiondb&quot;</span><span class="p">,</span> <span class="n">split</span><span class="o">=</span><span class="s2">&quot;train[:10]&quot;</span><span class="p">,</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="p">),</span> <span class="s2">&quot;diffusiondb_train.lance&quot;</span><span class="p">)</span>
+<h1 id="object-store-configuration">Object Store Configuration<a class="headerlink" href="#object-store-configuration" title="Permanent link">&para;</a></h1>
+<p>Lance supports object stores such as AWS S3 (and compatible stores), Azure Blob Store,
+and Google Cloud Storage. Which object store to use is determined by the URI scheme of
+the dataset path. For example, <code>s3://bucket/path</code> will use S3, <code>az://bucket/path</code>
+will use Azure, and <code>gs://bucket/path</code> will use GCS.</p>
+<p>These object stores take additional configuration objects. There are two ways to
+specify these configurations: by setting environment variables or by passing them
+to the <code>storage_options</code> parameter of <code>lance.dataset</code> and
+<code>lance.write_dataset</code>. So for example, to globally set a higher timeout,
+you would run in your shell:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">TIMEOUT</span><span class="o">=</span>60s
 </span></code></pre></div>
+<p>If you only want to set the timeout for a single dataset, you can pass it as a
+storage option:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">lance</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">ds</span> <span class="o">=</span> <span class="n">lance</span><span class="o">.</span><span class="n">dataset</span><span class="p">(</span><span class="s2">&quot;s3://path&quot;</span><span class="p">,</span> <span class="n">storage_options</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;timeout&quot;</span><span class="p">:</span> <span class="s2">&quot;60s&quot;</span><span class="p">})</span>
+</span></code></pre></div>
+<h2 id="general-configuration">General Configuration<a class="headerlink" href="#general-configuration" title="Permanent link">&para;</a></h2>
+<p>These options apply to all object stores.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>allow_http</code></td>
+<td>Allow non-TLS, i.e. non-HTTPS connections. Default, <code>False</code>.</td>
+</tr>
+<tr>
+<td><code>download_retry_count</code></td>
+<td>Number of times to retry a download. Default, <code>3</code>. This limit is applied when the HTTP request succeeds but the response is not fully downloaded, typically due to a violation of <code>request_timeout</code>.</td>
+</tr>
+<tr>
+<td><code>allow_invalid_certificates</code></td>
+<td>Skip certificate validation on https connections. Default, <code>False</code>. Warning: This is insecure and should only be used for testing.</td>
+</tr>
+<tr>
+<td><code>connect_timeout</code></td>
+<td>Timeout for only the connect phase of a Client. Default, <code>5s</code>.</td>
+</tr>
+<tr>
+<td><code>request_timeout</code></td>
+<td>Timeout for the entire request, from connection until the response body has finished. Default, <code>30s</code>.</td>
+</tr>
+<tr>
+<td><code>user_agent</code></td>
+<td>User agent string to use in requests.</td>
+</tr>
+<tr>
+<td><code>proxy_url</code></td>
+<td>URL of a proxy server to use for requests. Default, <code>None</code>.</td>
+</tr>
+<tr>
+<td><code>proxy_ca_certificate</code></td>
+<td>PEM-formatted CA certificate for proxy connections</td>
+</tr>
+<tr>
+<td><code>proxy_excludes</code></td>
+<td>List of hosts that bypass proxy. This is a comma separated list of domains and IP masks. Any subdomain of the provided domain will be bypassed. For example, <code>example.com, 192.168.1.0/24</code> would bypass <code>https://api.example.com</code>, <code>https://www.example.com</code>, and any IP in the range <code>192.168.1.0/24</code>.</td>
+</tr>
+<tr>
+<td><code>client_max_retries</code></td>
+<td>Number of times for a s3 client to retry the request. Default, <code>10</code>.</td>
+</tr>
+<tr>
+<td><code>client_retry_timeout</code></td>
+<td>Timeout for a s3 client to retry the request in seconds. Default, <code>180</code>.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="s3-configuration">S3 Configuration<a class="headerlink" href="#s3-configuration" title="Permanent link">&para;</a></h2>
+<p>S3 (and S3-compatible stores) have additional configuration options that configure
+authorization and S3-specific features (such as server-side encryption).</p>
+<p>AWS credentials can be set in the environment variables <code>AWS_ACCESS_KEY_ID</code>,
+<code>AWS_SECRET_ACCESS_KEY</code>, and <code>AWS_SESSION_TOKEN</code>. Alternatively, they can be
+passed as parameters to the <code>storage_options</code> parameter:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">lance</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">ds</span> <span class="o">=</span> <span class="n">lance</span><span class="o">.</span><span class="n">dataset</span><span class="p">(</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>    <span class="s2">&quot;s3://bucket/path&quot;</span><span class="p">,</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="n">storage_options</span><span class="o">=</span><span class="p">{</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>        <span class="s2">&quot;access_key_id&quot;</span><span class="p">:</span> <span class="s2">&quot;my-access-key&quot;</span><span class="p">,</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>        <span class="s2">&quot;secret_access_key&quot;</span><span class="p">:</span> <span class="s2">&quot;my-secret-key&quot;</span><span class="p">,</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>        <span class="s2">&quot;session_token&quot;</span><span class="p">:</span> <span class="s2">&quot;my-session-token&quot;</span><span class="p">,</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>    <span class="p">}</span>
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="p">)</span>
+</span></code></pre></div>
+<p>If you are using AWS SSO, you can specify the <code>AWS_PROFILE</code> environment variable.
+It cannot be specified in the <code>storage_options</code> parameter.</p>
+<p>The following keys can be used as both environment variables or keys in the
+<code>storage_options</code> parameter:</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>aws_region</code> / <code>region</code></td>
+<td>The AWS region the bucket is in. This can be automatically detected when using AWS S3, but must be specified for S3-compatible stores.</td>
+</tr>
+<tr>
+<td><code>aws_access_key_id</code> / <code>access_key_id</code></td>
+<td>The AWS access key ID to use.</td>
+</tr>
+<tr>
+<td><code>aws_secret_access_key</code> / <code>secret_access_key</code></td>
+<td>The AWS secret access key to use.</td>
+</tr>
+<tr>
+<td><code>aws_session_token</code> / <code>session_token</code></td>
+<td>The AWS session token to use.</td>
+</tr>
+<tr>
+<td><code>aws_endpoint</code> / <code>endpoint</code></td>
+<td>The endpoint to use for S3-compatible stores.</td>
+</tr>
+<tr>
+<td><code>aws_virtual_hosted_style_request</code> / <code>virtual_hosted_style_request</code></td>
+<td>Whether to use virtual hosted-style requests, where bucket name is part of the endpoint. Meant to be used with <code>aws_endpoint</code>. Default, <code>False</code>.</td>
+</tr>
+<tr>
+<td><code>aws_s3_express</code> / <code>s3_express</code></td>
+<td>Whether to use S3 Express One Zone endpoints. Default, <code>False</code>. See more details below.</td>
+</tr>
+<tr>
+<td><code>aws_server_side_encryption</code></td>
+<td>The server-side encryption algorithm to use. Must be one of <code>"AES256"</code>, <code>"aws:kms"</code>, or <code>"aws:kms:dsse"</code>. Default, <code>None</code>.</td>
+</tr>
+<tr>
+<td><code>aws_sse_kms_key_id</code></td>
+<td>The KMS key ID to use for server-side encryption. If set, <code>aws_server_side_encryption</code> must be <code>"aws:kms"</code> or <code>"aws:kms:dsse"</code>.</td>
+</tr>
+<tr>
+<td><code>aws_sse_bucket_key_enabled</code></td>
+<td>Whether to use bucket keys for server-side encryption.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="s3-compatible-stores">S3-compatible stores<a class="headerlink" href="#s3-compatible-stores" title="Permanent link">&para;</a></h3>
+<p>Lance can also connect to S3-compatible stores, such as MinIO. To do so, you must
+specify both region and endpoint:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">lance</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">ds</span> <span class="o">=</span> <span class="n">lance</span><span class="o">.</span><span class="n">dataset</span><span class="p">(</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    <span class="s2">&quot;s3://bucket/path&quot;</span><span class="p">,</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="n">storage_options</span><span class="o">=</span><span class="p">{</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>        <span class="s2">&quot;region&quot;</span><span class="p">:</span> <span class="s2">&quot;us-east-1&quot;</span><span class="p">,</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>        <span class="s2">&quot;endpoint&quot;</span><span class="p">:</span> <span class="s2">&quot;http://minio:9000&quot;</span><span class="p">,</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>    <span class="p">}</span>
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="p">)</span>
+</span></code></pre></div>
+<p>This can also be done with the <code>AWS_ENDPOINT</code> and <code>AWS_DEFAULT_REGION</code> environment variables.</p>
+<h3 id="s3-express-directory-bucket">S3 Express (Directory Bucket)<a class="headerlink" href="#s3-express-directory-bucket" title="Permanent link">&para;</a></h3>
+<p>Lance supports <a href="https://aws.amazon.com/s3/storage-classes/express-one-zone/">S3 Express One Zone</a> buckets,
+a.k.a. S3 directory buckets.
+S3 Express buckets only support connecting from an EC2 instance within the same
+region.
+By default, Lance automatically recognize the <code>--x-s3</code> suffix of an express bucket,
+there is no special configuration needed.</p>
+<p>In case of an access point or private link that hides the bucket name,
+you can configure express bucket access explicitly through storage option <code>s3_express</code>.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">lance</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">ds</span> <span class="o">=</span> <span class="n">lance</span><span class="o">.</span><span class="n">dataset</span><span class="p">(</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    <span class="s2">&quot;s3://my-bucket--use1-az4--x-s3/path/imagenet.lance&quot;</span><span class="p">,</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    <span class="n">storage_options</span><span class="o">=</span><span class="p">{</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>        <span class="s2">&quot;region&quot;</span><span class="p">:</span> <span class="s2">&quot;us-east-1&quot;</span><span class="p">,</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>        <span class="s2">&quot;s3_express&quot;</span><span class="p">:</span> <span class="s2">&quot;true&quot;</span><span class="p">,</span>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>    <span class="p">}</span>
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="p">)</span>
+</span></code></pre></div>
+<h2 id="google-cloud-storage-configuration">Google Cloud Storage Configuration<a class="headerlink" href="#google-cloud-storage-configuration" title="Permanent link">&para;</a></h2>
+<p>GCS credentials are configured by setting the <code>GOOGLE_SERVICE_ACCOUNT</code> environment
+variable to the path of a JSON file containing the service account credentials.
+Alternatively, you can pass the path to the JSON file in the <code>storage_options</code></p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">lance</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">ds</span> <span class="o">=</span> <span class="n">lance</span><span class="o">.</span><span class="n">dataset</span><span class="p">(</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>    <span class="s2">&quot;gs://my-bucket/my-dataset&quot;</span><span class="p">,</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="n">storage_options</span><span class="o">=</span><span class="p">{</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>        <span class="s2">&quot;service_account&quot;</span><span class="p">:</span> <span class="s2">&quot;path/to/service-account.json&quot;</span><span class="p">,</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>    <span class="p">}</span>
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="p">)</span>
+</span></code></pre></div>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>By default, GCS uses HTTP/1 for communication, as opposed to HTTP/2. This improves
+maximum throughput significantly. However, if you wish to use HTTP/2 for some reason,
+you can set the environment variable <code>HTTP1_ONLY</code> to <code>false</code>.</p>
+</div>
+<p>The following keys can be used as both environment variables or keys in the
+<code>storage_options</code> parameter:</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>google_service_account</code> / <code>service_account</code></td>
+<td>Path to the service account JSON file.</td>
+</tr>
+<tr>
+<td><code>google_service_account_key</code> / <code>service_account_key</code></td>
+<td>The serialized service account key.</td>
+</tr>
+<tr>
+<td><code>google_application_credentials</code> / <code>application_credentials</code></td>
+<td>Path to the application credentials.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="azure-blob-storage-configuration">Azure Blob Storage Configuration<a class="headerlink" href="#azure-blob-storage-configuration" title="Permanent link">&para;</a></h2>
+<p>Azure Blob Storage credentials can be configured by setting the <code>AZURE_STORAGE_ACCOUNT_NAME</code>
+and <code>AZURE_STORAGE_ACCOUNT_KEY</code> environment variables. Alternatively, you can pass
+the account name and key in the <code>storage_options</code> parameter:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">lance</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="n">ds</span> <span class="o">=</span> <span class="n">lance</span><span class="o">.</span><span class="n">dataset</span><span class="p">(</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>    <span class="s2">&quot;az://my-container/my-dataset&quot;</span><span class="p">,</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>    <span class="n">storage_options</span><span class="o">=</span><span class="p">{</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>        <span class="s2">&quot;account_name&quot;</span><span class="p">:</span> <span class="s2">&quot;some-account&quot;</span><span class="p">,</span>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>        <span class="s2">&quot;account_key&quot;</span><span class="p">:</span> <span class="s2">&quot;some-key&quot;</span><span class="p">,</span>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>    <span class="p">}</span>
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="p">)</span>
+</span></code></pre></div>
+<p>These keys can be used as both environment variables or keys in the <code>storage_options</code> parameter:</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>azure_storage_account_name</code> / <code>account_name</code></td>
+<td>The name of the azure storage account.</td>
+</tr>
+<tr>
+<td><code>azure_storage_account_key</code> / <code>account_key</code></td>
+<td>The serialized service account key.</td>
+</tr>
+<tr>
+<td><code>azure_client_id</code> / <code>client_id</code></td>
+<td>Service principal client id for authorizing requests.</td>
+</tr>
+<tr>
+<td><code>azure_client_secret</code> / <code>client_secret</code></td>
+<td>Service principal client secret for authorizing requests.</td>
+</tr>
+<tr>
+<td><code>azure_tenant_id</code> / <code>tenant_id</code></td>
+<td>Tenant id used in oauth flows.</td>
+</tr>
+<tr>
+<td><code>azure_storage_sas_key</code> / <code>azure_storage_sas_token</code> / <code>sas_key</code> / <code>sas_token</code></td>
+<td>Shared access signature. The signature is expected to be percent-encoded, much like they are provided in the azure storage explorer or azure portal.</td>
+</tr>
+<tr>
+<td><code>azure_storage_token</code> / <code>bearer_token</code> / <code>token</code></td>
+<td>Bearer token.</td>
+</tr>
+<tr>
+<td><code>azure_storage_use_emulator</code> / <code>object_store_use_emulator</code> / <code>use_emulator</code></td>
+<td>Use object store with azurite storage emulator.</td>
+</tr>
+<tr>
+<td><code>azure_endpoint</code> / <code>endpoint</code></td>
+<td>Override the endpoint used to communicate with blob storage.</td>
+</tr>
+<tr>
+<td><code>azure_use_fabric_endpoint</code> / <code>use_fabric_endpoint</code></td>
+<td>Use object store with url scheme account.dfs.fabric.microsoft.com.</td>
+</tr>
+<tr>
+<td><code>azure_msi_endpoint</code> / <code>azure_identity_endpoint</code> / <code>identity_endpoint</code> / <code>msi_endpoint</code></td>
+<td>Endpoint to request a imds managed identity token.</td>
+</tr>
+<tr>
+<td><code>azure_object_id</code> / <code>object_id</code></td>
+<td>Object id for use with managed identity authentication.</td>
+</tr>
+<tr>
+<td><code>azure_msi_resource_id</code> / <code>msi_resource_id</code></td>
+<td>Msi resource id for use with managed identity authentication.</td>
+</tr>
+<tr>
+<td><code>azure_federated_token_file</code> / <code>federated_token_file</code></td>
+<td>File containing token for Azure AD workload identity federation.</td>
+</tr>
+<tr>
+<td><code>azure_use_azure_cli</code> / <code>use_azure_cli</code></td>
+<td>Use azure cli for acquiring access token.</td>
+</tr>
+<tr>
+<td><code>azure_disable_tagging</code> / <code>disable_tagging</code></td>
+<td>Disables tagging objects. This can be desirable if not supported by the backing store.</td>
+</tr>
+</tbody>
+</table>
 
 
 

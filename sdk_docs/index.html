@@ -10,28 +10,26 @@
       
       
       
-        <link rel="canonical" href="https://lancedb.github.io/lance/guide/blob/">
+        <link rel="canonical" href="https://lancedb.github.io/lance/sdk_docs/">
       
       
-        <link rel="prev" href="../data_evolution/">
+        <link rel="prev" href="../examples/rust/llm_dataset_creation/">
       
       
-        <link rel="next" href="../tags/">
       
-      
-      <link rel="icon" href="../../logo/logo.png">
+      <link rel="icon" href="../logo/logo.png">
       <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.6.14">
     
     
       
-        <title>Blob API - Lance</title>
+        <title>Overview - Lance</title>
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.342714a4.min.css">
+      <link rel="stylesheet" href="../assets/stylesheets/main.342714a4.min.css">
       
         
-        <link rel="stylesheet" href="../../assets/stylesheets/palette.06af60db.min.css">
+        <link rel="stylesheet" href="../assets/stylesheets/palette.06af60db.min.css">
       
       
 
@@ -50,7 +48,7 @@
       
     
     
-    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -76,7 +74,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#blob-as-files" class="md-skip">
+        <a href="#sdk-documentation" class="md-skip">
           Skip to content
         </a>
       
@@ -90,9 +88,9 @@
 
 <header class="md-header" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="../.." title="Lance" class="md-header__button md-logo" aria-label="Lance" data-md-component="logo">
+    <a href=".." title="Lance" class="md-header__button md-logo" aria-label="Lance" data-md-component="logo">
       
-  <img src="../../logo/white.png" alt="logo">
+  <img src="../logo/white.png" alt="logo">
 
     </a>
     <label class="md-header__button md-icon" for="__drawer">
@@ -109,7 +107,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Blob API
+              Overview
             
           </span>
         </div>
@@ -225,7 +223,7 @@
   
   
     <li class="md-tabs__item">
-      <a href="../.." class="md-tabs__link">
+      <a href=".." class="md-tabs__link">
         
   
   
@@ -246,7 +244,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../start/install/" class="md-tabs__link">
+        <a href="../start/install/" class="md-tabs__link">
           
   
   
@@ -262,13 +260,11 @@
   
   
   
-    
-  
   
     
     
-      <li class="md-tabs__item md-tabs__item--active">
-        <a href="../read_and_write/" class="md-tabs__link">
+      <li class="md-tabs__item">
+        <a href="../guide/read_and_write/" class="md-tabs__link">
           
   
   
@@ -288,7 +284,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../format/format/" class="md-tabs__link">
+        <a href="../format/format/" class="md-tabs__link">
           
   
   
@@ -308,7 +304,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../integrations/pytorch/" class="md-tabs__link">
+        <a href="../integrations/pytorch/" class="md-tabs__link">
           
   
   
@@ -328,7 +324,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../community/contributing/" class="md-tabs__link">
+        <a href="../community/contributing/" class="md-tabs__link">
           
   
   
@@ -355,7 +351,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../examples/python/llm_dataset_creation/" class="md-tabs__link">
+        <a href="../examples/python/llm_dataset_creation/" class="md-tabs__link">
           
   
   
@@ -374,11 +370,13 @@
   
   
   
+    
+  
   
     
     
-      <li class="md-tabs__item">
-        <a href="../../sdk_docs/" class="md-tabs__link">
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="./" class="md-tabs__link">
           
   
   
@@ -412,9 +410,9 @@
 
 <nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="../.." title="Lance" class="md-nav__button md-logo" aria-label="Lance" data-md-component="logo">
+    <a href=".." title="Lance" class="md-nav__button md-logo" aria-label="Lance" data-md-component="logo">
       
-  <img src="../../logo/white.png" alt="logo">
+  <img src="../logo/white.png" alt="logo">
 
     </a>
     Lance
@@ -441,7 +439,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../.." class="md-nav__link">
+      <a href=".." class="md-nav__link">
         
   
   
@@ -506,7 +504,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../start/install/" class="md-nav__link">
+      <a href="../start/install/" class="md-nav__link">
         
   
   
@@ -529,7 +527,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../start/quickstart/" class="md-nav__link">
+      <a href="../start/quickstart/" class="md-nav__link">
         
   
   
@@ -556,31 +554,26 @@
       
   
   
-    
   
   
-  
     
     
     
     
-      
-        
-        
       
       
         
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
         
           
-          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
             
   
   
@@ -593,7 +586,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_3">
             <span class="md-nav__icon md-icon"></span>
             User Guide
@@ -607,7 +600,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../read_and_write/" class="md-nav__link">
+      <a href="../guide/read_and_write/" class="md-nav__link">
         
   
   
@@ -630,7 +623,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../data_evolution/" class="md-nav__link">
+      <a href="../guide/data_evolution/" class="md-nav__link">
         
   
   
@@ -650,19 +643,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../guide/blob/" class="md-nav__link">
         
   
   
@@ -673,7 +657,6 @@
   
 
       </a>
-      
     </li>
   
 
@@ -686,7 +669,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../tags/" class="md-nav__link">
+      <a href="../guide/tags/" class="md-nav__link">
         
   
   
@@ -709,7 +692,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../object_store/" class="md-nav__link">
+      <a href="../guide/object_store/" class="md-nav__link">
         
   
   
@@ -732,7 +715,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../distributed_write/" class="md-nav__link">
+      <a href="../guide/distributed_write/" class="md-nav__link">
         
   
   
@@ -755,7 +738,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../performance/" class="md-nav__link">
+      <a href="../guide/performance/" class="md-nav__link">
         
   
   
@@ -778,7 +761,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../tokenizer/" class="md-nav__link">
+      <a href="../guide/tokenizer/" class="md-nav__link">
         
   
   
@@ -801,7 +784,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../arrays/" class="md-nav__link">
+      <a href="../guide/arrays/" class="md-nav__link">
         
   
   
@@ -874,7 +857,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../format/format/" class="md-nav__link">
+      <a href="../format/format/" class="md-nav__link">
         
   
   
@@ -947,7 +930,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../integrations/pytorch/" class="md-nav__link">
+      <a href="../integrations/pytorch/" class="md-nav__link">
         
   
   
@@ -970,7 +953,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../integrations/tensorflow/" class="md-nav__link">
+      <a href="../integrations/tensorflow/" class="md-nav__link">
         
   
   
@@ -993,7 +976,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../integrations/ray/" class="md-nav__link">
+      <a href="../integrations/ray/" class="md-nav__link">
         
   
   
@@ -1016,7 +999,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../integrations/huggingface/" class="md-nav__link">
+      <a href="../integrations/huggingface/" class="md-nav__link">
         
   
   
@@ -1158,7 +1141,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../community/contributing/" class="md-nav__link">
+      <a href="../community/contributing/" class="md-nav__link">
         
   
   
@@ -1274,7 +1257,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../examples/python/llm_dataset_creation/" class="md-nav__link">
+      <a href="../examples/python/llm_dataset_creation/" class="md-nav__link">
         
   
   
@@ -1297,7 +1280,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../examples/python/llm_training/" class="md-nav__link">
+      <a href="../examples/python/llm_training/" class="md-nav__link">
         
   
   
@@ -1320,7 +1303,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../examples/python/flickr8k_dataset_creation/" class="md-nav__link">
+      <a href="../examples/python/flickr8k_dataset_creation/" class="md-nav__link">
         
   
   
@@ -1343,7 +1326,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../examples/python/clip_training/" class="md-nav__link">
+      <a href="../examples/python/clip_training/" class="md-nav__link">
         
   
   
@@ -1366,7 +1349,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../examples/python/artifact_management/" class="md-nav__link">
+      <a href="../examples/python/artifact_management/" class="md-nav__link">
         
   
   
@@ -1440,7 +1423,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../examples/rust/write_read_dataset/" class="md-nav__link">
+      <a href="../examples/rust/write_read_dataset/" class="md-nav__link">
         
   
   
@@ -1463,7 +1446,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../examples/rust/hnsw/" class="md-nav__link">
+      <a href="../examples/rust/hnsw/" class="md-nav__link">
         
   
   
@@ -1486,7 +1469,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../examples/rust/llm_dataset_creation/" class="md-nav__link">
+      <a href="../examples/rust/llm_dataset_creation/" class="md-nav__link">
         
   
   
@@ -1521,26 +1504,31 @@
       
   
   
+    
   
   
+  
     
     
     
     
+      
+        
+        
       
       
         
       
     
     
-    <li class="md-nav__item md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" checked>
         
           
-          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
             
   
   
@@ -1553,7 +1541,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_8">
             <span class="md-nav__icon md-icon"></span>
             SDK Docs
@@ -1564,10 +1552,19 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../../sdk_docs/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -1578,6 +1575,7 @@
   
 
       </a>
+      
     </li>
   
 
@@ -1673,50 +1671,14 @@
   
 
 
-<h1 id="blob-as-files">Blob As Files<a class="headerlink" href="#blob-as-files" title="Permanent link">&para;</a></h1>
-<p>Unlike other data formats, large multimodal data is a first-class citizen in the Lance columnar format.
-Lance provides a high-level API to store and retrieve large binary objects (blobs) in Lance datasets.</p>
-<p><img alt="Blob" src="../../images/blob.png" /></p>
-<p>Lance serves large binary data using <code>lance.BlobFile</code>, which
-is a file-like object that lazily reads large binary objects.</p>
-<p>To create a Lance dataset with large blob data, you can mark a large binary column as a blob column by
-adding the metadata <code>lance-encoding:blob</code> to <code>true</code>.</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">pyarrow</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pa</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">schema</span> <span class="o">=</span> <span class="n">pa</span><span class="o">.</span><span class="n">schema</span><span class="p">(</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="p">[</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>        <span class="n">pa</span><span class="o">.</span><span class="n">field</span><span class="p">(</span><span class="s2">&quot;id&quot;</span><span class="p">,</span> <span class="n">pa</span><span class="o">.</span><span class="n">int64</span><span class="p">()),</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>        <span class="n">pa</span><span class="o">.</span><span class="n">field</span><span class="p">(</span><span class="s2">&quot;video&quot;</span><span class="p">,</span>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>            <span class="n">pa</span><span class="o">.</span><span class="n">large_binary</span><span class="p">(),</span>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>            <span class="n">metadata</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;lance-encoding:blob&quot;</span><span class="p">:</span> <span class="s2">&quot;true&quot;</span><span class="p">}</span>
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>        <span class="p">),</span>
-</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="p">]</span>
-</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="p">)</span>
-</span></code></pre></div>
-<p>To fetch blobs from a Lance dataset, you can use <code>lance.dataset.LanceDataset.take_blobs</code>.</p>
-<p>For example, it's easy to use <code>BlobFile</code> to extract frames from a video file without
-loading the entire video into memory.</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">av</span> <span class="c1"># pip install av</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">lance</span>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="n">ds</span> <span class="o">=</span> <span class="n">lance</span><span class="o">.</span><span class="n">dataset</span><span class="p">(</span><span class="s2">&quot;./youtube.lance&quot;</span><span class="p">)</span>
-</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="n">start_time</span><span class="p">,</span> <span class="n">end_time</span> <span class="o">=</span> <span class="mi">500</span><span class="p">,</span> <span class="mi">1000</span>
-</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="n">blobs</span> <span class="o">=</span> <span class="n">ds</span><span class="o">.</span><span class="n">take_blobs</span><span class="p">([</span><span class="mi">5</span><span class="p">],</span> <span class="s2">&quot;video&quot;</span><span class="p">)</span>
-</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="k">with</span> <span class="n">av</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="n">blobs</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span> <span class="k">as</span> <span class="n">container</span><span class="p">:</span>
-</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>    <span class="n">stream</span> <span class="o">=</span> <span class="n">container</span><span class="o">.</span><span class="n">streams</span><span class="o">.</span><span class="n">video</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
-</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>    <span class="n">stream</span><span class="o">.</span><span class="n">codec_context</span><span class="o">.</span><span class="n">skip_frame</span> <span class="o">=</span> <span class="s2">&quot;NONKEY&quot;</span>
-</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>
-</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>    <span class="n">start_time</span> <span class="o">=</span> <span class="n">start_time</span> <span class="o">/</span> <span class="n">stream</span><span class="o">.</span><span class="n">time_base</span>
-</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>    <span class="n">start_time</span> <span class="o">=</span> <span class="n">start_time</span><span class="o">.</span><span class="n">as_integer_ratio</span><span class="p">()[</span><span class="mi">0</span><span class="p">]</span>
-</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>    <span class="n">end_time</span> <span class="o">=</span> <span class="n">end_time</span> <span class="o">/</span> <span class="n">stream</span><span class="o">.</span><span class="n">time_base</span>
-</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>    <span class="n">container</span><span class="o">.</span><span class="n">seek</span><span class="p">(</span><span class="n">start_time</span><span class="p">,</span> <span class="n">stream</span><span class="o">=</span><span class="n">stream</span><span class="p">)</span>
-</span><span id="__span-1-15"><a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>
-</span><span id="__span-1-16"><a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a>    <span class="k">for</span> <span class="n">frame</span> <span class="ow">in</span> <span class="n">container</span><span class="o">.</span><span class="n">decode</span><span class="p">(</span><span class="n">stream</span><span class="p">):</span>
-</span><span id="__span-1-17"><a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a>        <span class="k">if</span> <span class="n">frame</span><span class="o">.</span><span class="n">time</span> <span class="o">&gt;</span> <span class="n">end_time</span><span class="p">:</span>
-</span><span id="__span-1-18"><a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a>            <span class="k">break</span>
-</span><span id="__span-1-19"><a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a>        <span class="n">display</span><span class="p">(</span><span class="n">frame</span><span class="o">.</span><span class="n">to_image</span><span class="p">())</span>
-</span><span id="__span-1-20"><a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a>        <span class="n">clear_output</span><span class="p">(</span><span class="n">wait</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span> 
-</span></code></pre></div>
+<h1 id="sdk-documentation">SDK Documentation<a class="headerlink" href="#sdk-documentation" title="Permanent link">&para;</a></h1>
+<p>Lance provides comprehensive documentation for all the language SDKs. 
+These auto-generated docs contain detailed information about 
+all classes, functions, and methods available in each language.</p>
+<ul>
+<li><a href="https://lancedb.github.io/lance-python-doc">Python</a></li>
+<li><a href="https://docs.rs/lance/latest/lance">Rust</a></li>
+</ul>
 
 
 
@@ -1808,10 +1770,10 @@ loading the entire video into memory.</p>
     
     
       
-      <script id="__config" type="application/json">{"base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.instant", "navigation.tracking", "navigation.top", "search.highlight", "search.share", "content.code.copy", "content.code.annotate"], "search": "../../assets/javascripts/workers/search.d50fe291.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"base": "..", "features": ["navigation.tabs", "navigation.sections", "navigation.instant", "navigation.tracking", "navigation.top", "search.highlight", "search.share", "content.code.copy", "content.code.annotate"], "search": "../assets/javascripts/workers/search.d50fe291.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../../assets/javascripts/bundle.13a4f30d.min.js"></script>
+      <script src="../assets/javascripts/bundle.13a4f30d.min.js"></script>
       
     
   </body>

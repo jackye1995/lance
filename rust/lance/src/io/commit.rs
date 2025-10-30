@@ -539,7 +539,8 @@ fn must_recalculate_fragment_bitmap(
 ) -> bool {
     // If the fragment bitmap was written by an old version of lance then we need to recalculate
     // it because it could be corrupt due to a bug in versions < 0.8.15
-    index.fragment_bitmap.is_none() || version.map(|v| v.older_than(0, 8, 15)).unwrap_or(true)
+    // If we can't parse the version, we assume it's old and needs recalculation
+    index.fragment_bitmap.is_none() || version.and_then(|v| v.older_than(0, 8, 15)).unwrap_or(true)
 }
 
 /// Update indices with new fields.

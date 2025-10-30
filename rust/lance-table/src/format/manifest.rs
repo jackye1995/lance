@@ -684,19 +684,20 @@ impl WriterVersion {
         Some((major, minor, patch, tag))
     }
 
-    pub fn semver_or_panic(&self) -> (u32, u32, u32, Option<&str>) {
+    /// Return Some(true) if self is older than the given major/minor/patch,
+    /// Some(false) if it is the same or newer, or None if the version cannot be parsed.
+    pub fn older_than(&self, major: u32, minor: u32, patch: u32) -> Option<bool> {
         self.semver()
-            .unwrap_or_else(|| panic!("Invalid writer version: {}", self.version))
+            .map(|version| (version.0, version.1, version.2) < (major, minor, patch))
     }
 
-    /// Return true if self is older than the given major/minor/patch
-    pub fn older_than(&self, major: u32, minor: u32, patch: u32) -> bool {
-        let version = self.semver_or_panic();
-        (version.0, version.1, version.2) < (major, minor, patch)
-    }
-
-    pub fn bump(&self, part: VersionPart, keep_tag: bool) -> Self {
-        let parts = self.semver_or_panic();
+    pub fn bump(&self, part: VersionPart, keep_tag: bool) -> Result<Self> {
+        let parts = self.semver().ok_or_else(|| {
+            Error::invalid_input(
+                format!("Invalid writer version: {}", self.version),
+                location!(),
+            )
+        })?;
         let tag = if keep_tag { parts.3 } else { None };
         let new_parts = match part {
             VersionPart::Major => (parts.0 + 1, parts.1, parts.2, tag),
@@ -708,10 +709,10 @@ impl WriterVersion {
         } else {
             format!("{}.{}.{}", new_parts.0, new_parts.1, new_parts.2)
         };
-        Self {
+        Ok(Self {
             library: self.library.clone(),
             version: new_version,
-        }
+        })
     }
 }
 
@@ -732,6 +733,7 @@ impl Default for WriterVersion {
             version: env!("CARGO_PKG_VERSION").to_string(),
         }
         .bump(VersionPart::Patch, true)
+        .expect("Failed to bump version in test")
     }
 }
 
@@ -1018,9 +1020,12 @@ mod tests {
         );
 
         for part in &[VersionPart::Major, VersionPart::Minor, VersionPart::Patch] {
-            let bumped = wv.bump(*part, false);
-            let bumped_parts = bumped.semver_or_panic();
-            assert!(wv.older_than(bumped_parts.0, bumped_parts.1, bumped_parts.2));
+            let bumped = wv.bump(*part, false).unwrap();
+            let bumped_parts = bumped.semver().unwrap();
+            assert_eq!(
+                wv.older_than(bumped_parts.0, bumped_parts.1, bumped_parts.2),
+                Some(true)
+            );
         }
     }
 

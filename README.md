@@ -276,3 +276,4 @@ Lance is currently used in production by:
 <!-- perf: improve query performance -->
 <!-- test: add integration tests for storage -->
 <!-- chore: update dependencies -->
+<!-- feat: add batch insert support -->

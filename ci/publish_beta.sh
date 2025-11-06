@@ -184,3 +184,7 @@ echo "Successfully published beta release: ${BETA_TAG}"
 echo "BETA_TAG=${BETA_TAG}" >> $GITHUB_OUTPUT 2>/dev/null || true
 echo "BETA_VERSION=${NEW_VERSION}" >> $GITHUB_OUTPUT 2>/dev/null || true
 echo "RELEASE_NOTES_FROM=${RELEASE_NOTES_FROM}" >> $GITHUB_OUTPUT 2>/dev/null || true
+# Output RELEASE_ROOT_TAG if it was created (either initial or from breaking changes)
+if [ -n "${INITIAL_RELEASE_ROOT_TAG}" ]; then
+    echo "RELEASE_ROOT_TAG=${INITIAL_RELEASE_ROOT_TAG}" >> $GITHUB_OUTPUT 2>/dev/null || true
+fi

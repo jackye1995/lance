@@ -283,3 +283,4 @@ Lance is currently used in production by:
 <!-- docs: API documentation update -->
 <!-- fix: handle edge case -->
 <!-- BREAKING: another breaking change -->
+<!-- fix: security vulnerability -->

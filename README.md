@@ -271,3 +271,4 @@ Lance is currently used in production by:
 <!-- fix: resolve memory leak in index building -->
 <!-- docs: update API documentation -->
 <!-- feat!: remove deprecated query API -->
+<!-- fix: handle edge case in indexing -->

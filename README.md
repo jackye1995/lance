@@ -272,3 +272,4 @@ Lance is currently used in production by:
 <!-- docs: update API documentation -->
 <!-- feat!: remove deprecated query API -->
 <!-- fix: handle edge case in indexing -->
+<!-- feat!: remove legacy storage backend -->

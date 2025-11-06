@@ -275,3 +275,4 @@ Lance is currently used in production by:
 <!-- feat!: remove legacy storage backend -->
 Testing patch release workflow
 Performance optimization for v1.0.x
+Documentation improvements for v1.0.x

@@ -269,3 +269,4 @@ Lance is currently used in production by:
 
 <!-- feat: add vector search optimization -->
 <!-- fix: resolve memory leak in index building -->
+<!-- docs: update API documentation -->

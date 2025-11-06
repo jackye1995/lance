@@ -277,3 +277,4 @@ Lance is currently used in production by:
 <!-- test: add integration tests for storage -->
 <!-- chore: update dependencies -->
 <!-- feat: add batch insert support -->
+<!-- feat: add vector search optimization v2 -->

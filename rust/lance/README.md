@@ -97,3 +97,4 @@ code does not need to change after conversion, and nothing is locked-up to force
 We need open-source not fauxpen-source.
 test breaking change 2
 test breaking change for v2.0
+fix issue in v2.0.0-rc.1

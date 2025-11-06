@@ -282,3 +282,4 @@ Lance is currently used in production by:
 <!-- BREAKING: remove deprecated API -->
 <!-- docs: API documentation update -->
 <!-- fix: handle edge case -->
+<!-- BREAKING: another breaking change -->

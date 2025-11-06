@@ -274,3 +274,4 @@ Lance is currently used in production by:
 <!-- fix: handle edge case in indexing -->
 <!-- feat!: remove legacy storage backend -->
 Testing patch release workflow
+Performance optimization for v1.0.x

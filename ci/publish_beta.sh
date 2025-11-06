@@ -44,19 +44,6 @@ if [[ "${BRANCH}" == "main" ]] && [[ "${CURRENT_VERSION}" =~ -beta\.[0-9]+$ ]]; 
         echo "Found release root tag for current version: ${CURR_RELEASE_ROOT_TAG}"
         COMPARE_TAG="${CURR_RELEASE_ROOT_TAG}"
         COMPARE_COMMIT=$(git rev-parse "${CURR_RELEASE_ROOT_TAG}")
-    else
-        # No release-root tag found - just bump minor (skip breaking change detection)
-        echo "Release root tag ${CURR_RELEASE_ROOT_TAG} not found"
-        echo "No comparison base exists, skipping breaking change detection"
-        echo "Will proceed with normal beta increment"
-
-        # No need to do anything - just proceed with normal beta increment at bottom of script
-        COMPARE_TAG=""
-        COMPARE_COMMIT=""
-    fi
-
-    if [ -n "${COMPARE_TAG}" ]; then
-        echo "Comparing against: ${COMPARE_TAG} (commit: ${COMPARE_COMMIT})"
 
         # Check for breaking changes
         BREAKING_CHANGES="false"
@@ -69,12 +56,11 @@ if [[ "${BRANCH}" == "main" ]] && [[ "${CURRENT_VERSION}" =~ -beta\.[0-9]+$ ]]; 
         fi
 
         if [ "${BREAKING_CHANGES}" = "true" ]; then
-            # Extract base RC version from release-root tag message
+            # Extract base RC version from existing release-root tag message
             TAG_MESSAGE=$(git tag -l --format='%(contents)' "${CURR_RELEASE_ROOT_TAG}")
             BASE_RC_VERSION=$(echo "${TAG_MESSAGE}" | head -n1 | sed 's/Base: //')
             BASE_VERSION=$(echo "${BASE_RC_VERSION}" | sed 's/-rc\.[0-9]*$//')
             BASE_MAJOR=$(echo "${BASE_VERSION}" | cut -d. -f1)
-
             echo "Base RC version: ${BASE_RC_VERSION} (major: ${BASE_MAJOR})"
 
             # Check if major already bumped from base
@@ -82,7 +68,7 @@ if [[ "${BRANCH}" == "main" ]] && [[ "${CURRENT_VERSION}" =~ -beta\.[0-9]+$ ]]; 
                 echo "Breaking changes exist, but major version already bumped from ${BASE_MAJOR} to ${CURR_MAJOR}"
                 echo "No additional major version bump needed"
             else
-                echo "Breaking changes detected since ${BASE_VERSION}, bumping major version"
+                echo "Breaking changes detected since base major ${BASE_MAJOR}, bumping major version"
                 NEXT_MAJOR=$((CURR_MAJOR + 1))
                 NEXT_VERSION="${NEXT_MAJOR}.0.0-beta.1"
                 echo "Bumping to ${NEXT_VERSION}"
@@ -95,7 +81,7 @@ if [[ "${BRANCH}" == "main" ]] && [[ "${CURRENT_VERSION}" =~ -beta\.[0-9]+$ ]]; 
 
                 CURRENT_VERSION="${NEXT_VERSION}"
 
-                # Create new release-root tag pointing to same commit (same base for comparison)
+                # Create new release-root tag pointing to same commit as current series release-root
                 NEW_RELEASE_ROOT_TAG="release-root/${NEXT_MAJOR}.0.0-beta.N"
                 if git rev-parse "${NEW_RELEASE_ROOT_TAG}" >/dev/null 2>&1; then
                     echo "Release root tag ${NEW_RELEASE_ROOT_TAG} already exists"
@@ -117,7 +103,14 @@ Release root for ${NEXT_MAJOR}.0.0-beta.N series (same base as ${CURR_MAJOR}.${C
             fi
         fi
     else
-        echo "Warning: No compare tag found for breaking change detection"
+        # No release-root tag found - skip breaking change detection for first time
+        # But create the release-root tag at current HEAD for future comparisons
+        echo "Release root tag ${CURR_RELEASE_ROOT_TAG} not found"
+        echo "First time: skipping breaking change detection and creating release-root tag at current HEAD"
+        echo "Future beta releases will compare against this tag"
+
+        # We'll create the release-root tag after the beta increment below
+        CREATE_INITIAL_RELEASE_ROOT="true"
     fi
 fi
 
@@ -137,6 +130,19 @@ git commit -m "chore: release beta version ${NEW_VERSION}"
 BETA_TAG="${TAG_PREFIX}${NEW_VERSION}"
 echo "Creating beta tag: ${BETA_TAG}"
 git tag -a "${BETA_TAG}" -m "Beta release version ${NEW_VERSION}"
+
+# Create initial release-root tag if this is the first time
+if [ "${CREATE_INITIAL_RELEASE_ROOT:-false}" = "true" ]; then
+    BETA_MAJOR=$(echo "${NEW_VERSION}" | cut -d. -f1)
+    BETA_MINOR=$(echo "${NEW_VERSION}" | cut -d. -f2)
+    BETA_PATCH=$(echo "${NEW_VERSION}" | cut -d. -f3 | cut -d- -f1)
+    INITIAL_RELEASE_ROOT_TAG="release-root/${BETA_MAJOR}.${BETA_MINOR}.${BETA_PATCH}-beta.N"
+
+    echo "Creating initial release-root tag: ${INITIAL_RELEASE_ROOT_TAG} at HEAD"
+    git tag -a "${INITIAL_RELEASE_ROOT_TAG}" "HEAD" -m "Base: ${NEW_VERSION}
+Release root for ${BETA_MAJOR}.${BETA_MINOR}.${BETA_PATCH}-beta.N series (initial)"
+    echo "Created initial release-root tag for future breaking change detection"
+fi
 
 # Determine release notes comparison base
 BETA_MAJOR=$(echo "${NEW_VERSION}" | cut -d. -f1)

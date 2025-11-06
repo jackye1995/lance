@@ -141,6 +141,7 @@ echo "Creating beta tag: ${BETA_TAG}"
 git tag -a "${BETA_TAG}" -m "Beta release version ${NEW_VERSION}"
 
 # Create initial release-root tag if this is the first time
+CREATED_RELEASE_ROOT_TAG=""
 if [ "${CREATE_INITIAL_RELEASE_ROOT:-false}" = "true" ]; then
     BETA_MAJOR=$(echo "${NEW_VERSION}" | cut -d. -f1)
     BETA_MINOR=$(echo "${NEW_VERSION}" | cut -d. -f2)
@@ -151,6 +152,7 @@ if [ "${CREATE_INITIAL_RELEASE_ROOT:-false}" = "true" ]; then
     git tag -a "${INITIAL_RELEASE_ROOT_TAG}" "HEAD" -m "Base: ${NEW_VERSION}
 Release root for ${BETA_MAJOR}.${BETA_MINOR}.${BETA_PATCH}-beta.N series (initial)"
     echo "Created initial release-root tag for future breaking change detection"
+    CREATED_RELEASE_ROOT_TAG="${INITIAL_RELEASE_ROOT_TAG}"
 fi
 
 # Determine release notes comparison base
@@ -193,3 +195,4 @@ echo "Successfully published beta release: ${BETA_TAG}"
 echo "BETA_TAG=${BETA_TAG}" >> $GITHUB_OUTPUT 2>/dev/null || true
 echo "BETA_VERSION=${NEW_VERSION}" >> $GITHUB_OUTPUT 2>/dev/null || true
 echo "RELEASE_NOTES_FROM=${RELEASE_NOTES_FROM}" >> $GITHUB_OUTPUT 2>/dev/null || true
+echo "RELEASE_ROOT_TAG=${CREATED_RELEASE_ROOT_TAG}" >> $GITHUB_OUTPUT 2>/dev/null || true

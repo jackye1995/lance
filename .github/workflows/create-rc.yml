@@ -43,9 +43,10 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.LANCE_RELEASE_TOKEN }}
       run: |
-        python3 << 'EOF'
+        python3 <<'EOF'
         import os
         import json
+        import textwrap
         from github import Github
 
         g = Github(os.environ['GITHUB_TOKEN'])
@@ -61,31 +62,32 @@ jobs:
             category = next((c for c in categories if c.name == "General"), categories[0])
 
         title = f"Vote: Release Candidate {rc_tag}"
-        body = f"""# Release Candidate {rc_tag}
+        body = textwrap.dedent(f"""
+            # Release Candidate {rc_tag}
 
-A new release candidate has been created and is ready for voting.
+            A new release candidate has been created and is ready for voting.
 
-## Testing Instructions
+            ## Testing Instructions
 
-1. **Python** (fury.io):
-   ```bash
-   pip install --extra-index-url https://pypi.fury.io/lancedb/ pylance=={rc_version}
-   ```
+            1. **Python** (fury.io):
+               ```bash
+               pip install --extra-index-url https://pypi.fury.io/lancedb/ pylance=={rc_version}
+               ```
 
-2. **Java** (Maven Central - pre-release)
-3. **Rust** (use git tag reference)
+            2. **Java** (Maven Central - pre-release)
+            3. **Rust** (use git tag reference)
 
-## Voting
+            ## Voting
 
-Please test the RC and vote by commenting:
-- **+1** to approve
-- **0** to abstain or neutral
-- **-1** if issues found (please include details)
+            Please test the RC and vote by commenting:
+            - **+1** to approve
+            - **0** to abstain or neutral
+            - **-1** if issues found (please include details)
 
-## Timeline
+            ## Timeline
 
-Voting period: TBD (coordinate with project maintainers)
-"""
+            Voting period: TBD (coordinate with project maintainers)
+        """).strip()
 
         discussion = repo.create_discussion(
             title=title,

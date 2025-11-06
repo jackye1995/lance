@@ -274,3 +274,4 @@ Lance is currently used in production by:
 <!-- BREAKING: refactor storage API -->
 <!-- fix: update storage adapters for new API -->
 <!-- perf: improve query performance -->
+<!-- test: add integration tests for storage -->

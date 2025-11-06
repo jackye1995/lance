@@ -53,6 +53,9 @@ jobs:
         if [ -n "${{ steps.publish.outputs.RELEASE_ROOT_TAG }}" ]; then
           git push origin "${{ steps.publish.outputs.RELEASE_ROOT_TAG }}"
         fi
+        # Wait a few seconds for GitHub to index the tags
+        echo "Waiting for GitHub to index tags..."
+        sleep 5
 
     - name: Generate Release Notes (if not dry run)
       if: ${{ !inputs.dry_run }}

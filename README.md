@@ -280,3 +280,4 @@ Lance is currently used in production by:
 <!-- feat: add vector search optimization v2 -->
 <!-- fix: resolve memory leak v2 -->
 <!-- BREAKING: remove deprecated API -->
+<!-- feat: batch insert support -->

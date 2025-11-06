@@ -45,14 +45,16 @@ if [[ "${BRANCH}" == "main" ]] && [[ "${CURRENT_VERSION}" =~ -beta\.[0-9]+$ ]]; 
         COMPARE_TAG="${CURR_RELEASE_ROOT_TAG}"
         COMPARE_COMMIT=$(git rev-parse "${CURR_RELEASE_ROOT_TAG}")
     else
-        # No release-root tag found - just bump minor (skip breaking change detection)
+        # No release-root tag found - skip breaking change detection for first time
+        # But create the release-root tag at current HEAD for future comparisons
         echo "Release root tag ${CURR_RELEASE_ROOT_TAG} not found"
-        echo "No comparison base exists, skipping breaking change detection"
-        echo "Will proceed with normal beta increment"
+        echo "First time: skipping breaking change detection and creating release-root tag at current HEAD"
+        echo "Future beta releases will compare against this tag"
 
-        # No need to do anything - just proceed with normal beta increment at bottom of script
+        # We'll create the release-root tag after the beta increment below
         COMPARE_TAG=""
         COMPARE_COMMIT=""
+        CREATE_INITIAL_RELEASE_ROOT="true"
     fi
 
     if [ -n "${COMPARE_TAG}" ]; then
@@ -137,6 +139,19 @@ git commit -m "chore: release beta version ${NEW_VERSION}"
 BETA_TAG="${TAG_PREFIX}${NEW_VERSION}"
 echo "Creating beta tag: ${BETA_TAG}"
 git tag -a "${BETA_TAG}" -m "Beta release version ${NEW_VERSION}"
+
+# Create initial release-root tag if this is the first time
+if [ "${CREATE_INITIAL_RELEASE_ROOT:-false}" = "true" ]; then
+    BETA_MAJOR=$(echo "${NEW_VERSION}" | cut -d. -f1)
+    BETA_MINOR=$(echo "${NEW_VERSION}" | cut -d. -f2)
+    BETA_PATCH=$(echo "${NEW_VERSION}" | cut -d. -f3 | cut -d- -f1)
+    INITIAL_RELEASE_ROOT_TAG="release-root/${BETA_MAJOR}.${BETA_MINOR}.${BETA_PATCH}-beta.N"
+
+    echo "Creating initial release-root tag: ${INITIAL_RELEASE_ROOT_TAG} at HEAD"
+    git tag -a "${INITIAL_RELEASE_ROOT_TAG}" "HEAD" -m "Base: ${NEW_VERSION}
+Release root for ${BETA_MAJOR}.${BETA_MINOR}.${BETA_PATCH}-beta.N series (initial)"
+    echo "Created initial release-root tag for future breaking change detection"
+fi
 
 # Determine release notes comparison base
 BETA_MAJOR=$(echo "${NEW_VERSION}" | cut -d. -f1)

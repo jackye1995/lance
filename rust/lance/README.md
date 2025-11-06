@@ -96,3 +96,4 @@ Lance makes Apache Arrow integration its primary interface, which means conversi
 code does not need to change after conversion, and nothing is locked-up to force you to pay for vendor compute.
 We need open-source not fauxpen-source.
 test breaking change 2
+test breaking change for v2.0

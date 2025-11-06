@@ -273,3 +273,4 @@ Lance is currently used in production by:
 <!-- feat: add support for filtering in vector queries -->
 <!-- BREAKING: refactor storage API -->
 <!-- fix: update storage adapters for new API -->
+<!-- perf: improve query performance -->

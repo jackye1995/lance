@@ -410,10 +410,6 @@ paths:
         
         This operation should behave exactly like DescribeTable, 
         except it does not contain a response body.
-        
-        For DirectoryNamespace implementation, a table exists if either:
-        - The table has Lance data versions (regular table created with CreateTable)
-        - A `.lance-reserved` file exists in the table directory (empty table created with CreateEmptyTable)
       requestBody:
         required: true
         content:
@@ -963,11 +959,6 @@ paths:
     parameters:
       - $ref: '#/components/parameters/id'
       - $ref: '#/components/parameters/delimiter'
-      - name: "mode"
-        in: query
-        required: false
-        schema:
-          type: string
       - name: "x-lance-table-location"
         in: header
         required: false
@@ -997,7 +988,6 @@ paths:
         REST namespace uses Arrow IPC stream as the request body.
         It passes in the `CreateTableRequest` information in the following way:
         - `id`: pass through path parameter of the same name
-        - `mode`: pass through query parameter of the same name
         - `location`: pass through header `x-lance-table-location`
         - `properties`: pass through header `x-lance-table-properties`
       requestBody:
@@ -1372,50 +1362,6 @@ paths:
         5XX:
           $ref: '#/components/responses/ServerErrorResponse'
 
-  /v1/table/{id}/create-empty:
-    parameters:
-      - $ref: '#/components/parameters/id'
-      - $ref: '#/components/parameters/delimiter'
-    post:
-      tags:
-        - Table
-        - Metadata
-      summary: Create an empty table
-      operationId: CreateEmptyTable
-      description: |
-        Create an empty table with the given name without touching storage.
-        This is a metadata-only operation that records the table existence and sets up aspects like access control.
-        
-        For DirectoryNamespace implementation, this creates a `.lance-reserved` file in the table directory
-        to mark the table's existence without creating actual Lance data files.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CreateEmptyTableRequest'
-      responses:
-        200:
-          description: Table properties result when creating an empty table
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CreateEmptyTableResponse'
-        400:
-          $ref: '#/components/responses/BadRequestErrorResponse'
-        401:
-          $ref: '#/components/responses/UnauthorizedErrorResponse'
-        403:
-          $ref: '#/components/responses/ForbiddenErrorResponse'
-        404:
-          $ref: '#/components/responses/NotFoundErrorResponse'
-        409:
-          $ref: '#/components/responses/ConflictErrorResponse'
-        503:
-          $ref: '#/components/responses/ServiceUnavailableErrorResponse'
-        5XX:
-          $ref: '#/components/responses/ServerErrorResponse'
-
   /v1/table/{id}/tags/create:
     parameters:
       - $ref: '#/components/parameters/id'
@@ -1603,7 +1549,7 @@ components:
       description: |
         `string identifier` of an object in a namespace, following the Lance Namespace spec.
         When the value is equal to the delimiter, it represents the root namespace.
-        For example, `v1/namespace/$/list` performs a `ListNamespace` on the root namespace.
+        For example, `v1/namespace/./list` performs a `ListNamespace` on the root namespace.
       in: path
       required: true
       schema:
@@ -1612,7 +1558,7 @@ components:
       name: delimiter
       description: |
         An optional delimiter of the `string identifier`, following the Lance Namespace spec.
-        When not specified, the `$` delimiter must be used.
+        When not specified, the `.` delimiter must be used.
       in: query
       required: false
       schema:
@@ -1672,13 +1618,13 @@ components:
           description: |
             There are three modes when trying to create a namespace,
             to differentiate the behavior when a namespace of the same name already exists:
-              * create: the operation fails with 409.
-              * exist_ok: the operation succeeds and the existing namespace is kept.
-              * overwrite: the existing namespace is dropped and a new empty namespace with this name is created.
+              * CREATE: the operation fails with 409.
+              * EXIST_OK: the operation succeeds and the existing namespace is kept.
+              * OVERWRITE: the existing namespace is dropped and a new empty namespace with this name is created.
           enum:
-            - create
-            - exist_ok
-            - overwrite
+            - CREATE
+            - EXIST_OK
+            - OVERWRITE
         properties:
           type: object
           additionalProperties:
@@ -2462,18 +2408,8 @@ components:
             type: string
         location:
           type: string
-        mode:
-          type: string
-          description: |
-            There are three modes when trying to create a table,
-            to differentiate the behavior when a table of the same name already exists:
-              * create: the operation fails with 409.
-              * exist_ok: the operation succeeds and the existing table is kept.
-              * overwrite: the existing table is dropped and a new table with this name is created.
-          enum:
-            - create
-            - exist_ok
-            - overwrite
+        schema:
+          $ref: '#/components/schemas/JsonArrowSchema'
         properties:
           type: object
           additionalProperties:
@@ -2488,45 +2424,8 @@ components:
           type: integer
           format: int64
           minimum: 0
-        properties:
-          type: object
-          additionalProperties:
-            type: string
-        storage_options:
-          type: object
-          description: |
-            Configuration options to be used to access storage. The available
-            options depend on the type of storage in use. These will be
-            passed directly to Lance to initialize storage access.
-          additionalProperties:
-            type: string
-
-    CreateEmptyTableRequest:
-      type: object
-      description: |
-        Request for creating an empty table.
-      properties:
-        id:
-          type: array
-          items:
-            type: string
-        location:
-          type: string
-          description: |
-            Optional storage location for the table.
-            If not provided, the namespace implementation should determine the table location.
-        properties:
-          type: object
-          additionalProperties:
-            type: string
-
-    CreateEmptyTableResponse:
-      type: object
-      description: |
-        Response for creating an empty table.
-      properties:
-        location:
-          type: string
+        schema:
+          $ref: '#/components/schemas/JsonArrowSchema'
         properties:
           type: object
           additionalProperties:

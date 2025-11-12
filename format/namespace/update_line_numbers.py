@@ -119,10 +119,6 @@ OPERATION_SCHEMAS = {
         'request': 'CreateTableRequest',
         'response': 'CreateTableResponse'
     },
-    'create-empty-table': {
-        'request': 'CreateEmptyTableRequest',
-        'response': 'CreateEmptyTableResponse'
-    },
     'create-table-index': {
         'request': 'CreateTableIndexRequest',
         'response': 'CreateTableIndexResponse'

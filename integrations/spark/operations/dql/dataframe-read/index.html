@@ -10,28 +10,28 @@
       
       
       
-        <link rel="canonical" href="https://lancedb.github.io/lance/format/namespace/impls/polaris/">
+        <link rel="canonical" href="https://lance.org/integrations/spark/operations/dql/dataframe-read/">
       
       
-        <link rel="prev" href="../gravitino/">
+        <link rel="prev" href="../../dml/insert-into/">
       
       
-        <link rel="next" href="../glue/">
+        <link rel="next" href="../select/">
       
       
-      <link rel="icon" href="../../../../logo/logo.png">
+      <link rel="icon" href="../../../../../logo/logo.png">
       <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.6.14">
     
     
       
-        <title>Apache Polaris - Lance</title>
+        <title>DataFrame Read - Lance</title>
       
     
     
-      <link rel="stylesheet" href="../../../../assets/stylesheets/main.342714a4.min.css">
+      <link rel="stylesheet" href="../../../../../assets/stylesheets/main.342714a4.min.css">
       
         
-        <link rel="stylesheet" href="../../../../assets/stylesheets/palette.06af60db.min.css">
+        <link rel="stylesheet" href="../../../../../assets/stylesheets/palette.06af60db.min.css">
       
       
 
@@ -50,11 +50,11 @@
       
     
     
-      <link rel="stylesheet" href="../../../../assets/stylesheets/termynal.css">
+      <link rel="stylesheet" href="../../../../../assets/stylesheets/termynal.css">
     
-      <link rel="stylesheet" href="../../../../assets/stylesheets/home.css">
+      <link rel="stylesheet" href="../../../../../assets/stylesheets/home.css">
     
-    <script>__md_scope=new URL("../../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("../../../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -80,7 +80,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#lance-polaris-namespace" class="md-skip">
+        <a href="#dataframe-read" class="md-skip">
           Skip to content
         </a>
       
@@ -94,9 +94,9 @@
 
 <header class="md-header" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="../../../.." title="Lance" class="md-header__button md-logo" aria-label="Lance" data-md-component="logo">
+    <a href="../../../../.." title="Lance" class="md-header__button md-logo" aria-label="Lance" data-md-component="logo">
       
-  <img src="../../../../logo/white.png" alt="logo">
+  <img src="../../../../../logo/white.png" alt="logo">
 
     </a>
     <label class="md-header__button md-icon" for="__drawer">
@@ -113,7 +113,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Apache Polaris
+              DataFrame Read
             
           </span>
         </div>
@@ -229,7 +229,7 @@
   
   
     <li class="md-tabs__item">
-      <a href="../../../.." class="md-tabs__link">
+      <a href="../../../../.." class="md-tabs__link">
         
   
   
@@ -250,7 +250,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../../../quickstart/" class="md-tabs__link">
+        <a href="../../../../../quickstart/" class="md-tabs__link">
           
   
   
@@ -272,7 +272,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../../../guide/read_and_write/" class="md-tabs__link">
+        <a href="../../../../../guide/read_and_write/" class="md-tabs__link">
           
   
   
@@ -290,13 +290,11 @@
   
   
   
-    
-  
   
     
     
-      <li class="md-tabs__item md-tabs__item--active">
-        <a href="../../../" class="md-tabs__link">
+      <li class="md-tabs__item">
+        <a href="../../../../../format/" class="md-tabs__link">
           
   
   
@@ -325,7 +323,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../../../examples/python/llm_dataset_creation/" class="md-tabs__link">
+        <a href="../../../../../examples/python/llm_dataset_creation/" class="md-tabs__link">
           
   
   
@@ -346,11 +344,13 @@
   
   
   
+    
+  
   
     
     
-      <li class="md-tabs__item">
-        <a href="../../../../integrations/datafusion/" class="md-tabs__link">
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../../../../datafusion/" class="md-tabs__link">
           
   
   
@@ -379,7 +379,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../../../community/contributing/" class="md-tabs__link">
+        <a href="../../../../../community/contributing/" class="md-tabs__link">
           
   
   
@@ -402,7 +402,7 @@
   
   
     <li class="md-tabs__item">
-      <a href="../../../../sdk_docs/" class="md-tabs__link">
+      <a href="../../../../../sdk_docs/" class="md-tabs__link">
         
   
   
@@ -437,9 +437,9 @@
 
 <nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="../../../.." title="Lance" class="md-nav__button md-logo" aria-label="Lance" data-md-component="logo">
+    <a href="../../../../.." title="Lance" class="md-nav__button md-logo" aria-label="Lance" data-md-component="logo">
       
-  <img src="../../../../logo/white.png" alt="logo">
+  <img src="../../../../../logo/white.png" alt="logo">
 
     </a>
     Lance
@@ -466,7 +466,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../.." class="md-nav__link">
+      <a href="../../../../.." class="md-nav__link">
         
   
   
@@ -515,7 +515,7 @@
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="../../../../quickstart/" class="md-nav__link ">
+            <a href="../../../../../quickstart/" class="md-nav__link ">
               
   
   
@@ -550,7 +550,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../../quickstart/versioning/" class="md-nav__link">
+      <a href="../../../../../quickstart/versioning/" class="md-nav__link">
         
   
   
@@ -573,7 +573,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../../quickstart/vector-search/" class="md-nav__link">
+      <a href="../../../../../quickstart/vector-search/" class="md-nav__link">
         
   
   
@@ -670,7 +670,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../../guide/read_and_write/" class="md-nav__link">
+      <a href="../../../../../guide/read_and_write/" class="md-nav__link">
         
   
   
@@ -693,7 +693,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../../guide/data_evolution/" class="md-nav__link">
+      <a href="../../../../../guide/data_evolution/" class="md-nav__link">
         
   
   
@@ -716,7 +716,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../../guide/blob/" class="md-nav__link">
+      <a href="../../../../../guide/blob/" class="md-nav__link">
         
   
   
@@ -739,7 +739,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../../guide/json/" class="md-nav__link">
+      <a href="../../../../../guide/json/" class="md-nav__link">
         
   
   
@@ -762,7 +762,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../../guide/tags/" class="md-nav__link">
+      <a href="../../../../../guide/tags/" class="md-nav__link">
         
   
   
@@ -785,7 +785,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../../guide/object_store/" class="md-nav__link">
+      <a href="../../../../../guide/object_store/" class="md-nav__link">
         
   
   
@@ -808,7 +808,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../../guide/distributed_write/" class="md-nav__link">
+      <a href="../../../../../guide/distributed_write/" class="md-nav__link">
         
   
   
@@ -831,7 +831,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../../guide/migration/" class="md-nav__link">
+      <a href="../../../../../guide/migration/" class="md-nav__link">
         
   
   
@@ -854,7 +854,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../../guide/performance/" class="md-nav__link">
+      <a href="../../../../../guide/performance/" class="md-nav__link">
         
   
   
@@ -877,7 +877,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../../guide/tokenizer/" class="md-nav__link">
+      <a href="../../../../../guide/tokenizer/" class="md-nav__link">
         
   
   
@@ -900,7 +900,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../../guide/arrays/" class="md-nav__link">
+      <a href="../../../../../guide/arrays/" class="md-nav__link">
         
   
   
@@ -927,8 +927,6 @@
       
   
   
-    
-  
   
   
     
@@ -942,29 +940,24 @@
       
         
       
-        
-      
     
     
     
-      
-        
-        
       
       
         
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="../../../" class="md-nav__link ">
+            <a href="../../../../../format/" class="md-nav__link ">
               
   
   
@@ -977,13 +970,13 @@
             </a>
             
               
-              <label class="md-nav__link " for="__nav_4" id="__nav_4_label" tabindex="">
+              <label class="md-nav__link " for="__nav_4" id="__nav_4_label" tabindex="0">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_4">
             <span class="md-nav__icon md-icon"></span>
             Specification
@@ -1015,13 +1008,10 @@
       
       
         
-          
-          
-        
       
     
     
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
@@ -1029,7 +1019,7 @@
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="../../../file/" class="md-nav__link ">
+            <a href="../../../../../format/file/" class="md-nav__link ">
               
   
   
@@ -1042,7 +1032,7 @@
             </a>
             
               
-              <label class="md-nav__link " for="__nav_4_2" id="__nav_4_2_label" tabindex="">
+              <label class="md-nav__link " for="__nav_4_2" id="__nav_4_2_label" tabindex="0">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
@@ -1064,7 +1054,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../file/encoding/" class="md-nav__link">
+      <a href="../../../../../format/file/encoding/" class="md-nav__link">
         
   
   
@@ -1087,7 +1077,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../file/versioning/" class="md-nav__link">
+      <a href="../../../../../format/file/versioning/" class="md-nav__link">
         
   
   
@@ -1142,13 +1132,10 @@
       
       
         
-          
-          
-        
       
     
     
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
@@ -1156,7 +1143,7 @@
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="../../../table/" class="md-nav__link ">
+            <a href="../../../../../format/table/" class="md-nav__link ">
               
   
   
@@ -1169,7 +1156,7 @@
             </a>
             
               
-              <label class="md-nav__link " for="__nav_4_3" id="__nav_4_3_label" tabindex="">
+              <label class="md-nav__link " for="__nav_4_3" id="__nav_4_3_label" tabindex="0">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
@@ -1191,7 +1178,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../table/versioning/" class="md-nav__link">
+      <a href="../../../../../format/table/versioning/" class="md-nav__link">
         
   
   
@@ -1214,7 +1201,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../table/transaction/" class="md-nav__link">
+      <a href="../../../../../format/table/transaction/" class="md-nav__link">
         
   
   
@@ -1237,7 +1224,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../table/layout/" class="md-nav__link">
+      <a href="../../../../../format/table/layout/" class="md-nav__link">
         
   
   
@@ -1260,7 +1247,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../table/branch_tag/" class="md-nav__link">
+      <a href="../../../../../format/table/branch_tag/" class="md-nav__link">
         
   
   
@@ -1283,7 +1270,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../table/row_id_lineage/" class="md-nav__link">
+      <a href="../../../../../format/table/row_id_lineage/" class="md-nav__link">
         
   
   
@@ -1335,7 +1322,7 @@
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="../../../table/index/" class="md-nav__link ">
+            <a href="../../../../../format/table/index/" class="md-nav__link ">
               
   
   
@@ -1429,7 +1416,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../table/index/scalar/btree/" class="md-nav__link">
+      <a href="../../../../../format/table/index/scalar/btree/" class="md-nav__link">
         
   
   
@@ -1452,7 +1439,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../table/index/scalar/bitmap/" class="md-nav__link">
+      <a href="../../../../../format/table/index/scalar/bitmap/" class="md-nav__link">
         
   
   
@@ -1475,7 +1462,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../table/index/scalar/label_list/" class="md-nav__link">
+      <a href="../../../../../format/table/index/scalar/label_list/" class="md-nav__link">
         
   
   
@@ -1498,7 +1485,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../table/index/scalar/zonemap/" class="md-nav__link">
+      <a href="../../../../../format/table/index/scalar/zonemap/" class="md-nav__link">
         
   
   
@@ -1521,7 +1508,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../table/index/scalar/bloom_filter/" class="md-nav__link">
+      <a href="../../../../../format/table/index/scalar/bloom_filter/" class="md-nav__link">
         
   
   
@@ -1544,7 +1531,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../table/index/scalar/fts/" class="md-nav__link">
+      <a href="../../../../../format/table/index/scalar/fts/" class="md-nav__link">
         
   
   
@@ -1567,7 +1554,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../table/index/scalar/ngram/" class="md-nav__link">
+      <a href="../../../../../format/table/index/scalar/ngram/" class="md-nav__link">
         
   
   
@@ -1621,7 +1608,7 @@
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="../../../table/index/vector/" class="md-nav__link ">
+            <a href="../../../../../format/table/index/vector/" class="md-nav__link ">
               
   
   
@@ -1708,7 +1695,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../table/index/system/frag_reuse/" class="md-nav__link">
+      <a href="../../../../../format/table/index/system/frag_reuse/" class="md-nav__link">
         
   
   
@@ -1731,7 +1718,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../table/index/system/memwal/" class="md-nav__link">
+      <a href="../../../../../format/table/index/system/memwal/" class="md-nav__link">
         
   
   
@@ -1750,1731 +1737,6 @@
           </ul>
         </nav>
       
-    </li>
-  
-
-              
-            
-          </ul>
-        </nav>
-      
-    </li>
-  
-
-              
-            
-          </ul>
-        </nav>
-      
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-    
-  
-  
-  
-    
-    
-      
-        
-          
-        
-      
-        
-      
-        
-      
-        
-      
-    
-    
-    
-      
-      
-        
-          
-          
-        
-      
-    
-    
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
-      
-        
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_4" checked>
-        
-          
-          <div class="md-nav__link md-nav__container">
-            <a href="../../" class="md-nav__link ">
-              
-  
-  
-  <span class="md-ellipsis">
-    Namespace Spec
-    
-  </span>
-  
-
-            </a>
-            
-              
-              <label class="md-nav__link " for="__nav_4_4" id="__nav_4_4_label" tabindex="">
-                <span class="md-nav__icon md-icon"></span>
-              </label>
-            
-          </div>
-        
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_4_label" aria-expanded="true">
-          <label class="md-nav__title" for="__nav_4_4">
-            <span class="md-nav__icon md-icon"></span>
-            Namespace Spec
-          </label>
-          <ul class="md-nav__list" data-md-scrollfix>
-            
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../concepts/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Concepts
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    
-    
-      
-        
-          
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-    
-    
-    
-      
-      
-        
-      
-    
-    
-    <li class="md-nav__item md-nav__item--nested">
-      
-        
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_4_3" >
-        
-          
-          <div class="md-nav__link md-nav__container">
-            <a href="../../operations/" class="md-nav__link ">
-              
-  
-  
-  <span class="md-ellipsis">
-    Operations
-    
-  </span>
-  
-
-            </a>
-            
-              
-              <label class="md-nav__link " for="__nav_4_4_3" id="__nav_4_4_3_label" tabindex="0">
-                <span class="md-nav__icon md-icon"></span>
-              </label>
-            
-          </div>
-        
-        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_4_4_3_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_4_4_3">
-            <span class="md-nav__icon md-icon"></span>
-            Operations
-          </label>
-          <ul class="md-nav__list" data-md-scrollfix>
-            
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/create-namespace/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    CreateNamespace
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/list-namespaces/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    ListNamespaces
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/describe-namespace/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    DescribeNamespace
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/drop-namespace/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    DropNamespace
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/namespace-exists/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    NamespaceExists
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/list-tables/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    ListTables
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/register-table/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    RegisterTable
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/describe-table/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    DescribeTable
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/table-exists/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    TableExists
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/drop-table/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    DropTable
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/deregister-table/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    DeregisterTable
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/restore-table/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    RestoreTable
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/list-table-versions/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    ListTableVersions
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/alter-table-alter-columns/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    AlterTableAlterColumns
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/alter-table-drop-columns/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    AlterTableDropColumns
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/get-table-stats/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    GetTableStats
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/insert-into-table/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    InsertIntoTable
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/merge-insert-into-table/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    MergeInsertIntoTable
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/update-table/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    UpdateTable
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/delete-from-table/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    DeleteFromTable
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/query-table/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    QueryTable
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/count-table-rows/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    CountTableRows
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/create-table/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    CreateTable
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/explain-table-query-plan/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    ExplainTableQueryPlan
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/analyze-table-query-plan/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    AnalyzeTableQueryPlan
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/alter-table-add-columns/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    AlterTableAddColumns
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/create-table-index/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    CreateTableIndex
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/list-table-indices/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    ListTableIndices
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/describe-table-index-stats/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    DescribeTableIndexStats
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/drop-table-index/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    DropTableIndex
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/list-table-tags/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    ListTableTags
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/get-table-tag-version/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    GetTableTagVersion
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/create-table-tag/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    CreateTableTag
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/delete-table-tag/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    DeleteTableTag
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/update-table-tag/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    UpdateTableTag
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/describe-transaction/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    DescribeTransaction
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/alter-transaction/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    AlterTransaction
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-          </ul>
-        </nav>
-      
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-    
-  
-  
-  
-    
-    
-      
-        
-          
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-    
-    
-    
-      
-      
-        
-      
-    
-    
-    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
-      
-        
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_4_4" checked>
-        
-          
-          <div class="md-nav__link md-nav__container">
-            <a href="../" class="md-nav__link ">
-              
-  
-  
-  <span class="md-ellipsis">
-    Implementations
-    
-  </span>
-  
-
-            </a>
-            
-              
-              <label class="md-nav__link " for="__nav_4_4_4" id="__nav_4_4_4_label" tabindex="0">
-                <span class="md-nav__icon md-icon"></span>
-              </label>
-            
-          </div>
-        
-        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_4_4_4_label" aria-expanded="true">
-          <label class="md-nav__title" for="__nav_4_4_4">
-            <span class="md-nav__icon md-icon"></span>
-            Implementations
-          </label>
-          <ul class="md-nav__list" data-md-scrollfix>
-            
-              
-            
-              
-                
-  
-  
-  
-  
-    
-    
-      
-        
-          
-        
-      
-        
-      
-    
-    
-    
-      
-      
-        
-      
-    
-    
-    <li class="md-nav__item md-nav__item--nested">
-      
-        
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_4_4_2" >
-        
-          
-          <div class="md-nav__link md-nav__container">
-            <a href="../rest/" class="md-nav__link ">
-              
-  
-  
-  <span class="md-ellipsis">
-    REST
-    
-  </span>
-  
-
-            </a>
-            
-              
-              <label class="md-nav__link " for="__nav_4_4_4_2" id="__nav_4_4_4_2_label" tabindex="0">
-                <span class="md-nav__icon md-icon"></span>
-              </label>
-            
-          </div>
-        
-        <nav class="md-nav" data-md-level="4" aria-labelledby="__nav_4_4_4_2_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_4_4_4_2">
-            <span class="md-nav__icon md-icon"></span>
-            REST
-          </label>
-          <ul class="md-nav__list" data-md-scrollfix>
-            
-              
-            
-              
-                
-  
-  
-  
-  
-    
-    
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-    
-    
-    
-      
-      
-        
-      
-    
-    
-    <li class="md-nav__item md-nav__item--nested">
-      
-        
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_4_4_2_2" >
-        
-          
-          <label class="md-nav__link" for="__nav_4_4_4_2_2" id="__nav_4_4_4_2_2_label" tabindex="0">
-            
-  
-  
-  <span class="md-ellipsis">
-    Non-Standard Operations
-    
-  </span>
-  
-
-            <span class="md-nav__icon md-icon"></span>
-          </label>
-        
-        <nav class="md-nav" data-md-level="5" aria-labelledby="__nav_4_4_4_2_2_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_4_4_4_2_2">
-            <span class="md-nav__icon md-icon"></span>
-            Non-Standard Operations
-          </label>
-          <ul class="md-nav__list" data-md-scrollfix>
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../rest/list-namespaces/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    ListNamespaces
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../rest/list-tables/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    ListTables
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../rest/insert-into-table/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    InsertIntoTable
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../rest/merge-insert-into-table/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    MergeInsertIntoTable
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../rest/create-table/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    CreateTable
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../rest/list-table-tags/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    ListTableTags
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-          </ul>
-        </nav>
-      
-    </li>
-  
-
-              
-            
-          </ul>
-        </nav>
-      
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../dir/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Directory
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../hive/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Apache Hive MetaStore
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../gravitino/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Apache Gravitino
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-    
-  
-  
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    Apache Polaris
-    
-  </span>
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
-        
-  
-  
-  <span class="md-ellipsis">
-    Apache Polaris
-    
-  </span>
-  
-
-      </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#configuration" class="md-nav__link">
-    <span class="md-ellipsis">
-      Configuration
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Configuration">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#authentication" class="md-nav__link">
-    <span class="md-ellipsis">
-      Authentication
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#namespace-mapping" class="md-nav__link">
-    <span class="md-ellipsis">
-      Namespace Mapping
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#table-definition" class="md-nav__link">
-    <span class="md-ellipsis">
-      Table Definition
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#requirement-for-implementation-managed-table" class="md-nav__link">
-    <span class="md-ellipsis">
-      Requirement for Implementation Managed Table
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../glue/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    AWS Glue
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../onelake/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Azure OneLake
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../dataproc/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Google Dataproc
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../unity/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Unity Catalog
-    
-  </span>
-  
-
-      </a>
     </li>
   
 
@@ -3614,7 +1876,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../../examples/python/llm_dataset_creation/" class="md-nav__link">
+      <a href="../../../../../examples/python/llm_dataset_creation/" class="md-nav__link">
         
   
   
@@ -3637,7 +1899,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../../examples/python/llm_training/" class="md-nav__link">
+      <a href="../../../../../examples/python/llm_training/" class="md-nav__link">
         
   
   
@@ -3660,7 +1922,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../../examples/python/flickr8k_dataset_creation/" class="md-nav__link">
+      <a href="../../../../../examples/python/flickr8k_dataset_creation/" class="md-nav__link">
         
   
   
@@ -3683,7 +1945,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../../examples/python/clip_training/" class="md-nav__link">
+      <a href="../../../../../examples/python/clip_training/" class="md-nav__link">
         
   
   
@@ -3706,7 +1968,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../../examples/python/artifact_management/" class="md-nav__link">
+      <a href="../../../../../examples/python/artifact_management/" class="md-nav__link">
         
   
   
@@ -3788,7 +2050,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../../examples/rust/write_read_dataset/" class="md-nav__link">
+      <a href="../../../../../examples/rust/write_read_dataset/" class="md-nav__link">
         
   
   
@@ -3811,7 +2073,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../../examples/rust/hnsw/" class="md-nav__link">
+      <a href="../../../../../examples/rust/hnsw/" class="md-nav__link">
         
   
   
@@ -3834,7 +2096,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../../examples/rust/llm_dataset_creation/" class="md-nav__link">
+      <a href="../../../../../examples/rust/llm_dataset_creation/" class="md-nav__link">
         
   
   
@@ -3869,8 +2131,10 @@
       
   
   
+    
   
   
+  
     
     
       
@@ -3892,19 +2156,22 @@
     
     
       
+        
+        
+      
       
         
       
     
     
-    <li class="md-nav__item md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
         
           
-          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
             
   
   
@@ -3917,7 +2184,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_6">
             <span class="md-nav__icon md-icon"></span>
             Integrations
@@ -3931,7 +2198,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../../integrations/datafusion/" class="md-nav__link">
+      <a href="../../../../datafusion/" class="md-nav__link">
         
   
   
@@ -3954,7 +2221,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../../integrations/duckdb/" class="md-nav__link">
+      <a href="../../../../duckdb/" class="md-nav__link">
         
   
   
@@ -3977,7 +2244,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../../integrations/huggingface/" class="md-nav__link">
+      <a href="../../../../huggingface/" class="md-nav__link">
         
   
   
@@ -4023,7 +2290,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../../integrations/pytorch/" class="md-nav__link">
+      <a href="../../../../pytorch/" class="md-nav__link">
         
   
   
@@ -4046,7 +2313,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../../integrations/tensorflow/" class="md-nav__link">
+      <a href="../../../../tensorflow/" class="md-nav__link">
         
   
   
@@ -4177,7 +2444,7 @@
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="../../../../community/contributing/" class="md-nav__link ">
+            <a href="../../../../../community/contributing/" class="md-nav__link ">
               
   
   
@@ -4212,7 +2479,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../../community/contributing/rust/" class="md-nav__link">
+      <a href="../../../../../community/contributing/rust/" class="md-nav__link">
         
   
   
@@ -4235,7 +2502,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../../community/contributing/python/" class="md-nav__link">
+      <a href="../../../../../community/contributing/python/" class="md-nav__link">
         
   
   
@@ -4258,7 +2525,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../../community/contributing/docs/" class="md-nav__link">
+      <a href="../../../../../community/contributing/docs/" class="md-nav__link">
         
   
   
@@ -4289,7 +2556,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../../community/lancelot/" class="md-nav__link">
+      <a href="../../../../../community/lancelot/" class="md-nav__link">
         
   
   
@@ -4319,7 +2586,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../../sdk_docs/" class="md-nav__link">
+      <a href="../../../../../sdk_docs/" class="md-nav__link">
         
   
   
@@ -4354,65 +2621,6 @@
     
   
   
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#configuration" class="md-nav__link">
-    <span class="md-ellipsis">
-      Configuration
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Configuration">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#authentication" class="md-nav__link">
-    <span class="md-ellipsis">
-      Authentication
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#namespace-mapping" class="md-nav__link">
-    <span class="md-ellipsis">
-      Namespace Mapping
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#table-definition" class="md-nav__link">
-    <span class="md-ellipsis">
-      Table Definition
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#requirement-for-implementation-managed-table" class="md-nav__link">
-    <span class="md-ellipsis">
-      Requirement for Implementation Managed Table
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
 </nav>
                   </div>
                 </div>
@@ -4430,93 +2638,39 @@
   
 
 
-<h1 id="lance-polaris-namespace">Lance Polaris Namespace<a class="headerlink" href="#lance-polaris-namespace" title="Permanent link">&para;</a></h1>
-<p><strong>Lance Polaris Namespace</strong> is an implementation using Polaris Catalog's Generic Table API.
-The Polaris namespace uses the following API endpoints:</p>
-<ul>
-<li><strong>Namespace operations</strong>: Standard Iceberg REST API endpoints (<code>/namespaces</code>)</li>
-<li><strong>Table operations</strong>: Generic Table API endpoints (<code>/namespaces/{namespace}/generic-tables</code>)</li>
-</ul>
-<p>For more details about Polaris Catalog, please read the <a href="https://polaris.apache.org">Polaris Catalog Documentation</a>.</p>
-<h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
-<p>The Lance Polaris namespace accepts the following configuration properties:</p>
-<table>
-<thead>
-<tr>
-<th>Property</th>
-<th>Required</th>
-<th>Description</th>
-<th>Default</th>
-<th>Example</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>endpoint</code></td>
-<td>Yes</td>
-<td>Polaris server endpoint URL</td>
-<td></td>
-<td><code>http://localhost:8182</code></td>
-</tr>
-<tr>
-<td><code>auth_token</code></td>
-<td>No</td>
-<td>Bearer token for authentication</td>
-<td></td>
-<td><code>your-auth-token</code></td>
-</tr>
-<tr>
-<td><code>connect_timeout</code></td>
-<td>No</td>
-<td>Connection timeout in milliseconds</td>
-<td>10000</td>
-<td><code>30000</code></td>
-</tr>
-<tr>
-<td><code>read_timeout</code></td>
-<td>No</td>
-<td>Read timeout in milliseconds</td>
-<td>30000</td>
-<td><code>60000</code></td>
-</tr>
-<tr>
-<td><code>max_retries</code></td>
-<td>No</td>
-<td>Maximum number of retries for failed requests</td>
-<td>3</td>
-<td><code>5</code></td>
-</tr>
-</tbody>
-</table>
-<h3 id="authentication">Authentication<a class="headerlink" href="#authentication" title="Permanent link">&para;</a></h3>
-<p>The Polaris namespace supports bearer token authentication:</p>
-<ol>
-<li><strong>Bearer Token</strong>: Set <code>auth_token</code> with a valid Polaris access token</li>
-<li><strong>No Authentication</strong>: For local or unsecured Polaris deployments</li>
-</ol>
-<h2 id="namespace-mapping">Namespace Mapping<a class="headerlink" href="#namespace-mapping" title="Permanent link">&para;</a></h2>
-<p>Polaris provides a flexible namespace hierarchy:</p>
-<ul>
-<li>A catalog in Polaris maps to the first level Lance namespace</li>
-<li>Nested namespaces in Polaris map to subsequent Lance namespace levels</li>
-<li>Polaris supports arbitrary nesting depth, allowing flexible namespace organization</li>
-</ul>
-<h2 id="table-definition">Table Definition<a class="headerlink" href="#table-definition" title="Permanent link">&para;</a></h2>
-<p>A Lance table appears as a <a href="https://github.com/polaris-catalog/polaris/blob/main/spec/polaris-catalog-apis/generic-tables-api.yaml">Generic Table</a>
-object in Polaris with the following requirements:</p>
-<ol>
-<li>the <code>format</code> must be set to <code>lance</code> to indicate this is a Lance table</li>
-<li>the <code>base-location</code> must point to the root location of the Lance table</li>
-<li>the <code>doc</code> field can be used to store an optional table description</li>
-<li>the <code>properties</code> must follow:</li>
-<li>there is a key <code>table_type</code> set to <code>lance</code> (case insensitive)</li>
-<li>there is a key <code>managed_by</code> set to either <code>storage</code> or <code>impl</code> (case insensitive). If not set, default to <code>storage</code></li>
-<li>there is a key <code>version</code> set to the latest numeric version number of the table. This field will only be respected if <code>managed_by=impl</code></li>
-</ol>
-<h2 id="requirement-for-implementation-managed-table">Requirement for Implementation Managed Table<a class="headerlink" href="#requirement-for-implementation-managed-table" title="Permanent link">&para;</a></h2>
-<p>Updates to implementation-managed Lance tables must use Polaris's table versioning mechanism
-for conditional updates through the UpdateTable API. The <code>version</code> property must be updated atomically
-to prevent concurrent modification conflicts.</p>
+<h1 id="dataframe-read">DataFrame Read<a class="headerlink" href="#dataframe-read" title="Permanent link">&para;</a></h1>
+<p>Load Lance tables as DataFrames for programmatic data access.</p>
+<div class="tabbed-set tabbed-alternate" data-tabs="1:3"><input checked="checked" id="__tabbed_1_1" name="__tabbed_1" type="radio" /><input id="__tabbed_1_2" name="__tabbed_1" type="radio" /><input id="__tabbed_1_3" name="__tabbed_1" type="radio" /><div class="tabbed-labels"><label for="__tabbed_1_1">Python</label><label for="__tabbed_1_2">Scala</label><label for="__tabbed_1_3">Java</label></div>
+<div class="tabbed-content">
+<div class="tabbed-block">
+<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># Load table as DataFrame</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">users_df</span> <span class="o">=</span> <span class="n">spark</span><span class="o">.</span><span class="n">table</span><span class="p">(</span><span class="s2">&quot;users&quot;</span><span class="p">)</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="c1"># Use DataFrame operations</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="n">filtered_users</span> <span class="o">=</span> <span class="n">users_df</span><span class="o">.</span><span class="n">filter</span><span class="p">(</span><span class="s2">&quot;age &gt; 25&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">select</span><span class="p">(</span><span class="s2">&quot;name&quot;</span><span class="p">,</span> <span class="s2">&quot;email&quot;</span><span class="p">)</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="n">filtered_users</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+</span></code></pre></div>
+</div>
+<div class="tabbed-block">
+<div class="language-scala highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1">// Load table as DataFrame</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="kd">val</span><span class="w"> </span><span class="n">usersDF</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">table</span><span class="p">(</span><span class="s">&quot;users&quot;</span><span class="p">)</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="c1">// Use DataFrame operations</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="kd">val</span><span class="w"> </span><span class="n">filteredUsers</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">usersDF</span><span class="p">.</span><span class="n">filter</span><span class="p">(</span><span class="s">&quot;age &gt; 25&quot;</span><span class="p">).</span><span class="n">select</span><span class="p">(</span><span class="s">&quot;name&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;email&quot;</span><span class="p">)</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="n">filteredUsers</span><span class="p">.</span><span class="n">show</span><span class="p">()</span>
+</span></code></pre></div>
+</div>
+<div class="tabbed-block">
+<div class="language-java highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1">// Load table as DataFrame</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">Dataset</span><span class="o">&lt;</span><span class="n">Row</span><span class="o">&gt;</span><span class="w"> </span><span class="n">usersDF</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="na">table</span><span class="p">(</span><span class="s">&quot;users&quot;</span><span class="p">);</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="c1">// Use DataFrame operations</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="n">Dataset</span><span class="o">&lt;</span><span class="n">Row</span><span class="o">&gt;</span><span class="w"> </span><span class="n">filteredUsers</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">usersDF</span><span class="p">.</span><span class="na">filter</span><span class="p">(</span><span class="s">&quot;age &gt; 25&quot;</span><span class="p">).</span><span class="na">select</span><span class="p">(</span><span class="s">&quot;name&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;email&quot;</span><span class="p">);</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="n">filteredUsers</span><span class="p">.</span><span class="na">show</span><span class="p">();</span>
+</span></code></pre></div>
+</div>
+</div>
+</div>
 
 
 
@@ -4550,6 +2704,10 @@ to prevent concurrent modification conflicts.</p>
   <div class="md-footer-meta md-typeset">
     <div class="md-footer-meta__inner md-grid">
       <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      © 2025 Lance Format. All rights reserved.
+    </div>
   
   
     Made with
@@ -4608,12 +2766,12 @@ to prevent concurrent modification conflicts.</p>
     
     
       
-      <script id="__config" type="application/json">{"base": "../../../..", "features": ["navigation.tabs", "navigation.sections", "navigation.instant", "navigation.indexes", "navigation.tracking", "navigation.top", "search.highlight", "search.share", "content.code.copy", "content.code.annotate"], "search": "../../../../assets/javascripts/workers/search.d50fe291.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"base": "../../../../..", "features": ["navigation.tabs", "navigation.sections", "navigation.instant", "navigation.indexes", "navigation.tracking", "navigation.top", "search.highlight", "search.share", "content.code.copy", "content.code.annotate"], "search": "../../../../../assets/javascripts/workers/search.d50fe291.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../../../../assets/javascripts/bundle.13a4f30d.min.js"></script>
+      <script src="../../../../../assets/javascripts/bundle.13a4f30d.min.js"></script>
       
-        <script src="../../../../assets/javascript/termynal.js"></script>
+        <script src="../../../../../assets/javascript/termynal.js"></script>
       
     
   </body>

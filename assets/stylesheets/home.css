@@ -1,5 +1,9 @@
 /* Lance Homepage Styles */
 
+* {
+  box-sizing: border-box;
+}
+
 .container {
   width: 100%;
   max-width: 1140px;
@@ -136,7 +140,7 @@
   line-height: 1.8;
   margin-bottom: 32px;
   opacity: 0.9;
-  text-align: left;
+  text-align: center;
 }
 
 .lance-intro-content .md-button {
@@ -205,6 +209,7 @@
   min-width: 400px;
   display: flex;
   justify-content: center;
+  overflow: hidden;
 }
 
 /* Alternating layout */
@@ -215,13 +220,19 @@
 /* Terminal container adjustments */
 [data-termynal] {
   margin: 0 auto;
-  max-width: 600px;
+  width: 500px;
+  max-width: 100%;
   font-size: 14px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
 }
 
 /* Responsive Design */
 @media (max-width: 768px) {
+  .container {
+    padding-right: 10px;
+    padding-left: 10px;
+  }
+
   .mdx-hero__content h1 {
     font-size: 2.2rem;
   }
@@ -256,20 +267,35 @@
   }
 
   [data-termynal] {
+    width: 100% !important;
+    max-width: 100% !important;
     font-size: 12px;
     padding: 50px 25px 25px;
   }
 }
 
+@media (max-width: 960px) {
+  .intro-message .list-inline li {
+    display: block;
+    padding: 0;
+    margin-bottom: 12px;
+  }
+
+  .intro-message .md-button {
+    display: block;
+    margin: 0 auto;
+    width: 90%;
+    max-width: 350px;
+  }
+}
+
 @media (max-width: 480px) {
-  .mdx-hero__content h1 {
+  .intro-message h1 {
     font-size: 1.8rem;
   }
 
-  .mdx-hero__content .md-button {
-    display: block;
-    margin: 8px auto;
-    width: 90%;
+  .intro-message .md-button {
+    max-width: 300px;
   }
 
   [data-termynal] {

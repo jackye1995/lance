@@ -2906,8 +2906,11 @@ unsaved results for up to an entire data file.</p>
 </span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="nd">@lance</span><span class="o">.</span><span class="n">batch_udf</span><span class="p">(</span><span class="n">checkpoint_file</span><span class="o">=</span><span class="s2">&quot;embedding_checkpoint.sqlite&quot;</span><span class="p">)</span>
 </span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="k">def</span><span class="w"> </span><span class="nf">add_random_vector</span><span class="p">(</span><span class="n">batch</span><span class="p">):</span>
 </span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>    <span class="n">embeddings</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">rand</span><span class="p">(</span><span class="n">batch</span><span class="o">.</span><span class="n">num_rows</span><span class="p">,</span> <span class="mi">128</span><span class="p">)</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="s2">&quot;float32&quot;</span><span class="p">)</span>
-</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>    <span class="k">return</span> <span class="n">pd</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">({</span><span class="s2">&quot;embedding&quot;</span><span class="p">:</span> <span class="n">embeddings</span><span class="p">})</span>
-</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="n">dataset</span><span class="o">.</span><span class="n">add_columns</span><span class="p">(</span><span class="n">add_random_vector</span><span class="p">)</span>
+</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>    <span class="k">return</span> <span class="n">pa</span><span class="o">.</span><span class="n">RecordBatch</span><span class="o">.</span><span class="n">from_arrays</span><span class="p">(</span>
+</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>        <span class="p">[</span><span class="n">pa</span><span class="o">.</span><span class="n">FixedSizeListArray</span><span class="o">.</span><span class="n">from_arrays</span><span class="p">(</span><span class="n">embeddings</span><span class="o">.</span><span class="n">flatten</span><span class="p">(),</span> <span class="mi">128</span><span class="p">)],</span>
+</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>        <span class="n">names</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;embedding&quot;</span><span class="p">]</span>
+</span><span id="__span-2-14"><a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>    <span class="p">)</span>
+</span><span id="__span-2-15"><a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="n">dataset</span><span class="o">.</span><span class="n">add_columns</span><span class="p">(</span><span class="n">add_random_vector</span><span class="p">)</span>
 </span></code></pre></div>
 <h3 id="using-merge">Using merge<a class="headerlink" href="#using-merge" title="Permanent link">&para;</a></h3>
 <p>If you have pre-computed one or more new columns, you can add them to an existing
@@ -3045,11 +3048,6 @@ at the cost of lower precision:</p>
       © 2025 Lance Format. All rights reserved.
     </div>
   
-  
-    Made with
-    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
-      Material for MkDocs
-    </a>
   
 </div>
       

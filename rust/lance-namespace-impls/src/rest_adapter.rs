@@ -1842,8 +1842,7 @@ mod tests {
             )
             .unwrap();
 
-            let reader1 =
-                RecordBatchIterator::new(vec![data1].into_iter().map(Ok), schema.clone());
+            let reader1 = RecordBatchIterator::new(vec![data1].into_iter().map(Ok), schema.clone());
             let dataset = Dataset::write_into_namespace(
                 reader1,
                 namespace.clone(),
@@ -1872,8 +1871,7 @@ mod tests {
                 ..Default::default()
             };
 
-            let reader2 =
-                RecordBatchIterator::new(vec![data2].into_iter().map(Ok), schema.clone());
+            let reader2 = RecordBatchIterator::new(vec![data2].into_iter().map(Ok), schema.clone());
             let dataset = Dataset::write_into_namespace(
                 reader2,
                 namespace.clone(),
@@ -1902,8 +1900,7 @@ mod tests {
                 ..Default::default()
             };
 
-            let reader3 =
-                RecordBatchIterator::new(vec![data3].into_iter().map(Ok), schema.clone());
+            let reader3 = RecordBatchIterator::new(vec![data3].into_iter().map(Ok), schema.clone());
             let dataset = Dataset::write_into_namespace(
                 reader3,
                 namespace.clone(),

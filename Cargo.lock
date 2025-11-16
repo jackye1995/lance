@@ -4413,7 +4413,6 @@ dependencies = [
  "lance-io",
  "lance-linalg",
  "lance-namespace",
- "lance-namespace-impls",
  "lance-table",
  "lance-test-macros",
  "lance-testing",

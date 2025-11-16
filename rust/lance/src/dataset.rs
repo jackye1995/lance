@@ -31,8 +31,11 @@ use lance_file::datatypes::populate_schema_dictionary;
 use lance_file::reader::FileReaderOptions;
 use lance_file::version::LanceFileVersion;
 use lance_index::DatasetIndexExt;
-use lance_io::object_store::{ObjectStore, ObjectStoreParams};
+use lance_io::object_store::{
+    LanceNamespaceStorageOptionsProvider, ObjectStore, ObjectStoreParams,
+};
 use lance_io::utils::{read_last_block, read_message, read_metadata_offset, read_struct};
+use lance_namespace::LanceNamespace;
 use lance_table::format::{
     pb, DataFile, DataStorageFormat, DeletionFile, Fragment, IndexMetadata, Manifest,
 };
@@ -104,6 +107,7 @@ pub use blob::BlobFile;
 use hash_joiner::HashJoiner;
 use lance_core::box_error;
 pub use lance_core::ROW_ID;
+use lance_namespace::models::{CreateEmptyTableRequest, DescribeTableRequest};
 use lance_table::feature_flags::{apply_feature_flags, can_read_dataset};
 pub use schema_evolution::{
     BatchInfo, BatchUDF, ColumnAlteration, NewColumnTransform, UDFCheckpointStore,
@@ -790,6 +794,143 @@ impl Dataset {
         }
         Box::pin(builder.execute_stream(Box::new(batches) as Box<dyn RecordBatchReader + Send>))
             .await
+    }
+
+    /// Write into a namespace-managed table with automatic credential vending.
+    ///
+    /// For CREATE mode, calls create_empty_table() to initialize the table.
+    /// For other modes, calls describe_table() and opens dataset with namespace credentials.
+    ///
+    /// # Arguments
+    ///
+    /// * `batches` - The record batches to write
+    /// * `namespace` - The namespace to use for table management
+    /// * `table_id` - The table identifier
+    /// * `params` - Write parameters
+    /// * `ignore_namespace_table_storage_options` - If true, ignore storage options returned
+    ///   by the namespace and only use the storage options in params. The storage options
+    ///   provider will not be created, so credentials will not be automatically refreshed.
+    pub async fn write_into_namespace(
+        batches: impl RecordBatchReader + Send + 'static,
+        namespace: Arc<dyn LanceNamespace>,
+        table_id: Vec<String>,
+        mut params: Option<WriteParams>,
+        ignore_namespace_table_storage_options: bool,
+    ) -> Result<Self> {
+        let mut write_params = params.take().unwrap_or_default();
+
+        match write_params.mode {
+            WriteMode::Create => {
+                let request = CreateEmptyTableRequest {
+                    id: Some(table_id.clone()),
+                    location: None,
+                    properties: None,
+                };
+                let response =
+                    namespace
+                        .create_empty_table(request)
+                        .await
+                        .map_err(|e| Error::Namespace {
+                            source: Box::new(e),
+                            location: location!(),
+                        })?;
+
+                let uri = response.location.ok_or_else(|| Error::Namespace {
+                    source: Box::new(std::io::Error::other(
+                        "Table location not found in create_empty_table response",
+                    )),
+                    location: location!(),
+                })?;
+
+                // Set initial credentials and provider unless ignored
+                if !ignore_namespace_table_storage_options {
+                    if let Some(namespace_storage_options) = response.storage_options {
+                        let provider = Arc::new(LanceNamespaceStorageOptionsProvider::new(
+                            namespace, table_id,
+                        ));
+
+                        // Merge namespace storage options with any existing options
+                        let mut merged_options = write_params
+                            .store_params
+                            .as_ref()
+                            .and_then(|p| p.storage_options.clone())
+                            .unwrap_or_default();
+                        merged_options.extend(namespace_storage_options);
+
+                        let existing_params = write_params.store_params.take().unwrap_or_default();
+                        write_params.store_params = Some(ObjectStoreParams {
+                            storage_options: Some(merged_options),
+                            storage_options_provider: Some(provider),
+                            ..existing_params
+                        });
+                    }
+                }
+
+                Self::write(batches, uri.as_str(), Some(write_params)).await
+            }
+            WriteMode::Append | WriteMode::Overwrite => {
+                let request = DescribeTableRequest {
+                    id: Some(table_id.clone()),
+                    version: None,
+                };
+                let response =
+                    namespace
+                        .describe_table(request)
+                        .await
+                        .map_err(|e| Error::Namespace {
+                            source: Box::new(e),
+                            location: location!(),
+                        })?;
+
+                let uri = response.location.ok_or_else(|| Error::Namespace {
+                    source: Box::new(std::io::Error::other(
+                        "Table location not found in describe_table response",
+                    )),
+                    location: location!(),
+                })?;
+
+                // Set initial credentials and provider unless ignored
+                if !ignore_namespace_table_storage_options {
+                    if let Some(namespace_storage_options) = response.storage_options {
+                        let provider = Arc::new(LanceNamespaceStorageOptionsProvider::new(
+                            namespace.clone(),
+                            table_id.clone(),
+                        ));
+
+                        // Merge namespace storage options with any existing options
+                        let mut merged_options = write_params
+                            .store_params
+                            .as_ref()
+                            .and_then(|p| p.storage_options.clone())
+                            .unwrap_or_default();
+                        merged_options.extend(namespace_storage_options);
+
+                        let existing_params = write_params.store_params.take().unwrap_or_default();
+                        write_params.store_params = Some(ObjectStoreParams {
+                            storage_options: Some(merged_options),
+                            storage_options_provider: Some(provider),
+                            ..existing_params
+                        });
+                    }
+                }
+
+                // For APPEND/OVERWRITE modes, we must open the existing dataset first
+                // and pass it to InsertBuilder. If we pass just the URI, InsertBuilder
+                // assumes no dataset exists and converts the mode to CREATE.
+                let mut builder = DatasetBuilder::from_uri(uri.as_str());
+                if let Some(ref store_params) = write_params.store_params {
+                    if let Some(ref storage_options) = store_params.storage_options {
+                        builder = builder.with_storage_options(storage_options.clone());
+                    }
+                    if let Some(ref provider) = store_params.storage_options_provider {
+                        builder = builder.with_storage_options_provider(provider.clone());
+                    }
+                }
+                let dataset = Arc::new(builder.load().await?);
+
+                Self::write(batches, dataset, Some(write_params)).await
+            }
+        }
     }
 
     /// Append to existing [Dataset] with a stream of [RecordBatch]s
@@ -2612,6 +2753,7 @@ mod tests {
     use lance_arrow::FixedSizeListArrayExt;
     use mock_instant::thread_local::MockClock;
 
+    use crate::dataset::write::{CommitBuilder, InsertBuilder, WriteMode, WriteParams};
     use arrow::array::{as_struct_array, AsArray, GenericListBuilder, GenericStringBuilder};
     use arrow::compute::concat_batches;
     use arrow::datatypes::UInt64Type;
@@ -2646,6 +2788,7 @@ mod tests {
     use lance_io::utils::tracking_store::IOTracker;
     use lance_io::utils::CachedFileSize;
     use lance_linalg::distance::MetricType;
+    use lance_namespace_impls::DirectoryNamespaceBuilder;
     use lance_table::feature_flags;
     use lance_table::format::{DataFile, WriterVersion};
 
@@ -9837,5 +9980,116 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(1, batch.num_rows());
+    }
+
+    #[tokio::test]
+    async fn test_namespace_write() {
+        let test_dir = TempDir::default();
+        // Create DirectoryNamespace with manifest enabled (default)
+        let namespace = Arc::new(
+            DirectoryNamespaceBuilder::new(test_dir.path_str().clone())
+                .build()
+                .await
+                .unwrap(),
+        );
+
+        // Use child namespace instead of root
+        let table_id = vec!["test_ns".to_string(), "test_table".to_string()];
+        let schema = Arc::new(ArrowSchema::new(vec![
+            ArrowField::new("a", DataType::Int32, false),
+            ArrowField::new("b", DataType::Int32, false),
+        ]));
+
+        // Test 1: CREATE mode
+        let data1 = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(Int32Array::from(vec![10, 20, 30])),
+            ],
+        )
+        .unwrap();
+
+        let reader1 = RecordBatchIterator::new(vec![data1].into_iter().map(Ok), schema.clone());
+        let dataset = Dataset::write_into_namespace(
+            reader1,
+            namespace.clone() as Arc<dyn LanceNamespace>,
+            table_id.clone(),
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(dataset.count_rows(None).await.unwrap(), 3);
+        assert_eq!(dataset.version().version, 1);
+
+        // Test 2: APPEND mode
+        let data2 = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![4, 5])),
+                Arc::new(Int32Array::from(vec![40, 50])),
+            ],
+        )
+        .unwrap();
+
+        let params_append = WriteParams {
+            mode: WriteMode::Append,
+            ..Default::default()
+        };
+
+        let reader2 = RecordBatchIterator::new(vec![data2].into_iter().map(Ok), schema.clone());
+        let dataset = Dataset::write_into_namespace(
+            reader2,
+            namespace.clone() as Arc<dyn LanceNamespace>,
+            table_id.clone(),
+            Some(params_append),
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(dataset.count_rows(None).await.unwrap(), 5);
+        assert_eq!(dataset.version().version, 2);
+
+        // Test 3: OVERWRITE mode
+        let data3 = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![100, 200])),
+                Arc::new(Int32Array::from(vec![1000, 2000])),
+            ],
+        )
+        .unwrap();
+
+        let params_overwrite = WriteParams {
+            mode: WriteMode::Overwrite,
+            ..Default::default()
+        };
+
+        let reader3 = RecordBatchIterator::new(vec![data3].into_iter().map(Ok), schema.clone());
+        let dataset = Dataset::write_into_namespace(
+            reader3,
+            namespace.clone() as Arc<dyn LanceNamespace>,
+            table_id.clone(),
+            Some(params_overwrite),
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(dataset.count_rows(None).await.unwrap(), 2);
+        assert_eq!(dataset.version().version, 3);
+
+        // Verify old data was replaced
+        let result = dataset.scan().try_into_batch().await.unwrap();
+        let a_col = result
+            .column_by_name("a")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        assert_eq!(a_col.values(), &[100, 200]);
     }
 }

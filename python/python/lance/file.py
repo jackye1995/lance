@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Union
 
 import pyarrow as pa
 
+from .io import StorageOptionsProvider
 from .lance import (
     LanceBufferDescriptor,
     LanceColumnMetadata,
@@ -66,7 +67,8 @@ class LanceFileReader:
         storage_options: Optional[Dict[str, str]] = None,
         columns: Optional[List[str]] = None,
         *,
-        storage_options_provider=None,
+        storage_options_provider: Optional[StorageOptionsProvider] = None,
+        s3_credentials_refresh_offset_seconds: Optional[int] = None,
         _inner_reader: Optional[_LanceFileReader] = None,
     ):
         """
@@ -84,6 +86,9 @@ class LanceFileReader:
         storage_options_provider : optional
             A provider that can provide storage options dynamically. This is useful
             for credentials that need to be refreshed or vended on-demand.
+        s3_credentials_refresh_offset_seconds : optional, int
+            How early (in seconds) before expiration to refresh S3 credentials.
+            Default is 60 seconds. Only applies when using storage_options_provider.
         columns: list of str, default None
             List of column names to be fetched.
             All columns are fetched if None or unspecified.
@@ -97,6 +102,7 @@ class LanceFileReader:
                 path,
                 storage_options=storage_options,
                 storage_options_provider=storage_options_provider,
+                s3_credentials_refresh_offset_seconds=s3_credentials_refresh_offset_seconds,
                 columns=columns,
             )
 
@@ -212,7 +218,8 @@ class LanceFileSession:
         self,
         base_path: str,
         storage_options: Optional[Dict[str, str]] = None,
-        storage_options_provider=None,
+        storage_options_provider: Optional[StorageOptionsProvider] = None,
+        s3_credentials_refresh_offset_seconds: Optional[int] = None,
     ):
         """
         Creates a new file session
@@ -229,6 +236,9 @@ class LanceFileSession:
         storage_options_provider : optional
             A provider that can provide storage options dynamically. This is useful
             for credentials that need to be refreshed or vended on-demand.
+        s3_credentials_refresh_offset_seconds : optional, int
+            How early (in seconds) before expiration to refresh S3 credentials.
+            Default is 60 seconds. Only applies when using storage_options_provider.
         """
         if isinstance(base_path, Path):
             base_path = str(base_path)
@@ -236,6 +246,7 @@ class LanceFileSession:
             base_path,
             storage_options=storage_options,
             storage_options_provider=storage_options_provider,
+            s3_credentials_refresh_offset_seconds=s3_credentials_refresh_offset_seconds,
         )
 
     def open_reader(
@@ -349,7 +360,8 @@ class LanceFileWriter:
         data_cache_bytes: Optional[int] = None,
         version: Optional[str] = None,
         storage_options: Optional[Dict[str, str]] = None,
-        storage_options_provider=None,
+        storage_options_provider: Optional[StorageOptionsProvider] = None,
+        s3_credentials_refresh_offset_seconds: Optional[int] = None,
         max_page_bytes: Optional[int] = None,
         _inner_writer: Optional[_LanceFileWriter] = None,
         **kwargs,
@@ -380,6 +392,9 @@ class LanceFileWriter:
             A storage options provider that can fetch and refresh storage options
             dynamically. This is useful for credentials that expire and need to be
             refreshed automatically.
+        s3_credentials_refresh_offset_seconds : optional, int
+            How early (in seconds) before expiration to refresh S3 credentials.
+            Default is 60 seconds. Only applies when using storage_options_provider.
         max_page_bytes : optional, int
             The maximum size of a page in bytes, if a single array would create a
             page larger than this then it will be split into multiple pages. The
@@ -397,6 +412,7 @@ class LanceFileWriter:
                 version=version,
                 storage_options=storage_options,
                 storage_options_provider=storage_options_provider,
+                s3_credentials_refresh_offset_seconds=s3_credentials_refresh_offset_seconds,
                 max_page_bytes=max_page_bytes,
                 **kwargs,
             )

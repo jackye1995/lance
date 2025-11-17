@@ -66,6 +66,7 @@ class LanceFileReader:
         storage_options: Optional[Dict[str, str]] = None,
         columns: Optional[List[str]] = None,
         *,
+        storage_options_provider=None,
         _inner_reader: Optional[_LanceFileReader] = None,
     ):
         """
@@ -80,6 +81,9 @@ class LanceFileReader:
         storage_options : optional, dict
             Extra options to be used for a particular storage connection. This is
             used to store connection parameters like credentials, endpoint, etc.
+        storage_options_provider : optional
+            A provider that can provide storage options dynamically. This is useful
+            for credentials that need to be refreshed or vended on-demand.
         columns: list of str, default None
             List of column names to be fetched.
             All columns are fetched if None or unspecified.
@@ -90,7 +94,10 @@ class LanceFileReader:
             if isinstance(path, Path):
                 path = str(path)
             self._reader = _LanceFileReader(
-                path, storage_options=storage_options, columns=columns
+                path,
+                storage_options=storage_options,
+                storage_options_provider=storage_options_provider,
+                columns=columns,
             )
 
     def read_all(self, *, batch_size: int = 1024, batch_readahead=16) -> ReaderResults:
@@ -202,7 +209,10 @@ class LanceFileSession:
     """
 
     def __init__(
-        self, base_path: str, storage_options: Optional[Dict[str, str]] = None
+        self,
+        base_path: str,
+        storage_options: Optional[Dict[str, str]] = None,
+        storage_options_provider=None,
     ):
         """
         Creates a new file session
@@ -216,10 +226,17 @@ class LanceFileSession:
         storage_options : optional, dict
             Extra options to be used for a particular storage connection. This is
             used to store connection parameters like credentials, endpoint, etc.
+        storage_options_provider : optional
+            A provider that can provide storage options dynamically. This is useful
+            for credentials that need to be refreshed or vended on-demand.
         """
         if isinstance(base_path, Path):
             base_path = str(base_path)
-        self._session = _LanceFileSession(base_path, storage_options=storage_options)
+        self._session = _LanceFileSession(
+            base_path,
+            storage_options=storage_options,
+            storage_options_provider=storage_options_provider,
+        )
 
     def open_reader(
         self, path: str, columns: Optional[List[str]] = None
@@ -280,6 +297,39 @@ class LanceFileSession:
             None,  # pyright: ignore[reportArgumentType]
             _inner_writer=inner,
         )
+
+    def contains(self, path: str) -> bool:
+        """
+        Check if a file exists at the given path (relative to this session's base path).
+
+        Parameters
+        ----------
+        path : str
+            Path relative to `base_path` to check for existence.
+
+        Returns
+        -------
+        bool
+            True if the file exists, False otherwise.
+        """
+        return self._session.contains(path)
+
+    def list(self, path: Optional[str] = None) -> List[str]:
+        """
+        List all files at the given path (relative to this session's base path).
+
+        Parameters
+        ----------
+        path : str, optional
+            Path relative to `base_path` to list files from. If None, lists files
+            from the base path.
+
+        Returns
+        -------
+        List[str]
+            List of file paths.
+        """
+        return self._session.list(path)
 
 
 class LanceFileWriter:

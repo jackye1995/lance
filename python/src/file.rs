@@ -36,7 +36,7 @@ use lance_io::{
 use object_store::path::Path;
 use pyo3::{
     exceptions::{PyIOError, PyRuntimeError, PyValueError},
-    pyclass, pyfunction, pymethods, IntoPyObjectExt, PyObject, PyResult, Python,
+    pyclass, pyfunction, pymethods, IntoPyObjectExt, PyErr, PyObject, PyResult, Python,
 };
 use regex::Regex;
 use serde::Serialize;
@@ -460,9 +460,14 @@ impl LanceFileSession {
     pub async fn try_new(
         uri_or_path: String,
         storage_options: Option<HashMap<String, String>>,
+        storage_options_provider: Option<Arc<dyn lance_io::object_store::StorageOptionsProvider>>,
     ) -> PyResult<Self> {
-        let (object_store, base_path) =
-            object_store_from_uri_or_path(uri_or_path, storage_options).await?;
+        let (object_store, base_path) = object_store_from_uri_or_path_with_provider(
+            uri_or_path,
+            storage_options,
+            storage_options_provider,
+        )
+        .await?;
         Ok(Self {
             object_store,
             base_path,
@@ -473,12 +478,19 @@ impl LanceFileSession {
 #[pymethods]
 impl LanceFileSession {
     #[new]
-    #[pyo3(signature=(uri_or_path, storage_options=None))]
+    #[pyo3(signature=(uri_or_path, storage_options=None, storage_options_provider=None))]
     pub fn new(
         uri_or_path: String,
         storage_options: Option<HashMap<String, String>>,
+        storage_options_provider: Option<PyObject>,
     ) -> PyResult<Self> {
-        rt().block_on(None, Self::try_new(uri_or_path, storage_options))?
+        let provider = storage_options_provider
+            .map(crate::storage_options::py_object_to_storage_options_provider)
+            .transpose()?;
+        rt().block_on(
+            None,
+            Self::try_new(uri_or_path, storage_options, provider),
+        )?
     }
 
     #[pyo3(signature=(path, columns=None))]
@@ -525,6 +537,43 @@ impl LanceFileSession {
             ),
         )?
     }
+
+    pub fn contains(&self, path: String) -> PyResult<bool> {
+        let full_path = self.base_path.child(path);
+        rt().block_on(None, async {
+            self.object_store
+                .exists(&full_path)
+                .await
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{}", e)))
+        })?
+    }
+
+    pub fn list(&self, path: Option<String>) -> PyResult<Vec<String>> {
+        use futures::stream::StreamExt;
+
+        let list_path = match path {
+            Some(p) => self.base_path.child(p),
+            None => self.base_path.clone(),
+        };
+
+        rt().block_on(None, async {
+            let stream = self.object_store.list(Some(list_path));
+            let results: Vec<_> = stream.collect().await;
+
+            let paths: Vec<String> = results
+                .into_iter()
+                .map(|meta_result| {
+                    meta_result
+                        .map(|meta| meta.location.to_string())
+                        .map_err(|e| {
+                            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{}", e))
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            Ok(paths)
+        })?
+    }
 }
 
 #[pyclass]
@@ -536,10 +585,15 @@ impl LanceFileReader {
     async fn open(
         uri_or_path: String,
         storage_options: Option<HashMap<String, String>>,
+        storage_options_provider: Option<Arc<dyn lance_io::object_store::StorageOptionsProvider>>,
         columns: Option<Vec<String>>,
     ) -> PyResult<Self> {
-        let (object_store, path) =
-            object_store_from_uri_or_path(uri_or_path, storage_options).await?;
+        let (object_store, path) = object_store_from_uri_or_path_with_provider(
+            uri_or_path,
+            storage_options,
+            storage_options_provider,
+        )
+        .await?;
         Self::open_with_store(object_store, path, columns).await
     }
 
@@ -635,13 +689,20 @@ impl LanceFileReader {
 #[pymethods]
 impl LanceFileReader {
     #[new]
-    #[pyo3(signature=(path, storage_options=None, columns=None))]
+    #[pyo3(signature=(path, storage_options=None, storage_options_provider=None, columns=None))]
     pub fn new(
         path: String,
         storage_options: Option<HashMap<String, String>>,
+        storage_options_provider: Option<PyObject>,
         columns: Option<Vec<String>>,
     ) -> PyResult<Self> {
-        rt().block_on(None, Self::open(path, storage_options, columns))?
+        let provider = storage_options_provider
+            .map(crate::storage_options::py_object_to_storage_options_provider)
+            .transpose()?;
+        rt().block_on(
+            None,
+            Self::open(path, storage_options, provider, columns),
+        )?
     }
 
     pub fn read_all(

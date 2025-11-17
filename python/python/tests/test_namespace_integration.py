@@ -576,7 +576,11 @@ def test_file_writer_with_storage_options_provider(s3_bucket: str):
     describe_count_after_write = namespace.get_describe_call_count()
     assert describe_count_after_write == initial_describe_count
 
-    reader = LanceFileReader(file_uri, storage_options=namespace_storage_options)
+    reader = LanceFileReader(
+        file_uri,
+        storage_options=namespace_storage_options,
+        storage_options_provider=provider,
+    )
     result = reader.read_all(batch_size=1024)
     result_table = result.to_table()
     assert result_table.num_rows == 6
@@ -606,7 +610,11 @@ def test_file_writer_with_storage_options_provider(s3_bucket: str):
     final_describe_count = namespace.get_describe_call_count()
     assert final_describe_count == describe_count_after_write + 1
 
-    reader2 = LanceFileReader(file_uri2, storage_options=namespace_storage_options)
+    reader2 = LanceFileReader(
+        file_uri2,
+        storage_options=namespace_storage_options,
+        storage_options_provider=provider,
+    )
     result2 = reader2.read_all(batch_size=1024)
     result_table2 = result2.to_table()
     assert result_table2.num_rows == 2

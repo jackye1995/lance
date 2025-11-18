@@ -581,16 +581,14 @@ impl LanceFileSession {
             let base_len = base_path_str.len();
 
             // Build the prefix filter if provided
-            let prefix_filter = path
-                .as_ref()
-                .and_then(|p| {
-                    let p = p.trim_end_matches('/');
-                    if p.is_empty() {
-                        None
-                    } else {
-                        Some(format!("{}/", p))
-                    }
-                });
+            let prefix_filter = path.as_ref().and_then(|p| {
+                let p = p.trim_end_matches('/');
+                if p.is_empty() {
+                    None
+                } else {
+                    Some(format!("{}/", p))
+                }
+            });
 
             let mut paths: Vec<String> = Vec::new();
             for meta_result in results {

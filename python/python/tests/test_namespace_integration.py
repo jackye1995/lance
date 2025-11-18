@@ -219,7 +219,11 @@ def test_namespace_with_refresh(s3_bucket: str):
     assert namespace.get_describe_call_count() == 0
 
     ds = lance.write_dataset(
-        table1, namespace=namespace, table_id=table_id, mode="create"
+        table1,
+        namespace=namespace,
+        table_id=table_id,
+        mode="create",
+        s3_credentials_refresh_offset_seconds=1,
     )
     assert ds.count_rows() == 2
     assert namespace.get_create_call_count() == 1

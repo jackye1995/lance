@@ -20,6 +20,7 @@ use bytes::Bytes;
 use futures::stream::StreamExt;
 use lance::io::{ObjectStore, RecordBatchStream};
 use lance_core::cache::LanceCache;
+use lance_core::utils::path::LancePathExt;
 use lance_encoding::decoder::{DecoderPlugins, FilterExpression};
 use lance_file::reader::{
     BufferDescriptor, CachedFileMetadata, FileReader, FileReaderOptions, FileStatistics,
@@ -519,7 +520,7 @@ impl LanceFileSession {
         path: String,
         columns: Option<Vec<String>>,
     ) -> PyResult<LanceFileReader> {
-        let path = self.base_path.child(path);
+        let path = self.base_path.child_path(&Path::from(path));
         rt().block_on(
             None,
             LanceFileReader::open_with_store(self.object_store.clone(), path, columns),
@@ -543,7 +544,7 @@ impl LanceFileSession {
         keep_original_array: Option<bool>,
         max_page_bytes: Option<u64>,
     ) -> PyResult<LanceFileWriter> {
-        let path = self.base_path.child(path);
+        let path = self.base_path.child_path(&Path::from(path));
         rt().block_on(
             None,
             LanceFileWriter::open_with_store(
@@ -559,7 +560,7 @@ impl LanceFileSession {
     }
 
     pub fn contains(&self, path: String) -> PyResult<bool> {
-        let full_path = self.base_path.child(path);
+        let full_path = self.base_path.child_path(&Path::from(path));
         rt().block_on(None, async {
             self.object_store
                 .exists(&full_path)
@@ -571,25 +572,54 @@ impl LanceFileSession {
     pub fn list(&self, path: Option<String>) -> PyResult<Vec<String>> {
         use futures::stream::StreamExt;
 
-        let list_path = match path {
-            Some(p) => self.base_path.child(p),
-            None => self.base_path.clone(),
-        };
-
         rt().block_on(None, async {
-            let stream = self.object_store.list(Some(list_path));
+            // List all files under base_path
+            let stream = self.object_store.list(Some(self.base_path.clone()));
             let results: Vec<_> = stream.collect().await;
 
-            let paths: Vec<String> = results
-                .into_iter()
-                .map(|meta_result| {
-                    meta_result
-                        .map(|meta| meta.location.to_string())
-                        .map_err(|e| {
-                            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{}", e))
-                        })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+            let base_path_str = self.base_path.as_ref();
+            let base_len = base_path_str.len();
+
+            // Build the prefix filter if provided
+            let prefix_filter = path
+                .as_ref()
+                .and_then(|p| {
+                    let p = p.trim_end_matches('/');
+                    if p.is_empty() {
+                        None
+                    } else {
+                        Some(format!("{}/", p))
+                    }
+                });
+
+            let mut paths: Vec<String> = Vec::new();
+            for meta_result in results {
+                let meta = meta_result.map_err(|e| {
+                    PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{}", e))
+                })?;
+
+                let full_path = meta.location.as_ref();
+                // Strip the base_path prefix to make it relative
+                let relative = if full_path.starts_with(base_path_str) {
+                    // Skip base path and any leading slash
+                    let rel = &full_path[base_len..];
+                    rel.trim_start_matches('/')
+                } else {
+                    // If for some reason it doesn't start with base_path, return as-is
+                    full_path
+                };
+
+                // Apply prefix filter if specified
+                let should_include = if let Some(ref prefix) = prefix_filter {
+                    relative.starts_with(prefix)
+                } else {
+                    true
+                };
+
+                if should_include {
+                    paths.push(relative.to_string());
+                }
+            }
 
             Ok(paths)
         })?

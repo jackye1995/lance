@@ -84,7 +84,7 @@ def last_beta_release():
                 "pylance",
                 "--pre",
                 "--extra-index-url",
-                "https://pypi.fury.io/lancedb/",
+                "https://pypi.fury.io/lance-format/",
             ],
             capture_output=True,
             text=True,

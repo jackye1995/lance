@@ -102,7 +102,7 @@ class VenvExecutor:
                 "--quiet",
                 "--pre",
                 "--extra-index-url",
-                "https://pypi.fury.io/lancedb/",
+                "https://pypi.fury.io/lance-format/",
                 f"pylance=={self.version}",
                 "pytest",
             ],

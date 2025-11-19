@@ -556,6 +556,102 @@ impl LanceFileSession {
             Ok(paths)
         })?
     }
+
+    /// Upload a file from local filesystem to the object store
+    ///
+    /// Parameters
+    /// ----------
+    /// local_path : str
+    ///     Local file path to upload
+    /// remote_path : str
+    ///     Remote path relative to session's base_path
+    pub fn upload_file(&self, local_path: String, remote_path: String) -> PyResult<()> {
+        rt().block_on(None, async {
+            // Read the local file
+            let local_file = tokio::fs::File::open(&local_path)
+                .await
+                .map_err(|e| PyIOError::new_err(format!("Failed to open local file {}: {}", local_path, e)))?;
+
+            // Create a buffered reader
+            let mut reader = tokio::io::BufReader::new(local_file);
+
+            // Create the remote path
+            let full_path = self.base_path.child_path(&Path::from(remote_path));
+
+            // Create an output stream on the object store
+            // This automatically handles multi-part upload for large files
+            let mut writer = self.object_store
+                .create(&full_path)
+                .await
+                .map_err(|e| PyIOError::new_err(format!("Failed to create remote file: {}", e)))?;
+
+            // Copy the file content
+            // ObjectStore's create() returns an ObjectWriter that automatically manages:
+            // - Multi-part uploads for files > 5MB (configurable via LANCE_INITIAL_UPLOAD_SIZE)
+            // - Parallel part uploads (up to 10 concurrent by default, configurable via LANCE_UPLOAD_CONCURRENCY)
+            // - Dynamic part sizing for very large files
+            tokio::io::copy(&mut reader, &mut writer)
+                .await
+                .map_err(|e| PyIOError::new_err(format!("Failed to upload file: {}", e)))?;
+
+            // Ensure all data is flushed and multi-part upload is completed
+            writer.shutdown()
+                .await
+                .map_err(|e| PyIOError::new_err(format!("Failed to finalize upload: {}", e)))?;
+
+            Ok(())
+        })?
+    }
+
+    /// Download a file from object store to local filesystem
+    ///
+    /// Parameters
+    /// ----------
+    /// remote_path : str
+    ///     Remote path relative to session's base_path
+    /// local_path : str
+    ///     Local file path where the file will be saved
+    pub fn download_file(&self, remote_path: String, local_path: String) -> PyResult<()> {
+        use futures::stream::StreamExt;
+        use tokio::io::AsyncWriteExt;
+
+        rt().block_on(None, async {
+            // Get remote file path
+            let full_path = self.base_path.child_path(&Path::from(remote_path));
+
+            // Get the file from object store
+            let get_result = self.object_store
+                .inner
+                .get(&full_path)
+                .await
+                .map_err(|e| PyIOError::new_err(format!("Failed to get remote file: {}", e)))?;
+
+            // Create stream from the result
+            let mut stream = get_result.into_stream();
+
+            // Create local file
+            let mut writer = tokio::fs::File::create(&local_path)
+                .await
+                .map_err(|e| PyIOError::new_err(format!("Failed to create local file {}: {}", local_path, e)))?;
+
+            // Stream from remote to local
+            // This efficiently handles large files by streaming chunks
+            while let Some(chunk_result) = stream.next().await {
+                let chunk = chunk_result
+                    .map_err(|e| PyIOError::new_err(format!("Failed to read chunk from remote: {}", e)))?;
+                writer.write_all(&chunk)
+                    .await
+                    .map_err(|e| PyIOError::new_err(format!("Failed to write chunk to local file: {}", e)))?;
+            }
+
+            // Ensure all data is flushed to disk
+            writer.flush()
+                .await
+                .map_err(|e| PyIOError::new_err(format!("Failed to flush local file: {}", e)))?;
+
+            Ok(())
+        })?
+    }
 }
 
 #[pyclass]

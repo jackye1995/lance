@@ -102,7 +102,7 @@ impl BackgroundExecutor {
         }
     }
 
-    /// Spawn a task in the background.
+    /// Spawn a task in the background
     pub fn spawn_background<T>(&self, py: Option<Python<'_>>, task: T)
     where
         T: Future + Send + 'static,

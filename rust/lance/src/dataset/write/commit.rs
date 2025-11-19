@@ -260,8 +260,8 @@ impl<'a> CommitBuilder<'a> {
             });
         }
 
-        // Validate the operation before proceeding with the commit to ensure
-        // manifest invariants stay intact (e.g., Merge validation).
+        // Validate the operation before proceeding with the commit
+        // This ensures that operations like Merge have proper validation for data integrity
         if let Some(dataset) = dest.dataset() {
             validate_operation(Some(&dataset.manifest), &transaction.operation)?;
         } else {

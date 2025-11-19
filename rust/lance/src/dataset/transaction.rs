@@ -205,6 +205,8 @@ pub enum Operation {
         replacements: Vec<DataReplacementGroup>,
     },
     /// Merge a new column in
+    /// 'fragments' is the final fragments include all data files, the new fragments must align with old ones at rows.
+    /// 'schema' is not forced to include existed columns, which means we could use Merge to drop column data
     Merge {
         fragments: Vec<Fragment>,
         schema: Schema,
@@ -3348,10 +3350,7 @@ pub fn validate_operation(manifest: Option<&Manifest>, operation: &Operation) ->
         (
             None,
             Operation::Overwrite {
-                fragments,
-                schema,
-                config_upsert_values: None,
-                initial_bases: _,
+                fragments, schema, ..
             },
         ) => {
             // Validate here because we are going to return early.

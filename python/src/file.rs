@@ -540,8 +540,8 @@ impl LanceFileSession {
 
                 // Strip the base_path prefix to make it relative
                 // Use prefix_match which handles path separators correctly across platforms
-                let relative_parts = meta.location.prefix_match(&self.base_path)
-                    .ok_or_else(|| {
+                let relative_parts =
+                    meta.location.prefix_match(&self.base_path).ok_or_else(|| {
                         PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
                             "Path '{}' does not start with base path '{}'",
                             meta.location.as_ref(),

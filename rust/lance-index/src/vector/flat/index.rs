@@ -12,7 +12,7 @@ use arrow_array::{Array, ArrayRef, Float32Array, RecordBatch, UInt64Array};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use deepsize::DeepSizeOf;
 use lance_core::{Error, Result, ROW_ID_FIELD};
-use lance_file::reader::FileReader;
+use lance_file::previous::reader::FileReader as PreviousFileReader;
 use lance_linalg::distance::DistanceType;
 use serde::{Deserialize, Serialize};
 use snafu::location;
@@ -50,6 +50,7 @@ static ANN_SEARCH_SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
 pub struct FlatQueryParams {
     lower_bound: Option<f32>,
     upper_bound: Option<f32>,
+    dist_q_c: f32,
 }
 
 impl From<&Query> for FlatQueryParams {
@@ -57,6 +58,7 @@ impl From<&Query> for FlatQueryParams {
         Self {
             lower_bound: q.lower_bound,
             upper_bound: q.upper_bound,
+            dist_q_c: q.dist_q_c,
         }
     }
 }
@@ -88,7 +90,7 @@ impl IvfSubIndex for FlatIndex {
     ) -> Result<RecordBatch> {
         let is_range_query = params.lower_bound.is_some() || params.upper_bound.is_some();
         let row_ids = storage.row_ids();
-        let dist_calc = storage.dist_calculator(query);
+        let dist_calc = storage.dist_calculator(query, params.dist_q_c);
         let mut res = BinaryHeap::with_capacity(k);
         metrics.record_comparisons(storage.len());
 
@@ -185,7 +187,7 @@ impl IvfSubIndex for FlatIndex {
         Ok(Self {})
     }
 
-    fn remap(&self, _: &HashMap<u64, Option<u64>>) -> Result<Self> {
+    fn remap(&self, _: &HashMap<u64, Option<u64>>, _: &impl VectorStore) -> Result<Self> {
         Ok(self.clone())
     }
 
@@ -201,7 +203,7 @@ pub struct FlatMetadata {
 
 #[async_trait::async_trait]
 impl QuantizerMetadata for FlatMetadata {
-    async fn load(_: &FileReader) -> Result<Self> {
+    async fn load(_: &PreviousFileReader) -> Result<Self> {
         unimplemented!("Flat will be used in new index builder which doesn't require this")
     }
 }

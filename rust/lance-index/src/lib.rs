@@ -4,7 +4,7 @@
 //! Lance secondary index library
 //!
 //! <section class="warning">
-//! This is internal crate used by <a href="https://github.com/lancedb/lance">the lance project</a>.
+//! This is internal crate used by <a href="https://github.com/lance-format/lance">the lance project</a>.
 //! <br/>
 //! API stability is not guaranteed.
 //! </section>
@@ -26,6 +26,7 @@ pub mod mem_wal;
 pub mod metrics;
 pub mod optimize;
 pub mod prefilter;
+pub mod registry;
 pub mod scalar;
 pub mod traits;
 pub mod vector;
@@ -43,9 +44,23 @@ pub const INDEX_METADATA_SCHEMA_KEY: &str = "lance:index";
 // Currently all vector indexes are version 1
 pub const VECTOR_INDEX_VERSION: u32 = 1;
 
+/// The factor of threshold to trigger split / join for vector index.
+///
+/// If the number of rows in the single partition is greater than `MAX_PARTITION_SIZE_FACTOR * target_partition_size`,
+/// the partition will be split.
+/// If the number of rows in the single partition is less than `MIN_PARTITION_SIZE_PERCENT *target_partition_size / 100`,
+/// the partition will be joined.
+pub const MAX_PARTITION_SIZE_FACTOR: usize = 4;
+pub const MIN_PARTITION_SIZE_PERCENT: usize = 25;
+
 pub mod pb {
     #![allow(clippy::use_self)]
     include!(concat!(env!("OUT_DIR"), "/lance.index.pb.rs"));
+}
+
+pub mod pbold {
+    #![allow(clippy::use_self)]
+    include!(concat!(env!("OUT_DIR"), "/lance.table.rs"));
 }
 
 /// Generic methods common across all types of secondary indices
@@ -101,6 +116,8 @@ pub enum IndexType {
 
     ZoneMap = 8, // ZoneMap
 
+    BloomFilter = 9, // Bloom filter
+
     // 100+ and up for vector index.
     /// Flat vector index.
     Vector = 100, // Legacy vector index, alias to IvfPq
@@ -110,6 +127,7 @@ pub enum IndexType {
     IvfHnswSq = 104,
     IvfHnswPq = 105,
     IvfHnswFlat = 106,
+    IvfRq = 107,
 }
 
 impl std::fmt::Display for IndexType {
@@ -123,12 +141,14 @@ impl std::fmt::Display for IndexType {
             Self::FragmentReuse => write!(f, "FragmentReuse"),
             Self::MemWal => write!(f, "MemWal"),
             Self::ZoneMap => write!(f, "ZoneMap"),
+            Self::BloomFilter => write!(f, "BloomFilter"),
             Self::Vector | Self::IvfPq => write!(f, "IVF_PQ"),
             Self::IvfFlat => write!(f, "IVF_FLAT"),
             Self::IvfSq => write!(f, "IVF_SQ"),
             Self::IvfHnswSq => write!(f, "IVF_HNSW_SQ"),
             Self::IvfHnswPq => write!(f, "IVF_HNSW_PQ"),
             Self::IvfHnswFlat => write!(f, "IVF_HNSW_FLAT"),
+            Self::IvfRq => write!(f, "IVF_RQ"),
         }
     }
 }
@@ -147,6 +167,7 @@ impl TryFrom<i32> for IndexType {
             v if v == Self::FragmentReuse as i32 => Ok(Self::FragmentReuse),
             v if v == Self::MemWal as i32 => Ok(Self::MemWal),
             v if v == Self::ZoneMap as i32 => Ok(Self::ZoneMap),
+            v if v == Self::BloomFilter as i32 => Ok(Self::BloomFilter),
             v if v == Self::Vector as i32 => Ok(Self::Vector),
             v if v == Self::IvfFlat as i32 => Ok(Self::IvfFlat),
             v if v == Self::IvfSq as i32 => Ok(Self::IvfSq),
@@ -179,6 +200,7 @@ impl TryFrom<&str> for IndexType {
             "IVF_FLAT" => Ok(Self::IvfFlat),
             "IVF_SQ" => Ok(Self::IvfSq),
             "IVF_PQ" => Ok(Self::IvfPq),
+            "IVF_RQ" => Ok(Self::IvfRq),
             "IVF_HNSW_FLAT" => Ok(Self::IvfHnswFlat),
             "IVF_HNSW_SQ" => Ok(Self::IvfHnswSq),
             "IVF_HNSW_PQ" => Ok(Self::IvfHnswPq),
@@ -201,6 +223,7 @@ impl IndexType {
                 | Self::Inverted
                 | Self::NGram
                 | Self::ZoneMap
+                | Self::BloomFilter
         )
     }
 
@@ -214,6 +237,7 @@ impl IndexType {
                 | Self::IvfHnswFlat
                 | Self::IvfFlat
                 | Self::IvfSq
+                | Self::IvfRq
         )
     }
 
@@ -237,6 +261,7 @@ impl IndexType {
             Self::FragmentReuse => 0,
             Self::MemWal => 0,
             Self::ZoneMap => 0,
+            Self::BloomFilter => 0,
 
             // for now all vector indices are built by the same builder,
             // so they share the same version.
@@ -246,7 +271,8 @@ impl IndexType {
             | Self::IvfPq
             | Self::IvfHnswSq
             | Self::IvfHnswPq
-            | Self::IvfHnswFlat => 1,
+            | Self::IvfHnswFlat
+            | Self::IvfRq => 1,
         }
     }
 
@@ -283,11 +309,13 @@ pub struct IndexMetadata {
     pub distance_type: String,
 }
 
-pub fn is_system_index(index_meta: &lance_table::format::Index) -> bool {
+pub fn is_system_index(index_meta: &lance_table::format::IndexMetadata) -> bool {
     index_meta.name == FRAG_REUSE_INDEX_NAME || index_meta.name == MEM_WAL_INDEX_NAME
 }
 
-pub fn infer_system_index_type(index_meta: &lance_table::format::Index) -> Option<IndexType> {
+pub fn infer_system_index_type(
+    index_meta: &lance_table::format::IndexMetadata,
+) -> Option<IndexType> {
     if index_meta.name == FRAG_REUSE_INDEX_NAME {
         Some(IndexType::FragmentReuse)
     } else if index_meta.name == MEM_WAL_INDEX_NAME {

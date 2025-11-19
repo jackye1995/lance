@@ -3,31 +3,28 @@
 
 //! Utilities for serializing and deserializing scalar indices in the lance format
 
-use std::cmp::min;
-use std::collections::HashMap;
-use std::{any::Any, sync::Arc};
-
+use super::{IndexReader, IndexStore, IndexWriter};
 use arrow_array::RecordBatch;
 use arrow_schema::Schema;
 use async_trait::async_trait;
-
 use deepsize::DeepSizeOf;
 use futures::TryStreamExt;
 use lance_core::{cache::LanceCache, Error, Result};
 use lance_encoding::decoder::{DecoderPlugins, FilterExpression};
-use lance_file::v2;
-use lance_file::v2::reader::FileReaderOptions;
-use lance_file::{
-    reader::FileReader,
-    writer::{FileWriter, ManifestProvider},
+use lance_file::previous::{
+    reader::FileReader as PreviousFileReader,
+    writer::{FileWriter as PreviousFileWriter, ManifestProvider as PreviousManifestProvider},
 };
+use lance_file::reader::{self as current_reader, FileReaderOptions, ReaderProjection};
+use lance_file::writer as current_writer;
 use lance_io::scheduler::{ScanScheduler, SchedulerConfig};
 use lance_io::utils::CachedFileSize;
 use lance_io::{object_store::ObjectStore, ReadBatchParams};
 use lance_table::format::SelfDescribingFileReader;
 use object_store::path::Path;
-
-use super::{IndexReader, IndexStore, IndexWriter};
+use std::cmp::min;
+use std::collections::HashMap;
+use std::{any::Any, sync::Arc};
 
 /// An index store that serializes scalar indices using the lance format
 ///
@@ -71,7 +68,7 @@ impl LanceIndexStore {
 }
 
 #[async_trait]
-impl<M: ManifestProvider + Send + Sync> IndexWriter for FileWriter<M> {
+impl<M: PreviousManifestProvider + Send + Sync> IndexWriter for PreviousFileWriter<M> {
     async fn write_record_batch(&mut self, batch: RecordBatch) -> Result<u64> {
         let offset = self.tell().await?;
         self.write(&[batch]).await?;
@@ -90,7 +87,7 @@ impl<M: ManifestProvider + Send + Sync> IndexWriter for FileWriter<M> {
 }
 
 #[async_trait]
-impl IndexWriter for v2::writer::FileWriter {
+impl IndexWriter for current_writer::FileWriter {
     async fn write_record_batch(&mut self, batch: RecordBatch) -> Result<u64> {
         let offset = self.tell().await?;
         self.write_batch(&batch).await?;
@@ -110,7 +107,7 @@ impl IndexWriter for v2::writer::FileWriter {
 }
 
 #[async_trait]
-impl IndexReader for FileReader {
+impl IndexReader for PreviousFileReader {
     async fn read_record_batch(&self, offset: u64, _batch_size: u64) -> Result<RecordBatch> {
         self.read_batch(offset as i32, ReadBatchParams::RangeFull, self.schema())
             .await
@@ -142,7 +139,7 @@ impl IndexReader for FileReader {
 }
 
 #[async_trait]
-impl IndexReader for v2::reader::FileReader {
+impl IndexReader for current_reader::FileReader {
     async fn read_record_batch(&self, offset: u64, batch_size: u64) -> Result<RecordBatch> {
         let start = offset * batch_size;
         let end = start + batch_size;
@@ -161,16 +158,13 @@ impl IndexReader for v2::reader::FileReader {
             )));
         }
         let projection = if let Some(projection) = projection {
-            v2::reader::ReaderProjection::from_column_names(
+            ReaderProjection::from_column_names(
                 self.metadata().version(),
                 self.schema(),
                 projection,
             )?
         } else {
-            v2::reader::ReaderProjection::from_whole_schema(
-                self.schema(),
-                self.metadata().version(),
-            )
+            ReaderProjection::from_whole_schema(self.schema(), self.metadata().version())
         };
         let batches = self
             .read_stream_projected(
@@ -219,10 +213,10 @@ impl IndexStore for LanceIndexStore {
         let path = self.index_dir.child(name);
         let schema = schema.as_ref().try_into()?;
         let writer = self.object_store.create(&path).await?;
-        let writer = v2::writer::FileWriter::try_new(
+        let writer = current_writer::FileWriter::try_new(
             writer,
             schema,
-            v2::writer::FileWriterOptions::default(),
+            current_writer::FileWriterOptions::default(),
         )?;
         Ok(Box::new(writer))
     }
@@ -233,7 +227,7 @@ impl IndexStore for LanceIndexStore {
             .scheduler
             .open_file(&path, &CachedFileSize::unknown())
             .await?;
-        match v2::reader::FileReader::try_open(
+        match current_reader::FileReader::try_open(
             file_scheduler,
             None,
             Arc::<DecoderPlugins>::default(),
@@ -247,7 +241,7 @@ impl IndexStore for LanceIndexStore {
                 // If the error is a version conflict we can try to read the file with v1 reader
                 if let Error::VersionConflict { .. } = e {
                     let path = self.index_dir.child(name);
-                    let file_reader = FileReader::try_new_self_described(
+                    let file_reader = PreviousFileReader::try_new_self_described(
                         &self.object_store,
                         &path,
                         Some(&self.metadata_cache),
@@ -307,9 +301,10 @@ impl IndexStore for LanceIndexStore {
 #[cfg(test)]
 pub mod tests {
 
-    use std::{collections::HashMap, ops::Bound, path::Path};
+    use std::{collections::HashMap, ops::Bound};
 
     use crate::metrics::NoOpMetricsCollector;
+    use crate::pbold;
     use crate::scalar::bitmap::BitmapIndexPlugin;
     use crate::scalar::btree::{BTreeIndexPlugin, BTreeParameters};
     use crate::scalar::label_list::LabelListIndexPlugin;
@@ -334,17 +329,16 @@ pub mod tests {
     use datafusion_common::ScalarValue;
     use futures::FutureExt;
     use lance_core::utils::mask::RowIdTreeMap;
+    use lance_core::utils::tempfile::TempDir;
     use lance_core::ROW_ID;
     use lance_datagen::{array, gen_batch, ArrayGeneratorExt, BatchCount, ByteCount, RowCount};
-    use tempfile::{tempdir, TempDir};
 
     fn test_store(tempdir: &TempDir) -> Arc<dyn IndexStore> {
-        let test_path: &Path = tempdir.path();
-        let (object_store, test_path) =
-            ObjectStore::from_uri(test_path.as_os_str().to_str().unwrap())
-                .now_or_never()
-                .unwrap()
-                .unwrap();
+        let test_path = tempdir.obj_path();
+        let (object_store, test_path) = ObjectStore::from_uri(test_path.as_ref())
+            .now_or_never()
+            .unwrap()
+            .unwrap();
         let cache = Arc::new(lance_core::cache::LanceCache::with_capacity(
             128 * 1024 * 1024,
         ));
@@ -370,7 +364,7 @@ pub mod tests {
             )
             .unwrap();
         btree_plugin
-            .train_index(data, index_store.as_ref(), request)
+            .train_index(data, index_store.as_ref(), request, None)
             .await
             .unwrap();
     }
@@ -382,7 +376,7 @@ pub mod tests {
 
     #[tokio::test]
     async fn test_basic_btree() {
-        let tempdir = tempdir().unwrap();
+        let tempdir = TempDir::default();
         let index_store = test_store(&tempdir);
         let data = gen_batch()
             .col(VALUE_COLUMN_NAME, array::step::<Int32Type>())
@@ -392,7 +386,7 @@ pub mod tests {
         let index = BTreeIndexPlugin
             .load_index(
                 index_store,
-                &default_details::<crate::pb::BTreeIndexDetails>(),
+                &default_details::<pbold::BTreeIndexDetails>(),
                 None,
                 &LanceCache::no_cache(),
             )
@@ -447,7 +441,7 @@ pub mod tests {
 
     #[tokio::test]
     async fn test_btree_update() {
-        let index_dir = tempdir().unwrap();
+        let index_dir = TempDir::default();
         let index_store = test_store(&index_dir);
         let data = gen_batch()
             .col(VALUE_COLUMN_NAME, array::step::<Int32Type>())
@@ -457,7 +451,7 @@ pub mod tests {
         let index = BTreeIndexPlugin
             .load_index(
                 index_store,
-                &default_details::<crate::pb::BTreeIndexDetails>(),
+                &default_details::<pbold::BTreeIndexDetails>(),
                 None,
                 &LanceCache::no_cache(),
             )
@@ -472,7 +466,7 @@ pub mod tests {
             .col(ROW_ID, array::step_custom::<UInt64Type>(4096 * 100, 1))
             .into_reader_rows(RowCount::from(4096), BatchCount::from(100));
 
-        let updated_index_dir = tempdir().unwrap();
+        let updated_index_dir = TempDir::default();
         let updated_index_store = test_store(&updated_index_dir);
         index
             .update(
@@ -484,7 +478,7 @@ pub mod tests {
         let updated_index = BTreeIndexPlugin
             .load_index(
                 updated_index_store,
-                &default_details::<crate::pb::BTreeIndexDetails>(),
+                &default_details::<pbold::BTreeIndexDetails>(),
                 None,
                 &LanceCache::no_cache(),
             )
@@ -529,7 +523,7 @@ pub mod tests {
 
     #[tokio::test]
     async fn test_btree_with_gaps() {
-        let tempdir = tempdir().unwrap();
+        let tempdir = TempDir::default();
         let index_store = test_store(&tempdir);
         let batch_one = gen_batch()
             .col(
@@ -572,7 +566,7 @@ pub mod tests {
         let index = BTreeIndexPlugin
             .load_index(
                 index_store,
-                &default_details::<crate::pb::BTreeIndexDetails>(),
+                &default_details::<pbold::BTreeIndexDetails>(),
                 None,
                 &LanceCache::no_cache(),
             )
@@ -772,7 +766,7 @@ pub mod tests {
             // Min/max accumulator not implemented for Duration(Nanosecond)
             // DataType::Duration(TimeUnit::Nanosecond),
         ] {
-            let tempdir = tempdir().unwrap();
+            let tempdir = TempDir::default();
             let index_store = test_store(&tempdir);
             let data: RecordBatch = gen_batch()
                 .col(VALUE_COLUMN_NAME, array::rand_type(data_type))
@@ -816,7 +810,7 @@ pub mod tests {
             let index = BTreeIndexPlugin
                 .load_index(
                     index_store,
-                    &default_details::<crate::pb::BTreeIndexDetails>(),
+                    &default_details::<pbold::BTreeIndexDetails>(),
                     None,
                     &LanceCache::no_cache(),
                 )
@@ -841,7 +835,7 @@ pub mod tests {
 
     #[tokio::test]
     async fn btree_entire_null_page() {
-        let tempdir = tempdir().unwrap();
+        let tempdir = TempDir::default();
         let index_store = test_store(&tempdir);
         let batch = gen_batch()
             .col(
@@ -868,6 +862,7 @@ pub mod tests {
             &sub_index_trainer,
             index_store.as_ref(),
             DEFAULT_BTREE_BATCH_SIZE,
+            None,
         )
         .await
         .unwrap();
@@ -875,7 +870,7 @@ pub mod tests {
         let index = BTreeIndexPlugin
             .load_index(
                 index_store,
-                &default_details::<crate::pb::BTreeIndexDetails>(),
+                &default_details::<pbold::BTreeIndexDetails>(),
                 None,
                 &LanceCache::no_cache(),
             )
@@ -913,14 +908,14 @@ pub mod tests {
             .new_training_request("{}", &Field::new(VALUE_COLUMN_NAME, DataType::Int32, false))
             .unwrap();
         BitmapIndexPlugin
-            .train_index(data, index_store.as_ref(), request)
+            .train_index(data, index_store.as_ref(), request, None)
             .await
             .unwrap();
     }
 
     #[tokio::test]
     async fn test_bitmap_working() {
-        let tempdir = tempdir().unwrap();
+        let tempdir = TempDir::default();
         let index_store = test_store(&tempdir);
 
         let schema = Arc::new(ArrowSchema::new(vec![
@@ -989,7 +984,7 @@ pub mod tests {
 
     #[tokio::test]
     async fn test_basic_bitmap() {
-        let tempdir = tempdir().unwrap();
+        let tempdir = TempDir::default();
         let index_store = test_store(&tempdir);
         let data = gen_batch()
             .col(VALUE_COLUMN_NAME, array::step::<Int32Type>())
@@ -1053,7 +1048,7 @@ pub mod tests {
 
     #[tokio::test]
     async fn test_bitmap_with_gaps() {
-        let tempdir = tempdir().unwrap();
+        let tempdir = TempDir::default();
         let index_store = test_store(&tempdir);
         let batch_one = gen_batch()
             .col(
@@ -1274,7 +1269,7 @@ pub mod tests {
 
     #[tokio::test]
     async fn test_bitmap_update() {
-        let index_dir = tempdir().unwrap();
+        let index_dir = TempDir::default();
         let index_store = test_store(&index_dir);
         let data = gen_batch()
             .col(VALUE_COLUMN_NAME, array::step::<Int32Type>())
@@ -1290,7 +1285,7 @@ pub mod tests {
             .col(ROW_ID, array::step_custom::<UInt64Type>(4096, 1))
             .into_reader_rows(RowCount::from(4096), BatchCount::from(1));
 
-        let updated_index_dir = tempdir().unwrap();
+        let updated_index_dir = TempDir::default();
         let updated_index_store = test_store(&updated_index_dir);
         index
             .update(
@@ -1319,7 +1314,7 @@ pub mod tests {
 
     #[tokio::test]
     async fn test_bitmap_remap() {
-        let index_dir = tempdir().unwrap();
+        let index_dir = TempDir::default();
         let index_store = test_store(&index_dir);
         let data = gen_batch()
             .col(VALUE_COLUMN_NAME, array::step::<Int32Type>())
@@ -1343,7 +1338,7 @@ pub mod tests {
             })
             .collect::<HashMap<_, _>>();
 
-        let remapped_dir = tempdir().unwrap();
+        let remapped_dir = TempDir::default();
         let remapped_store = test_store(&remapped_dir);
         index
             .remap(&mapping, remapped_store.as_ref())
@@ -1401,14 +1396,14 @@ pub mod tests {
             )
             .unwrap();
         LabelListIndexPlugin
-            .train_index(data, index_store.as_ref(), request)
+            .train_index(data, index_store.as_ref(), request, None)
             .await
             .unwrap();
     }
 
     #[tokio::test]
     async fn test_label_list_index() {
-        let tempdir = tempdir().unwrap();
+        let tempdir = TempDir::default();
         let index_store = test_store(&tempdir);
         let data = gen_batch()
             .col(
@@ -1439,7 +1434,7 @@ pub mod tests {
                 let index = LabelListIndexPlugin
                     .load_index(
                         index_store,
-                        &default_details::<crate::pb::LabelListIndexDetails>(),
+                        &default_details::<pbold::LabelListIndexDetails>(),
                         None,
                         &LanceCache::no_cache(),
                     )

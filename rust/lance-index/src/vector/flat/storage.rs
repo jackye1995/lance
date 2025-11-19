@@ -19,7 +19,7 @@ use arrow_array::{
 use arrow_schema::SchemaRef;
 use deepsize::DeepSizeOf;
 use lance_core::{Error, Result, ROW_ID};
-use lance_file::reader::FileReader;
+use lance_file::previous::reader::FileReader as PreviousFileReader;
 use lance_linalg::distance::hamming::hamming;
 use lance_linalg::distance::DistanceType;
 use snafu::location;
@@ -94,7 +94,7 @@ impl QuantizerStorage for FlatFloatStorage {
     }
 
     async fn load_partition(
-        _: &FileReader,
+        _: &PreviousFileReader,
         _: std::ops::Range<usize>,
         _: DistanceType,
         _: &Self::Metadata,
@@ -171,7 +171,7 @@ impl VectorStore for FlatFloatStorage {
         self.row_ids.values().iter()
     }
 
-    fn dist_calculator(&self, query: ArrayRef) -> Self::DistanceCalculator<'_> {
+    fn dist_calculator(&self, query: ArrayRef, _dist_q_c: f32) -> Self::DistanceCalculator<'_> {
         Self::DistanceCalculator::new(self.vectors.as_ref(), query, self.distance_type)
     }
 
@@ -252,7 +252,7 @@ impl QuantizerStorage for FlatBinStorage {
     }
 
     async fn load_partition(
-        _: &FileReader,
+        _: &PreviousFileReader,
         _: std::ops::Range<usize>,
         _: DistanceType,
         _: &Self::Metadata,
@@ -329,7 +329,7 @@ impl VectorStore for FlatBinStorage {
         self.row_ids.values().iter()
     }
 
-    fn dist_calculator(&self, query: ArrayRef) -> Self::DistanceCalculator<'_> {
+    fn dist_calculator(&self, query: ArrayRef, _dist_q_c: f32) -> Self::DistanceCalculator<'_> {
         Self::DistanceCalculator::new(self.vectors.as_ref(), query, self.distance_type)
     }
 

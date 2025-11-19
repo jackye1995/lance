@@ -15,7 +15,7 @@ use datafusion::{
     execution::SendableRecordBatchStream,
     physical_plan::{projection::ProjectionExec, ExecutionPlan},
 };
-use datafusion_common::ScalarValue;
+use datafusion_common::{config::ConfigOptions, ScalarValue};
 use datafusion_expr::{Expr, Operator, ScalarUDF};
 use datafusion_physical_expr::{
     expressions::{Column, Literal},
@@ -35,12 +35,10 @@ use lance_core::{cache::LanceCache, error::LanceOptionExt, Error, Result, ROW_ID
 use crate::{
     frag_reuse::FragReuseIndex,
     metrics::MetricsCollector,
+    registry::IndexPluginRegistry,
     scalar::{
         expression::{IndexedExpression, ScalarIndexExpr, ScalarIndexSearch, ScalarQueryParser},
-        registry::{
-            ScalarIndexPlugin, ScalarIndexPluginRegistry, TrainingCriteria, TrainingRequest,
-            VALUE_COLUMN_NAME,
-        },
+        registry::{ScalarIndexPlugin, TrainingCriteria, TrainingRequest, VALUE_COLUMN_NAME},
         AnyQuery, CreatedIndex, IndexStore, ScalarIndex, SearchResult, UpdateCriteria,
     },
     Index, IndexType,
@@ -155,6 +153,10 @@ impl ScalarIndex for JsonIndex {
 
     fn update_criteria(&self) -> UpdateCriteria {
         self.target_index.update_criteria()
+    }
+
+    fn derive_index_params(&self) -> Result<super::ScalarIndexParams> {
+        self.target_index.derive_index_params()
     }
 }
 
@@ -298,7 +300,7 @@ impl ScalarQueryParser for JsonQueryParser {
             .map(|target_expr| self.wrap_search(target_expr))
     }
 
-    // TODO: maybe we should address it by https://github.com/lancedb/lance/issues/4624
+    // TODO: maybe we should address it by https://github.com/lance-format/lance/issues/4624
     fn is_valid_reference(&self, func: &Expr, _data_type: &DataType) -> Option<DataType> {
         match func {
             Expr::ScalarFunction(udf) => {
@@ -369,7 +371,7 @@ impl TrainingRequest for JsonTrainingRequest {
 /// Plugin implementation for a [`JsonIndex`]
 #[derive(Default)]
 pub struct JsonIndexPlugin {
-    registry: Mutex<Option<Arc<ScalarIndexPluginRegistry>>>,
+    registry: Mutex<Option<Arc<IndexPluginRegistry>>>,
 }
 
 impl std::fmt::Debug for JsonIndexPlugin {
@@ -379,7 +381,7 @@ impl std::fmt::Debug for JsonIndexPlugin {
 }
 
 impl JsonIndexPlugin {
-    fn registry(&self) -> Result<Arc<ScalarIndexPluginRegistry>> {
+    fn registry(&self) -> Result<Arc<IndexPluginRegistry>> {
         Ok(self.registry.lock().unwrap().as_ref().expect_ok()?.clone())
     }
 
@@ -406,6 +408,7 @@ impl JsonIndexPlugin {
                         Arc::new(Literal::new(ScalarValue::Utf8(Some(path)))),
                     ],
                     &input_schema,
+                    Arc::new(ConfigOptions::default()),
                 )?) as Arc<dyn PhysicalExpr>,
                 "json_result".to_string(),
             ),
@@ -704,6 +707,10 @@ impl JsonIndexPlugin {
 
 #[async_trait]
 impl ScalarIndexPlugin for JsonIndexPlugin {
+    fn name(&self) -> &str {
+        "Json"
+    }
+
     fn new_training_request(
         &self,
         params: &str,
@@ -735,7 +742,7 @@ impl ScalarIndexPlugin for JsonIndexPlugin {
         true
     }
 
-    fn attach_registry(&self, registry: Arc<ScalarIndexPluginRegistry>) {
+    fn attach_registry(&self, registry: Arc<IndexPluginRegistry>) {
         let mut reg_ref = self.registry.lock().unwrap();
         *reg_ref = Some(registry);
     }
@@ -768,6 +775,7 @@ impl ScalarIndexPlugin for JsonIndexPlugin {
         data: SendableRecordBatchStream,
         index_store: &dyn IndexStore,
         request: Box<dyn TrainingRequest>,
+        fragment_ids: Option<Vec<u32>>,
     ) -> Result<CreatedIndex> {
         let request = (request as Box<dyn std::any::Any>)
             .downcast::<JsonTrainingRequest>()
@@ -797,7 +805,7 @@ impl ScalarIndexPlugin for JsonIndexPlugin {
         )?;
 
         let target_index = target_plugin
-            .train_index(converted_stream, index_store, target_request)
+            .train_index(converted_stream, index_store, target_request, fragment_ids)
             .await?;
 
         let index_details = crate::pb::JsonIndexDetails {
@@ -825,6 +833,18 @@ impl ScalarIndexPlugin for JsonIndexPlugin {
             .load_index(index_store, target_details, frag_reuse_index, cache)
             .await?;
         Ok(Arc::new(JsonIndex::new(target_index, json_details.path)))
+    }
+
+    fn details_as_json(&self, details: &prost_types::Any) -> Result<serde_json::Value> {
+        let registry = self.registry().unwrap();
+        let json_details = crate::pb::JsonIndexDetails::decode(details.value.as_slice())?;
+        let target_details = json_details.target_details.as_ref().expect_ok()?;
+        let target_plugin = registry.get_plugin_by_details(target_details).unwrap();
+        let target_details_json = target_plugin.details_as_json(target_details)?;
+        Ok(serde_json::json!({
+            "path": json_details.path,
+            "target_details": target_details_json,
+        }))
     }
 }
 

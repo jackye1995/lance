@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The Lance Authors
 
+import json
 import os
 import random
 import re
@@ -90,6 +91,97 @@ def indexed_dataset(tmp_path):
 @pytest.fixture()
 def data_table(indexed_dataset: lance.LanceDataset):
     return indexed_dataset.scanner().to_table()
+
+
+@pytest.fixture
+def btree_comparison_datasets(tmp_path):
+    """Setup datasets for B-tree comparison tests"""
+    # Test configuration
+    num_fragments = 3
+    rows_per_fragment = 10000
+    total_rows = num_fragments * rows_per_fragment
+
+    # Create dataset for fragment-level indexing
+    fragment_ds = generate_multi_fragment_dataset(
+        tmp_path / "fragment",
+        num_fragments=num_fragments,
+        rows_per_fragment=rows_per_fragment,
+    )
+
+    # Create dataset for complete indexing (same data structure)
+    complete_ds = generate_multi_fragment_dataset(
+        tmp_path / "complete",
+        num_fragments=num_fragments,
+        rows_per_fragment=rows_per_fragment,
+    )
+
+    import uuid
+
+    # Build fragment-level B-tree index
+    fragment_index_id = str(uuid.uuid4())
+    fragment_index_name = "fragment_btree_precise_test"
+
+    fragments = fragment_ds.get_fragments()
+    fragment_ids = [fragment.fragment_id for fragment in fragments]
+
+    # Create fragment-level indices
+    for fragment in fragments:
+        fragment_id = fragment.fragment_id
+
+        fragment_ds.create_scalar_index(
+            column="id",
+            index_type="BTREE",
+            name=fragment_index_name,
+            replace=False,
+            index_uuid=fragment_index_id,
+            fragment_ids=[fragment_id],
+        )
+
+    # Merge fragment indices
+    fragment_ds.merge_index_metadata(fragment_index_id, index_type="BTREE")
+
+    # Create Index object for fragment-based index
+    from lance.dataset import Index
+
+    field_id = fragment_ds.schema.get_field_index("id")
+
+    fragment_index = Index(
+        uuid=fragment_index_id,
+        name=fragment_index_name,
+        fields=[field_id],
+        dataset_version=fragment_ds.version,
+        fragment_ids=set(fragment_ids),
+        index_version=0,
+    )
+
+    # Commit fragment-based index
+    create_fragment_index_op = lance.LanceOperation.CreateIndex(
+        new_indices=[fragment_index],
+        removed_indices=[],
+    )
+
+    fragment_ds_committed = lance.LanceDataset.commit(
+        fragment_ds.uri,
+        create_fragment_index_op,
+        read_version=fragment_ds.version,
+    )
+
+    # Build complete B-tree index
+    complete_index_name = f"complete_btree_{uuid.uuid4().hex[:8]}"
+    complete_ds.create_scalar_index(
+        column="id",
+        index_type="BTREE",
+        name=complete_index_name,
+    )
+    # Reload the dataset to get the indexed version
+    complete_ds = lance.dataset(complete_ds.uri)
+
+    return {
+        "fragment_ds": fragment_ds_committed,
+        "complete_ds": complete_ds,
+        "rows_per_fragment": rows_per_fragment,
+        "total_rows": total_rows,
+    }
 
 
 def test_load_indices(indexed_dataset: lance.LanceDataset):
@@ -478,6 +570,71 @@ def test_full_text_search(dataset, with_position):
         )
 
 
+def test_unindexed_full_text_search_on_empty_index(tmp_path):
+    # Create fts index on empty table.
+    schema = pa.schema({"text": pa.string()})
+    ds = lance.write_dataset(pa.Table.from_pylist([], schema=schema), tmp_path)
+    ds.create_scalar_index("text", "INVERTED")
+
+    # Append unindexed data.
+    ds.insert(pa.Table.from_pylist([{"text": "hello!"}], schema=schema))
+
+    # Fts search.
+    results = ds.scanner(
+        columns=["text"],
+        full_text_query="hello",
+    ).to_table()
+    assert results.num_rows == 1
+
+
+def test_full_text_search_without_index(dataset):
+    row = dataset.take(indices=[0], columns=["doc"])
+    query_text = row.column(0)[0].as_py()
+    query_text = query_text.split(" ")[0]
+    query = MatchQuery(query_text, column="doc")
+    results = dataset.scanner(
+        columns=["doc"],
+        full_text_query=query,
+    ).to_table()
+    assert results.num_rows > 0
+    results = results.column(0)
+    for row in results:
+        assert query_text in row.as_py()
+
+
+def test_fts_custom_stop_words(tmp_path):
+    # Prepare dataset
+    set_language_model_path()
+    data = pa.table(
+        {
+            "text": ["他们拿着苹果手机", "他们穿着耐克阿迪"],
+        }
+    )
+    ds = lance.write_dataset(data, tmp_path, mode="overwrite")
+    ds.create_scalar_index(
+        "text",
+        "INVERTED",
+        base_tokenizer="jieba/default",
+        remove_stop_words=True,
+        custom_stop_words=["他们"],
+    )
+
+    # Search
+    results = ds.to_table(
+        full_text_query="他们",
+        prefilter=True,
+        with_row_id=True,
+    )
+    assert len(results["_rowid"].to_pylist()) == 0
+
+    results = ds.to_table(
+        full_text_query="手机",
+        prefilter=True,
+        with_row_id=True,
+    )
+    assert len(results["_rowid"].to_pylist()) == 1
+
+
 def test_rowid_order(dataset):
     dataset.create_scalar_index("doc", index_type="INVERTED", with_position=False)
     results = dataset.scanner(
@@ -805,6 +962,11 @@ def test_fts_on_list(tmp_path):
     results = ds.to_table(full_text_query=PhraseQuery("lance database", "text"))
     assert results.num_rows == 2
 
+    # Append new data without fts index, then query.
+    ds.insert(data)
+    results = ds.to_table(full_text_query="lance")
+    assert results.num_rows == 6
+
 
 def test_fts_fuzzy_query(tmp_path):
     data = pa.table(
@@ -930,7 +1092,7 @@ def test_fts_boost_query(tmp_path):
     )
 
     ds = lance.write_dataset(data, tmp_path)
-    ds.create_scalar_index("text", "INVERTED")
+    ds.create_scalar_index("text", "INVERTED", with_position=True)
     results = ds.to_table(
         full_text_query=BoostQuery(
             MatchQuery("puppy", "text"),
@@ -938,6 +1100,22 @@ def test_fts_boost_query(tmp_path):
             negative_boost=0.5,
         ),
     )
+    assert results.num_rows == 3
+    assert set(results["text"].to_pylist()) == {
+        "frodo was a puppy",
+        "frodo was a puppy with a tail",
+        "frodo was a happy puppy",
+    }
+
+    # boost using phrase
+    results = ds.to_table(
+        full_text_query=BoostQuery(
+            MatchQuery("puppy", "text"),
+            PhraseQuery("a happy puppy", "text"),
+            negative_boost=0.5,
+        ),
+    )
+
     assert results.num_rows == 3
     assert set(results["text"].to_pylist()) == {
         "frodo was a puppy",
@@ -986,7 +1164,7 @@ def test_fts_boolean_query(tmp_path):
     )
 
     ds = lance.write_dataset(data, tmp_path)
-    ds.create_scalar_index("text", "INVERTED")
+    ds.create_scalar_index("text", "INVERTED", with_position=True)
 
     query = MatchQuery("puppy", "text") & MatchQuery("happy", "text")
     results = ds.to_table(
@@ -1010,6 +1188,20 @@ def test_fts_boolean_query(tmp_path):
             [
                 (Occur.MUST, MatchQuery("puppy", "text")),
                 (Occur.MUST_NOT, MatchQuery("happy", "text")),
+            ]
+        ),
+    )
+    assert results.num_rows == 2
+    assert set(results["text"].to_pylist()) == {
+        "frodo was a puppy",
+        "frodo was a puppy with a tail",
+    }
+
+    results = ds.to_table(
+        full_text_query=BooleanQuery(
+            [
+                (Occur.MUST, MatchQuery("puppy", "text")),
+                (Occur.MUST_NOT, PhraseQuery("a happy puppy", "text")),
             ]
         ),
     )
@@ -1444,7 +1636,6 @@ def test_zonemap_index(tmp_path: Path):
     dataset.create_scalar_index("values", index_type="ZONEMAP")
     indices = dataset.list_indices()
     assert len(indices) == 1
-    assert indices[0]["type"] == "ZoneMap"
 
     # Get detailed index statistics
     index_stats = dataset.stats.index_stats("values_idx")
@@ -1454,9 +1645,8 @@ def test_zonemap_index(tmp_path: Path):
 
     # Verify zonemap statistics
     zonemap_stats = index_stats["indices"][0]
-    assert zonemap_stats["max_zonemap_size"] == 8192
+    assert zonemap_stats["rows_per_zone"] == 8192
     assert zonemap_stats["num_zones"] == 2  # Should have 2 zones (8192 rows + 1 row)
-    assert zonemap_stats["type"] == "ZoneMap"
 
     # Test that the zonemap index is being used in the query plan
     scanner = dataset.scanner(filter="values > 50", prefilter=True)
@@ -1466,6 +1656,70 @@ def test_zonemap_index(tmp_path: Path):
     # Verify the query returns correct results
     result = scanner.to_table()
     assert result.num_rows == 8142  # 51..8192
+
+
+def test_zonemap_zone_size(tmp_path: Path):
+    ds = lance.write_dataset(pa.table({"x": range(64 * 1024)}), tmp_path)
+
+    def get_bytes_read():
+        scan_stats = None
+
+        def scan_stats_callback(stats: lance.ScanStatistics):
+            nonlocal scan_stats
+            scan_stats = stats
+
+        ds.scanner(filter="x = 7", scan_stats_callback=scan_stats_callback).to_table()
+
+        return scan_stats.bytes_read
+
+    ds.create_scalar_index(
+        "x",
+        IndexConfig(index_type="zonemap", parameters={"rows_per_zone": 64}),
+    )
+
+    small_bytes_read = get_bytes_read()
+
+    ds.create_scalar_index(
+        "x",
+        IndexConfig(index_type="zonemap", parameters={"rows_per_zone": 16 * 1024}),
+    )
+
+    large_bytes_read = get_bytes_read()
+
+    assert small_bytes_read < large_bytes_read
+
+
+def test_bloomfilter_index(tmp_path: Path):
+    """Test create bloomfilter index"""
+    tbl = pa.Table.from_arrays([pa.array([i for i in range(10000)])], names=["values"])
+    dataset = lance.write_dataset(tbl, tmp_path / "dataset")
+    dataset.create_scalar_index("values", index_type="BLOOMFILTER")
+    indices = dataset.list_indices()
+    assert len(indices) == 1
+
+    # Get detailed index statistics
+    index_stats = dataset.stats.index_stats("values_idx")
+    assert index_stats["index_type"] == "BloomFilter"
+    assert "indices" in index_stats
+    assert len(index_stats["indices"]) == 1
+
+    # Verify bloomfilter statistics
+    bloom_stats = index_stats["indices"][0]
+    assert "num_blocks" in bloom_stats
+    assert bloom_stats["num_blocks"] == 2
+    assert bloom_stats["number_of_items"] == 8192
+    assert "probability" in bloom_stats
+    assert bloom_stats["probability"] == 0.00057  # Default probability
+
+    # Test that the bloomfilter index is being used in the query plan
+    scanner = dataset.scanner(filter="values == 1234", prefilter=True)
+    plan = scanner.explain_plan()
+    assert "ScalarIndexQuery" in plan
+
+    # Verify the query returns correct results
+    result = scanner.to_table()
+    assert result.num_rows == 1
+    assert result["values"][0].as_py() == 1234
 
 
 def test_zonemap_index_remapping(tmp_path: Path):
@@ -1518,7 +1772,6 @@ def test_zonemap_index_remapping(tmp_path: Path):
     # Test with a different query to ensure index works properly
     scanner = dataset.scanner(filter="values BETWEEN 1000 AND 1500", prefilter=True)
     plan = scanner.explain_plan()
-    print(f"Query plan after optimization: {plan}")
     assert "ScalarIndexQuery" in plan
 
     result = scanner.to_table()
@@ -1553,26 +1806,19 @@ def test_null_handling(tmp_path: Path):
     )
     dataset = lance.write_dataset(tbl, tmp_path / "dataset")
 
-    def check(has_index: bool):
+    def check():
         assert dataset.to_table(filter="x IS NULL").num_rows == 1
         assert dataset.to_table(filter="x IS NOT NULL").num_rows == 3
         assert dataset.to_table(filter="x > 0").num_rows == 3
         assert dataset.to_table(filter="x < 5").num_rows == 3
         assert dataset.to_table(filter="x IN (1, 2)").num_rows == 2
-        # Note: there is a bit of discrepancy here.  Datafusion does not consider
-        # NULL==NULL when doing an IN operation due to classic SQL shenanigans.
-        # We should decide at some point which behavior we want and make this
-        # consistent.
-        if has_index:
-            assert dataset.to_table(filter="x IN (1, 2, NULL)").num_rows == 3
-        else:
-            assert dataset.to_table(filter="x IN (1, 2, NULL)").num_rows == 2
+        assert dataset.to_table(filter="x IN (1, 2, NULL)").num_rows == 2
 
-    check(False)
+    check()
     dataset.create_scalar_index("x", index_type="BITMAP")
-    check(True)
+    check()
     dataset.create_scalar_index("x", index_type="BTREE")
-    check(True)
+    check()
 
 
 def test_nan_handling(tmp_path: Path):
@@ -1976,13 +2222,13 @@ def build_distributed_fts_index(
             index_type="INVERTED",
             name=index_name,
             replace=False,
-            fragment_uuid=index_id,
+            index_uuid=index_id,
             fragment_ids=[fragment_id],
             **index_params,
         )
 
     # Merge the inverted index metadata
-    dataset.merge_index_metadata(index_id)
+    dataset.merge_index_metadata(index_id, index_type="INVERTED")
 
     # Create Index object for commit
     field_id = dataset.schema.get_field_index(column)
@@ -2829,24 +3075,21 @@ def test_distribute_fts_index_build(tmp_path):
     import uuid
 
     index_id = str(uuid.uuid4())
-    print(f"Using index ID: {index_id}")
     index_name = "multiple_fragment_idx"
 
     fragments = ds.get_fragments()
     fragment_ids = [fragment.fragment_id for fragment in fragments]
-    print(f"Fragment IDs: {fragment_ids}")
 
     for fragment in ds.get_fragments():
         fragment_id = fragment.fragment_id
-        print(f"Creating index for fragment {fragment_id}")
 
-        # Use the new fragment_ids and fragment_uuid parameters
+        # Use the new fragment_ids and index_uuid parameters
         ds.create_scalar_index(
             column="text",
             index_type="INVERTED",
             name=index_name,
             replace=False,
-            fragment_uuid=index_id,
+            index_uuid=index_id,
             fragment_ids=[fragment_id],
             remove_stop_words=False,
         )
@@ -2856,7 +3099,7 @@ def test_distribute_fts_index_build(tmp_path):
         print(f"Fragment {fragment_id} index created successfully")
 
     # Merge the inverted index metadata
-    ds.merge_index_metadata(index_id)
+    ds.merge_index_metadata(index_id, index_type="INVERTED")
 
     # Create an Index object using the new dataclass format
     from lance.dataset import Index
@@ -2887,8 +3130,6 @@ def test_distribute_fts_index_build(tmp_path):
         read_version=ds.version,
     )
 
-    print("Successfully committed multiple fragment index")
-
     # Verify the index was created and is functional
     indices = ds_committed.list_indices()
     assert len(indices) > 0, "No indices found after commit"
@@ -2916,7 +3157,6 @@ def test_distribute_fts_index_build(tmp_path):
         columns=["id", "text"],
     ).to_table()
 
-    print(f"Search for '{search_word}' returned {results.num_rows} results")
     # We should get at least one result since we searched for a word from the dataset
     assert results.num_rows > 0, f"No results found for search term '{search_word}'"
 
@@ -2983,3 +3223,907 @@ def test_backward_compatibility_no_fragment_ids(tmp_path):
 
     results = ds.scanner(full_text_query=search_word).to_table()
     assert results.num_rows > 0
+
+
+def test_backward_compatibility_changed_index_protos(tmp_path):
+    path = (
+        Path(__file__).parent.parent.parent.parent
+        / "test_data"
+        / "0.36.0"
+        / "btree_in_index_pkg.lance"
+    )
+    shutil.copytree(path, tmp_path, dirs_exist_ok=True)
+    ds = lance.dataset(tmp_path)
+
+    indices = ds.list_indices()
+    assert len(indices) == 1
+    assert indices[0]["name"] == "x_idx"
+    assert indices[0]["type"] == "BTree"
+
+    results = ds.scanner(filter="x = 100").to_table()
+    assert results.num_rows == 1
+    assert results.column("x").to_pylist() == [100]
+
+
+def test_distribute_btree_index_build(tmp_path):
+    """
+    Test distributed B-tree index build similar to test_distribute_fts_index_build.
+    This test creates B-tree indices on individual fragments and then
+    commits them as a single index.
+    """
+    # Generate test dataset with multiple fragments
+    ds = generate_multi_fragment_dataset(
+        tmp_path, num_fragments=4, rows_per_fragment=10000
+    )
+
+    import uuid
+
+    index_id = str(uuid.uuid4())
+    index_name = "btree_multiple_fragment_idx"
+
+    fragments = ds.get_fragments()
+    fragment_ids = [fragment.fragment_id for fragment in fragments]
+
+    for fragment in ds.get_fragments():
+        fragment_id = fragment.fragment_id
+
+        # Create B-tree scalar index for each fragment
+        # Use the same index_name for all fragments (like in FTS test)
+        ds.create_scalar_index(
+            column="id",  # Use integer column for B-tree
+            index_type="BTREE",
+            name=index_name,
+            replace=False,
+            index_uuid=index_id,
+            fragment_ids=[fragment_id],
+        )
+
+    # test that the dataset should be searchable
+    # when the index not committed yet
+    # Test that the index works for searching
+    # Test exact equality queries
+    test_id = 100  # Should be in first fragment
+    results = ds.scanner(
+        filter=f"id = {test_id}",
+        columns=["id", "text"],
+    ).to_table()
+
+    assert results.num_rows == 1, f"No results found for id = {test_id}"
+
+    # Merge the B-tree index metadata
+    ds.merge_index_metadata(index_id, index_type="BTREE")
+
+    # Create an Index object using the new dataclass format
+    from lance.dataset import Index
+
+    # Get the schema field for the indexed column
+    field_id = ds.schema.get_field_index("id")
+
+    index = Index(
+        uuid=index_id,
+        name=index_name,
+        fields=[field_id],  # Use field index instead of field object
+        dataset_version=ds.version,
+        fragment_ids=set(fragment_ids),
+        index_version=0,
+    )
+
+    # Create the index operation
+    create_index_op = lance.LanceOperation.CreateIndex(
+        new_indices=[index],
+        removed_indices=[],
+    )
+
+    # Commit the index
+    ds_committed = lance.LanceDataset.commit(
+        ds.uri,
+        create_index_op,
+        read_version=ds.version,
+    )
+
+    # Verify the index was created and is functional
+    indices = ds_committed.list_indices()
+    assert len(indices) > 0, "No indices found after commit"
+
+    # Find our index
+    our_index = None
+    for idx in indices:
+        if idx["name"] == index_name:
+            our_index = idx
+            break
+
+    assert our_index is not None, f"Index '{index_name}' not found in indices list"
+    assert our_index["type"] == "BTree", (
+        f"Expected BTree index, got {our_index['type']}"
+    )
+
+    # Test that the index works for searching
+    # Test exact equality queries
+    test_id = 100  # Should be in first fragment
+    results = ds_committed.scanner(
+        filter=f"id = {test_id}",
+        columns=["id", "text"],
+    ).to_table()
+
+    assert results.num_rows == 1, f"No results found for id = {test_id}"
+
+    # Test range queries across fragments
+    results_range = ds_committed.scanner(
+        filter="id >= 200 AND id < 800",
+        columns=["id", "text"],
+    ).to_table()
+
+    assert results_range.num_rows > 0, "No results found for range query"
+
+    # Compare with complete index results to ensure consistency
+    # Create a reference dataset with complete index
+    reference_ds = generate_multi_fragment_dataset(
+        tmp_path / "reference", num_fragments=4, rows_per_fragment=10000
+    )
+
+    # Create complete B-tree index for comparison
+    reference_ds.create_scalar_index(
+        column="id",
+        index_type="BTREE",
+        name="reference_btree_idx",
+    )
+
+    # Compare exact query results
+    reference_results = reference_ds.scanner(
+        filter=f"id = {test_id}",
+        columns=["id", "text"],
+    ).to_table()
+
+    assert results.num_rows == reference_results.num_rows, (
+        f"Distributed index returned {results.num_rows} results, "
+        f"but complete index returned {reference_results.num_rows} results"
+    )
+
+    # Compare range query results
+    reference_range_results = reference_ds.scanner(
+        filter="id >= 200 AND id < 800",
+        columns=["id", "text"],
+    ).to_table()
+
+    assert results_range.num_rows == reference_range_results.num_rows, (
+        f"Distributed index range query returned {results_range.num_rows} results, "
+        f"but complete index returned {reference_range_results.num_rows} results"
+    )
+
+
+def test_btree_fragment_ids_parameter_validation(tmp_path):
+    """
+    Test validation of fragment_ids parameter for B-tree indices.
+    """
+    ds = generate_multi_fragment_dataset(
+        tmp_path, num_fragments=2, rows_per_fragment=10000
+    )
+
+    # Test with valid fragment IDs
+    fragments = ds.get_fragments()
+    valid_fragment_id = fragments[0].fragment_id
+
+    # This should work without errors
+    ds.create_scalar_index(
+        column="id",
+        index_type="BTREE",
+        fragment_ids=[valid_fragment_id],
+    )
+
+    # Test with invalid fragment ID (should handle gracefully)
+    try:
+        ds.create_scalar_index(
+            column="id",
+            index_type="BTREE",
+            fragment_ids=[999999],  # Non-existent fragment ID
+        )
+    except Exception as e:
+        # It's acceptable for this to fail with an appropriate error
+        print(f"Expected error for invalid fragment ID: {e}")
+
+
+@pytest.mark.parametrize(
+    "test_name,filter_expr",
+    [
+        # Test 1: Boundary values at fragment edges
+        ("First value", "id = 0"),
+        ("Fragment 0 last value", "id = 9999"),
+        ("Fragment 1 first value", "id = 10000"),
+        ("Fragment 1 last value", "id = 19999"),
+        ("Fragment 2 first value", "id = 20000"),
+        ("Last value", "id = 29999"),
+        # Test 2: Values in the middle of fragments
+        ("Fragment 0 middle", "id = 5000"),
+        ("Fragment 1 middle", "id = 15000"),
+        ("Fragment 2 middle", "id = 25000"),
+        # Test 3: Range queries within single fragments
+        ("Range within fragment 0", "id >= 10 AND id < 20"),
+        ("Range within fragment 1", "id >= 10010 AND id < 10020"),
+        ("Range within fragment 2", "id >= 20010 AND id < 20020"),
+        # Test 4: Range queries spanning multiple fragments
+        ("Cross fragment 0-1", "id >= 9995 AND id < 10005"),
+        ("Cross fragment 1-2", "id >= 19995 AND id < 20005"),
+        ("Cross all fragments", "id >= 5000 AND id < 25000"),
+        # Test 5: Edge cases
+        ("Non-existent small value", "id = -1"),
+        ("Non-existent large value", "id = 30100"),
+        ("Large range", "id >= 0 AND id < 30000"),
+        # Test 6: Comparison operators
+        ("Less than boundary", "id < 10000"),
+        ("Greater than boundary", "id > 19999"),
+        ("Less than or equal", "id <= 10050"),
+        ("Greater than or equal", "id >= 10050"),
+    ],
+)
+def test_btree_query_comparison_parametrized(
+    btree_comparison_datasets, test_name, filter_expr
+):
+    """
+    Parametrized B-tree index query comparison test
+
+    Convert the original loop test to parametrized test,
+    each test case runs independently
+    """
+    fragment_ds = btree_comparison_datasets["fragment_ds"]
+    complete_ds = btree_comparison_datasets["complete_ds"]
+
+    # Query fragment-based index
+    fragment_results = fragment_ds.scanner(
+        filter=filter_expr,
+        columns=["id", "text"],
+    ).to_table()
+
+    # Query complete index
+    complete_results = complete_ds.scanner(
+        filter=filter_expr,
+        columns=["id", "text"],
+    ).to_table()
+
+    # Compare row counts
+    assert fragment_results.num_rows == complete_results.num_rows, (
+        f"Test '{test_name}' failed: Fragment index "
+        f"returned {fragment_results.num_rows} rows, "
+        f"but complete index returned {complete_results.num_rows}"
+        f" rows for filter: {filter_expr}"
+    )
+
+    # Compare actual results if there are any
+    if fragment_results.num_rows > 0:
+        # Sort both results by id for comparison
+        fragment_ids = sorted(fragment_results.column("id").to_pylist())
+        complete_ids = sorted(complete_results.column("id").to_pylist())
+
+        assert fragment_ids == complete_ids, (
+            f"Test '{test_name}' failed: Fragment index "
+            f"and complete index returned different results for filter: {filter_expr}"
+        )
+
+
+def test_fts_flat_fallback_matches_wand(tmp_path):
+    # Repro: when filter matches < 10%, FTS fell back to flat search and missed results.
+    # Two-term query increases reproduction likelihood.
+    # Compare default scan (prefilter=True) vs WAND-path (prefilter=False).
+
+    # Deterministic data
+    random.seed(123)
+    np.random.seed(123)
+
+    n = 2000
+    # 5% category 'A' to trigger fallback (default threshold 10%)
+    categories = np.where(np.random.rand(n) < 0.05, "A", "B")
+
+    vocab = [
+        "alpha",
+        "bravo",
+        "charlie",
+        "delta",
+        "echo",
+        "foxtrot",
+        "golf",
+        "hotel",
+        "india",
+    ]
+    needle1 = "needle"
+    needle2 = "pin"
+
+    texts = []
+    a_indices = [i for i, c in enumerate(categories) if c == "A"]
+    # Ensure many matches within the filtered set (both terms present)
+    a_with_needle = set(
+        random.sample(
+            a_indices,
+            max(1, len(a_indices) // 2),
+        )
+    )
+    for i in range(n):
+        toks = random.choices(vocab, k=random.randint(5, 12))
+        if i in a_with_needle:
+            # Add both terms for many A rows
+            toks.append(needle1)
+            toks.append(needle2)
+        # Also sprinkle some needles in B rows to make ranking realistic
+        elif categories[i] == "B" and random.random() < 0.03:
+            # Randomly add one of the terms to some B rows
+            toks.append(needle1 if random.random() < 0.5 else needle2)
+        texts.append(" ".join(toks))
+
+    tbl = pa.table(
+        {
+            "id": np.arange(n, dtype=np.int64),
+            "category": pa.array(categories.astype(str)),
+            "text": pa.array(texts, type=pa.large_string()),
+        }
+    )
+
+    ds_path = tmp_path / "fts_fallback.lance"
+    ds = lance.write_dataset(tbl, ds_path)
+    ds.create_scalar_index("category", index_type="BTREE")
+    ds.create_scalar_index("text", index_type="INVERTED")
+
+    # Sanity: ensure there are hits in the filtered subset
+    a_hit_count = sum((needle1 in texts[i]) or (needle2 in texts[i]) for i in a_indices)
+    assert a_hit_count > 0
+
+    # Two words query
+    query = f"{needle1} {needle2}"
+    filter_expr = "category = 'A'"
+    limit = 10
+
+    # flat-fallback path (prefilter=True)
+    tbl_flat = ds.scanner(
+        columns=["_rowid", "_score"],
+        full_text_query=query,
+        filter=filter_expr,
+        limit=limit,
+        prefilter=True,
+    ).to_table()
+    flat_pairs = list(
+        zip(
+            tbl_flat.column("_rowid").to_pylist(),
+            tbl_flat.column("_score").to_pylist(),
+        )
+    )
+
+    # WAND path (prefilter=False prevents building a mask, so no flat fallback)
+    tbl_wand = (
+        ds.scanner(
+            columns=["_rowid", "_score"],
+            full_text_query=query,
+            filter=filter_expr,
+            limit=n,
+            prefilter=False,
+        )
+        .to_table()
+        .slice(0, limit)
+    )
+    wand_pairs = list(
+        zip(
+            tbl_wand.column("_rowid").to_pylist(),
+            tbl_wand.column("_score").to_pylist(),
+        )
+    )
+
+    flat_scores = [s for _, s in flat_pairs]
+    wand_scores = [s for _, s in wand_pairs]
+    # we compare only scores because it's possible two rows have the same score
+    assert flat_scores == wand_scores, (
+        f"Flat FTS fallback differs from WAND (scores).\n"
+        f"flat scores={flat_scores}\nwand scores={wand_scores}"
+    )
+
+    tbl_limited_wand = ds.scanner(
+        columns=["_rowid", "_score"],
+        full_text_query=query,
+        limit=limit,
+    ).to_table()
+
+    tbl_full_wand = (
+        ds.scanner(
+            columns=["_rowid", "_score"],
+            full_text_query=query,
+        )
+        .to_table()
+        .slice(0, limit)
+    )
+
+    limited_wand_pairs = list(
+        zip(
+            tbl_limited_wand.column("_rowid").to_pylist(),
+            tbl_limited_wand.column("_score").to_pylist(),
+        )
+    )
+    full_wand_pairs = list(
+        zip(
+            tbl_full_wand.column("_rowid").to_pylist(),
+            tbl_full_wand.column("_score").to_pylist(),
+        )
+    )
+    limited_wand_scores = [s for _, s in limited_wand_pairs]
+    full_wand_scores = [s for _, s in full_wand_pairs]
+    assert limited_wand_scores == full_wand_scores, (
+        f"Limited WAND scores differ from full WAND scores.\n"
+        f"limited scores={limited_wand_scores}\nfull scores={full_wand_scores}"
+    )
+
+
+def test_scan_statistics_callback(tmp_path):
+    """Test that scan_stats_callback receives all expected fields."""
+    # Create a simple dataset
+    table = pa.table(
+        {
+            "id": range(100),
+            "value": np.random.randn(100),
+        }
+    )
+
+    dataset = lance.write_dataset(table, tmp_path / "test_stats.lance")
+
+    scan_stats = None
+
+    def scan_stats_callback(stats: lance.ScanStatistics):
+        nonlocal scan_stats
+        scan_stats = stats
+
+    result = dataset.scanner(scan_stats_callback=scan_stats_callback).to_table()
+    assert result.num_rows == 100
+    assert scan_stats is not None, "Callback should have been called"
+    assert isinstance(scan_stats.iops, int)
+    assert isinstance(scan_stats.requests, int)
+    assert isinstance(scan_stats.bytes_read, int)
+    assert isinstance(scan_stats.indices_loaded, int)
+    assert isinstance(scan_stats.parts_loaded, int)
+    assert isinstance(scan_stats.index_comparisons, int)
+    assert isinstance(scan_stats.all_counts, dict)
+
+    # Verify we got some I/O activity
+    assert scan_stats.iops > 0, "Expected some I/O operations"
+    assert scan_stats.bytes_read > 0, "Expected some bytes read"
+
+    # Verify all_counts contains the standard metrics
+    assert isinstance(scan_stats.all_counts, dict)
+    for key, value in scan_stats.all_counts.items():
+        assert isinstance(key, str)
+        assert isinstance(value, int)
+
+
+def test_nested_field_btree_index(tmp_path):
+    """Test BTREE index creation and querying on nested fields"""
+    # Create a dataset with nested structure
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field(
+                "meta",
+                pa.struct(
+                    [pa.field("lang", pa.string()), pa.field("version", pa.int32())]
+                ),
+            ),
+        ]
+    )
+
+    data = pa.table(
+        {
+            "id": [1, 2, 3, 4, 5],
+            "meta": [
+                {"lang": "en", "version": 1},
+                {"lang": "fr", "version": 2},
+                {"lang": "en", "version": 1},
+                {"lang": "es", "version": 3},
+                {"lang": "fr", "version": 2},
+            ],
+        },
+        schema=schema,
+    )
+
+    # Create dataset
+    uri = tmp_path / "test_nested_btree"
+    dataset = lance.write_dataset(data, uri)
+
+    # Create BTREE index on nested string column
+    dataset.create_scalar_index(column="meta.lang", index_type="BTREE")
+
+    # Verify index was created
+    indices = dataset.list_indices()
+    assert len(indices) == 1
+    assert indices[0]["fields"] == ["meta.lang"]
+    assert indices[0]["type"] == "BTree"
+
+    # Test query using the index - filter for English language
+    result = dataset.scanner(filter="meta.lang = 'en'").to_table()
+    assert len(result) == 2
+    for i in range(len(result)):
+        assert result["meta"][i]["lang"].as_py() == "en"
+
+    # Test query for French language
+    result = dataset.scanner(filter="meta.lang = 'fr'").to_table()
+    assert len(result) == 2
+    for i in range(len(result)):
+        assert result["meta"][i]["lang"].as_py() == "fr"
+
+    # Verify the index is being used
+    plan = dataset.scanner(filter="meta.lang = 'en'").explain_plan()
+    assert "ScalarIndexQuery" in plan
+
+    # Write additional data to the dataset
+    new_data = pa.table(
+        {
+            "id": [6, 7, 8],
+            "meta": [
+                {"lang": "de", "version": 4},
+                {"lang": "en", "version": 2},
+                {"lang": "de", "version": 4},
+            ],
+        },
+        schema=schema,
+    )
+
+    dataset = lance.write_dataset(new_data, uri, mode="append")
+
+    # Verify query still works after appending data
+    result = dataset.scanner(filter="meta.lang = 'en'").to_table()
+    assert len(result) == 3, f"Expected 3 English records, got {len(result)}"
+    for i in range(len(result)):
+        assert result["meta"][i]["lang"].as_py() == "en"
+
+    # Test query for new German language entries
+    result = dataset.scanner(filter="meta.lang = 'de'").to_table()
+    assert len(result) == 2
+    for i in range(len(result)):
+        assert result["meta"][i]["lang"].as_py() == "de"
+
+    # Test optimize_indices with nested field BTREE index
+    dataset.optimize.optimize_indices()
+
+    # Verify query still works after optimization
+    result = dataset.scanner(filter="meta.lang = 'en'").to_table()
+    assert len(result) == 3
+    result = dataset.scanner(filter="meta.lang = 'de'").to_table()
+    assert len(result) == 2
+
+    # Create BTREE index on nested integer column
+    dataset.create_scalar_index(column="meta.version", index_type="BTREE", replace=True)
+
+    # Test query using the version index
+    result = dataset.scanner(filter="meta.version = 1").to_table()
+    assert len(result) == 2
+    for i in range(len(result)):
+        assert result["meta"][i]["version"].as_py() == 1
+
+    # Test query for version 4 (new data)
+    result = dataset.scanner(filter="meta.version = 4").to_table()
+    assert len(result) == 2
+    for i in range(len(result)):
+        assert result["meta"][i]["version"].as_py() == 4
+
+    # Verify total row count
+    total = dataset.count_rows()
+    assert total == 8, f"Expected 8 total rows, got {total}"
+
+
+def test_nested_field_fts_index(tmp_path):
+    """Test FTS index creation and querying on nested fields"""
+    # Create dataset with nested text field
+    data = pa.table(
+        {
+            "id": range(100),
+            "data": pa.StructArray.from_arrays(
+                [
+                    pa.array(
+                        [f"document {i} about lance database" for i in range(100)]
+                    ),
+                    pa.array([f"label_{i}" for i in range(100)]),
+                ],
+                names=["text", "label"],
+            ),
+        }
+    )
+
+    ds = lance.write_dataset(data, tmp_path)
+
+    # Create FTS index on nested field
+    ds.create_scalar_index("data.text", index_type="INVERTED", with_position=False)
+
+    # Verify index was created
+    indices = ds.list_indices()
+    assert len(indices) == 1
+    assert indices[0]["fields"] == ["data.text"]
+    assert indices[0]["type"] == "Inverted"
+
+    # Test full text search on nested field
+    results = ds.to_table(full_text_query="lance")
+    assert results.num_rows == 100
+
+    # Verify the results contain the expected text
+    for i in range(results.num_rows):
+        text = results["data"][i]["text"].as_py()
+        assert "lance" in text
+
+    # Test with prefilter using another nested field
+    results = ds.to_table(
+        full_text_query="database",
+        filter="data.label = 'label_5'",
+        prefilter=True,
+    )
+    assert results.num_rows == 1
+    assert results["id"][0].as_py() == 5
+
+    # Test optimize_indices with nested field FTS index
+    # Append more data
+    new_data = pa.table(
+        {
+            "id": range(100, 150),
+            "data": pa.StructArray.from_arrays(
+                [
+                    pa.array(
+                        [f"document {i} about lance search" for i in range(100, 150)]
+                    ),
+                    pa.array([f"label_{i}" for i in range(100, 150)]),
+                ],
+                names=["text", "label"],
+            ),
+        }
+    )
+    ds = lance.write_dataset(new_data, tmp_path, mode="append")
+
+    # Optimize indices
+    ds.optimize.optimize_indices()
+
+    # Verify search still works after optimization
+    results = ds.to_table(full_text_query="lance")
+    assert results.num_rows == 150
+
+    results = ds.to_table(full_text_query="search")
+    assert results.num_rows == 50
+
+
+def test_nested_field_bitmap_index(tmp_path):
+    """Test BITMAP index creation and querying on nested fields"""
+    # Create dataset with nested categorical field
+    data = pa.table(
+        {
+            "id": range(100),
+            "attributes": pa.StructArray.from_arrays(
+                [
+                    pa.array(["red", "green", "blue"][i % 3] for i in range(100)),
+                    pa.array([f"size_{i % 5}" for i in range(100)]),
+                ],
+                names=["color", "size"],
+            ),
+        }
+    )
+
+    ds = lance.write_dataset(data, tmp_path)
+
+    # Create BITMAP index on nested field
+    ds.create_scalar_index("attributes.color", index_type="BITMAP")
+
+    # Verify index was created
+    indices = ds.list_indices()
+    assert len(indices) == 1
+    assert indices[0]["fields"] == ["attributes.color"]
+    assert indices[0]["type"] == "Bitmap"
+
+    # Test equality query
+    results = ds.to_table(filter="attributes.color = 'red'", prefilter=True)
+    assert results.num_rows == 34  # 0, 3, 6, 9, ... 99 (34 values)
+
+    # Verify the index is being used
+    plan = ds.scanner(filter="attributes.color = 'red'", prefilter=True).explain_plan()
+    assert "ScalarIndexQuery" in plan
+
+    # Test with different color
+    results = ds.to_table(filter="attributes.color = 'green'", prefilter=True)
+    assert results.num_rows == 33  # 1, 4, 7, 10, ... 97 (33 values)
+
+    results = ds.to_table(filter="attributes.color = 'blue'", prefilter=True)
+    assert results.num_rows == 33  # 2, 5, 8, 11, ... 98 (33 values)
+
+    # Test optimize_indices with nested field BITMAP index
+    new_data = pa.table(
+        {
+            "id": range(100, 150),
+            "attributes": pa.StructArray.from_arrays(
+                [
+                    pa.array(["red", "green", "blue"][i % 3] for i in range(50)),
+                    pa.array([f"size_{i % 5}" for i in range(50)]),
+                ],
+                names=["color", "size"],
+            ),
+        }
+    )
+    ds = lance.write_dataset(new_data, tmp_path, mode="append")
+
+    # Optimize indices
+    ds.optimize.optimize_indices()
+
+    # Verify query still works after optimization
+    results = ds.to_table(filter="attributes.color = 'red'", prefilter=True)
+    assert results.num_rows == 51  # 34 + 17 from new data
+
+
+def test_json_inverted_match_query(tmp_path):
+    # Prepare dataset with JSON data
+    json_data = [
+        {
+            "Title": "HarryPotter Chapter One",
+            "Content": "Once upon a time, there was a boy named Harry.",
+            "Author": "J.K. Rowling",
+            "Price": 99,
+            "Language": ["english", "french"],
+        },
+        {
+            "Title": "HarryPotter Chapter Two",
+            "Content": "Nearly ten years had passed since the Dursleys had woken up...",
+            "Author": "J.K. Rowling",
+            "Price": 128,
+            "Language": ["english", "chinese"],
+        },
+        {
+            "Title": "The Hobbit",
+            "Content": "In a hole in the ground there lived a hobbit.",
+            "Author": "J.R.R. Tolkien",
+            "Price": 89,
+            "Language": ["english"],
+        },
+    ]
+
+    # Convert to JSON strings
+    json_strings = pa.array([json.dumps(doc) for doc in json_data], type=pa.json_())
+    table = pa.table({"json_col": json_strings, "id": range(len(json_data))})
+    dataset = lance.write_dataset(table, tmp_path)
+
+    # Create inverted index with JSON tokenizer
+    dataset.create_scalar_index(
+        "json_col",
+        index_type="INVERTED",
+        base_tokenizer="simple",
+        max_token_length=10,
+        stem=True,
+        lower_case=True,
+        remove_stop_words=True,
+    )
+
+    # Test match query with token exceeding max_token_length
+    results = dataset.to_table(
+        full_text_query=MatchQuery("Title,str,harrypotter", "json_col")
+    )
+    assert results.num_rows == 0
+
+    # Test stemming
+    results = dataset.to_table(
+        full_text_query=MatchQuery("Content,str,onc", "json_col")
+    )
+    assert results.num_rows == 1
+
+    # Test language match
+    results = dataset.to_table(
+        full_text_query=MatchQuery("Language,str,english", "json_col")
+    )
+    assert results.num_rows == 3
+
+    # Test author match
+    results = dataset.to_table(
+        full_text_query=MatchQuery("Author,str,tolkien", "json_col")
+    )
+    assert results.num_rows == 1
+
+
+def test_describe_indices(tmp_path):
+    data = pa.table(
+        {
+            "id": range(100),
+            "text": [f"document {i} about lance database" for i in range(100)],
+            "bitmap": range(100),
+            "bloomfilter": range(100),
+            "btree": range(100),
+            "json": pa.array(
+                [json.dumps({"key": f"value_{i}"}) for i in range(100)], pa.json_()
+            ),
+            "ngram": [f"document {i}" for i in range(100)],
+            "zonemap": range(100),
+        }
+    )
+    ds = lance.write_dataset(data, tmp_path)
+    ds.create_scalar_index("text", index_type="INVERTED")
+    indices = ds.describe_indices()
+    assert len(indices) == 1
+
+    assert indices[0].name == "text_idx"
+    assert indices[0].type_url == "/lance.table.InvertedIndexDetails"
+    assert indices[0].index_type == "Inverted"
+    assert indices[0].num_rows_indexed == 100
+    assert indices[0].fields == [1]
+    assert indices[0].field_names == ["text"]
+    assert len(indices[0].segments) == 1
+    assert indices[0].segments[0].uuid is not None
+    assert indices[0].segments[0].fragment_ids == {0}
+    assert indices[0].segments[0].dataset_version_at_last_update == 1
+    assert indices[0].segments[0].index_version == 1
+    assert indices[0].segments[0].created_at is not None
+    assert isinstance(indices[0].segments[0].created_at, datetime)
+
+    details = indices[0].details
+    assert details is not None and len(details) > 0
+    assert details["lance_tokenizer"] is None
+    assert details["base_tokenizer"] == "simple"
+    assert details["language"] == "English"
+    assert not details["with_position"]
+    assert details["max_token_length"] == 40
+    assert details["lower_case"]
+    assert details["stem"]
+    assert details["remove_stop_words"]
+    assert details["custom_stop_words"] is None
+    assert details["ascii_folding"]
+    assert details["min_ngram_length"] == 3
+    assert details["max_ngram_length"] == 3
+    assert not details["prefix_only"]
+
+    ds.create_scalar_index("bitmap", index_type="BITMAP")
+    ds.create_scalar_index("bloomfilter", index_type="BLOOMFILTER")
+    ds.create_scalar_index("btree", index_type="BTREE")
+    ds.create_scalar_index(
+        "json",
+        IndexConfig(
+            index_type="json", parameters={"target_index_type": "btree", "path": "x"}
+        ),
+    )
+    ds.create_scalar_index("ngram", index_type="NGRAM")
+    ds.create_scalar_index("zonemap", index_type="ZONEMAP")
+
+    indices = ds.describe_indices()
+    # Skip text index since it is already asserted above
+    indices = [index for index in indices if index.name != "text_idx"]
+    indices.sort(key=lambda x: x.name)
+
+    names = [
+        "bitmap_idx",
+        "bloomfilter_idx",
+        "btree_idx",
+        "json_idx",
+        "ngram_idx",
+        "zonemap_idx",
+    ]
+    types_urls = [
+        "/lance.table.BitmapIndexDetails",
+        "/lance.index.pb.BloomFilterIndexDetails",
+        "/lance.table.BTreeIndexDetails",
+        "/lance.index.pb.JsonIndexDetails",
+        "/lance.table.NGramIndexDetails",
+        "/lance.table.ZoneMapIndexDetails",
+    ]
+    index_types = [
+        "Bitmap",
+        "BloomFilter",
+        "BTree",
+        "Json",
+        "NGram",
+        "ZoneMap",
+    ]
+    details = [
+        "{}",
+        "{}",
+        "{}",
+        '{"path":"x","target_details":{}}',
+        "{}",
+        "{}",
+    ]
+
+    for i in range(len(indices)):
+        assert indices[i].name == names[i]
+        assert indices[i].type_url == types_urls[i]
+        assert indices[i].index_type == index_types[i]
+        assert indices[i].num_rows_indexed == 100
+        assert indices[i].fields == [i + 2]
+        assert indices[i].field_names == [data.column_names[i + 2]]
+        assert len(indices[i].segments) == 1
+        assert indices[i].segments[0].fragment_ids == {0}
+        assert indices[i].segments[0].dataset_version_at_last_update == i + 2
+        assert indices[i].segments[0].index_version == 0
+        assert indices[i].segments[0].created_at is not None
+        assert isinstance(indices[i].segments[0].created_at, datetime)
+        assert indices[i].details == json.loads(details[i])
+
+    ds.delete("id < 50")
+    indices = ds.describe_indices()
+    for index in indices:
+        assert index.num_rows_indexed == 50

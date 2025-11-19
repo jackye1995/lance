@@ -39,6 +39,7 @@ macro_rules! ok_or_throw_with_return {
     };
 }
 
+mod blocking_blob;
 mod blocking_dataset;
 mod blocking_scanner;
 pub mod error;
@@ -46,8 +47,11 @@ pub mod ffi;
 mod file_reader;
 mod file_writer;
 mod fragment;
+mod merge_insert;
+mod optimize;
 mod schema;
 mod sql;
+mod storage_options;
 pub mod traits;
 mod transaction;
 pub mod utils;
@@ -55,9 +59,12 @@ pub mod utils;
 pub use error::Error;
 pub use error::Result;
 pub use ffi::JNIEnvExt;
+pub use storage_options::JavaStorageOptionsProvider;
 
 use env_logger::{Builder, Env};
 use std::env;
+use std::fs::OpenOptions;
+use std::path::Path;
 use std::sync::Arc;
 
 use std::sync::LazyLock;
@@ -95,6 +102,36 @@ fn set_timestamp_precision(builder: &mut env_logger::Builder) {
     }
 }
 
+fn set_log_file_target(builder: &mut env_logger::Builder) {
+    if let Ok(log_file_path) = env::var("LANCE_LOG_FILE") {
+        let path = Path::new(&log_file_path);
+
+        // Create parent directories if they don't exist
+        if let Some(parent) = path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                println!(
+                    "Failed to create parent directories for log file '{}': {}, using stderr",
+                    log_file_path, e
+                );
+                return;
+            }
+        }
+
+        // Try to open/create the log file
+        match OpenOptions::new().create(true).append(true).open(path) {
+            Ok(file) => {
+                builder.target(env_logger::Target::Pipe(Box::new(file)));
+            }
+            Err(e) => {
+                println!(
+                    "Failed to open log file '{}': {}, using stderr",
+                    log_file_path, e
+                );
+            }
+        }
+    }
+}
+
 #[no_mangle]
 pub extern "system" fn Java_com_lancedb_lance_JniLoader_initLanceLogger() {
     let env = Env::new()
@@ -102,6 +139,7 @@ pub extern "system" fn Java_com_lancedb_lance_JniLoader_initLanceLogger() {
         .write_style("LANCE_LOG_STYLE");
     let mut log_builder = Builder::from_env(env);
     set_timestamp_precision(&mut log_builder);
+    set_log_file_target(&mut log_builder);
     let logger = Arc::new(log_builder.build());
     let max_level = logger.filter();
     log::set_boxed_logger(Box::new(logger.clone())).unwrap();

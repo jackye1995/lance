@@ -9,12 +9,10 @@ use futures::{FutureExt, StreamExt};
 use lance_datagen::ArrayGeneratorExt;
 use lance_encoding::decoder::{DecoderPlugins, FilterExpression};
 use lance_file::{
-    v2::{
-        reader::{FileReader, FileReaderOptions},
-        testing::test_cache,
-        writer::{FileWriter, FileWriterOptions},
-    },
+    reader::{FileReader, FileReaderOptions},
+    testing::test_cache,
     version::LanceFileVersion,
+    writer::{FileWriter, FileWriterOptions},
 };
 use lance_io::{
     object_store::ObjectStore,
@@ -32,8 +30,7 @@ fn bench_reader(c: &mut Criterion) {
             .unwrap();
         let rt = tokio::runtime::Runtime::new().unwrap();
 
-        let tempdir = tempfile::tempdir().unwrap();
-        let test_path = tempdir.path();
+        let test_path = lance_core::utils::tempfile::TempStdFile::default();
         let (object_store, base_path) = rt
             .block_on(ObjectStore::from_uri(
                 test_path.as_os_str().to_str().unwrap(),
@@ -131,8 +128,7 @@ fn bench_random_access(c: &mut Criterion) {
             .unwrap();
         let rt = tokio::runtime::Runtime::new().unwrap();
 
-        let tempdir = tempfile::tempdir().unwrap();
-        let test_path = tempdir.path();
+        let test_path = lance_core::utils::tempfile::TempStdFile::default();
         let (object_store, base_path) = rt
             .block_on(ObjectStore::from_uri(
                 test_path.as_os_str().to_str().unwrap(),

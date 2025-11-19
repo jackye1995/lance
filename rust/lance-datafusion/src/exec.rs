@@ -430,6 +430,15 @@ fn visit_node(node: &dyn ExecutionPlan, counts: &mut ExecutionSummaryCounts) {
                 }
             }
         }
+        // Include gauge-based I/O metrics (some nodes record I/O as gauges)
+        for (metric_name, gauge) in metrics.iter_gauges() {
+            match metric_name.as_ref() {
+                IOPS_METRIC => counts.iops += gauge.value(),
+                REQUESTS_METRIC => counts.requests += gauge.value(),
+                BYTES_READ_METRIC => counts.bytes_read += gauge.value(),
+                _ => {}
+            }
+        }
     }
     for child in node.children() {
         visit_node(child.as_ref(), counts);
@@ -446,6 +455,7 @@ fn report_plan_summary_metrics(plan: &dyn ExecutionPlan, options: &LanceExecutio
     tracing::info!(
         target: TRACE_EXECUTION,
         r#type = EXECUTION_PLAN_RUN,
+        plan_summary = display_plan_one_liner(plan),
         output_rows,
         iops = counts.iops,
         requests = counts.requests,
@@ -456,6 +466,38 @@ fn report_plan_summary_metrics(plan: &dyn ExecutionPlan, options: &LanceExecutio
     );
     if let Some(callback) = options.execution_stats_callback.as_ref() {
         callback(&counts);
+    }
+}
+
+/// Create a one-line rough summary of the given execution plan.
+///
+/// The summary just shows the name of the operators in the plan. It omits any
+/// details such as parameters or schema information.
+///
+/// Example: `Projection(Take(CoalesceBatches(Filter(LanceScan))))`
+fn display_plan_one_liner(plan: &dyn ExecutionPlan) -> String {
+    let mut output = String::new();
+
+    display_plan_one_liner_impl(plan, &mut output);
+
+    output
+}
+
+fn display_plan_one_liner_impl(plan: &dyn ExecutionPlan, output: &mut String) {
+    // Remove the "Exec" suffix from the plan name if present for brevity
+    let name = plan.name().trim_end_matches("Exec");
+    output.push_str(name);
+
+    let children = plan.children();
+    if !children.is_empty() {
+        output.push('(');
+        for (i, child) in children.iter().enumerate() {
+            if i > 0 {
+                output.push(',');
+            }
+            display_plan_one_liner_impl(child.as_ref(), output);
+        }
+        output.push(')');
     }
 }
 
@@ -737,5 +779,9 @@ impl ExecutionPlan for StrictBatchSizeExec {
 
     fn cardinality_effect(&self) -> CardinalityEffect {
         CardinalityEffect::Equal
+    }
+
+    fn supports_limit_pushdown(&self) -> bool {
+        true
     }
 }

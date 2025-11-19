@@ -9,11 +9,12 @@ use std::{collections::HashMap, sync::Arc};
 
 use super::lance_format::LanceIndexStore;
 use super::{
-    AnyQuery, IndexReader, IndexStore, IndexWriter, MetricsCollector, ScalarIndex, SearchResult,
-    TextQuery,
+    AnyQuery, BuiltinIndexType, IndexReader, IndexStore, IndexWriter, MetricsCollector,
+    ScalarIndex, ScalarIndexParams, SearchResult, TextQuery,
 };
 use crate::frag_reuse::FragReuseIndex;
 use crate::metrics::NoOpMetricsCollector;
+use crate::pbold;
 use crate::scalar::expression::{ScalarQueryParser, TextQueryParser};
 use crate::scalar::registry::{
     DefaultTrainingRequest, ScalarIndexPlugin, TrainingCriteria, TrainingOrdering, TrainingRequest,
@@ -21,7 +22,7 @@ use crate::scalar::registry::{
 };
 use crate::scalar::{CreatedIndex, UpdateCriteria};
 use crate::vector::VectorIndex;
-use crate::{pb, Index, IndexType};
+use crate::{Index, IndexType};
 use arrow::array::{AsArray, UInt32Builder};
 use arrow::datatypes::{UInt32Type, UInt64Type};
 use arrow_array::{BinaryArray, RecordBatch, UInt32Array};
@@ -34,18 +35,17 @@ use lance_arrow::iter_str_array;
 use lance_core::cache::{CacheKey, LanceCache, WeakLanceCache};
 use lance_core::error::LanceOptionExt;
 use lance_core::utils::address::RowAddress;
+use lance_core::utils::tempfile::TempDir;
 use lance_core::utils::tokio::get_num_compute_intensive_cpus;
 use lance_core::utils::tracing::{IO_TYPE_LOAD_SCALAR_PART, TRACE_IO_EVENTS};
 use lance_core::{utils::mask::RowIdTreeMap, Error};
 use lance_core::{Result, ROW_ID};
 use lance_io::object_store::ObjectStore;
 use log::info;
-use object_store::path::Path;
 use roaring::{RoaringBitmap, RoaringTreemap};
 use serde::Serialize;
 use snafu::location;
 use tantivy::tokenizer::TextAnalyzer;
-use tempfile::{tempdir, TempDir};
 use tracing::instrument;
 
 const TOKENS_COL: &str = "tokens";
@@ -512,7 +512,8 @@ impl ScalarIndex for NGramIndex {
         writer.finish().await?;
 
         Ok(CreatedIndex {
-            index_details: prost_types::Any::from_msg(&pb::NGramIndexDetails::default()).unwrap(),
+            index_details: prost_types::Any::from_msg(&pbold::NGramIndexDetails::default())
+                .unwrap(),
             index_version: NGRAM_INDEX_VERSION,
         })
     }
@@ -530,13 +531,18 @@ impl ScalarIndex for NGramIndex {
             .await?;
 
         Ok(CreatedIndex {
-            index_details: prost_types::Any::from_msg(&pb::NGramIndexDetails::default()).unwrap(),
+            index_details: prost_types::Any::from_msg(&pbold::NGramIndexDetails::default())
+                .unwrap(),
             index_version: NGRAM_INDEX_VERSION,
         })
     }
 
     fn update_criteria(&self) -> UpdateCriteria {
         UpdateCriteria::only_new_data(TrainingCriteria::new(TrainingOrdering::None).with_row_id())
+    }
+
+    fn derive_index_params(&self) -> Result<ScalarIndexParams> {
+        Ok(ScalarIndexParams::for_builtin(BuiltinIndexType::NGram))
     }
 }
 
@@ -703,10 +709,10 @@ impl NGramIndexBuilder {
     fn from_state(state: NGramIndexBuildState, options: NGramIndexBuilderOptions) -> Result<Self> {
         let tokenizer = NGRAM_TOKENIZER.clone();
 
-        let tmpdir = Arc::new(tempdir()?);
+        let tmpdir = Arc::new(TempDir::default());
         let spill_store = Arc::new(LanceIndexStore::new(
             Arc::new(ObjectStore::local()),
-            Path::from_filesystem_path(tmpdir.path())?,
+            tmpdir.obj_path(),
             Arc::new(LanceCache::no_cache()),
         ));
 
@@ -1244,6 +1250,10 @@ impl NGramIndexPlugin {
 
 #[async_trait]
 impl ScalarIndexPlugin for NGramIndexPlugin {
+    fn name(&self) -> &str {
+        "NGram"
+    }
+
     fn new_training_request(
         &self,
         _params: &str,
@@ -1269,7 +1279,7 @@ impl ScalarIndexPlugin for NGramIndexPlugin {
     }
 
     fn version(&self) -> u32 {
-        0
+        NGRAM_INDEX_VERSION
     }
 
     fn new_query_parser(
@@ -1285,10 +1295,19 @@ impl ScalarIndexPlugin for NGramIndexPlugin {
         data: SendableRecordBatchStream,
         index_store: &dyn IndexStore,
         _request: Box<dyn TrainingRequest>,
+        fragment_ids: Option<Vec<u32>>,
     ) -> Result<CreatedIndex> {
+        if fragment_ids.is_some() {
+            return Err(Error::InvalidInput {
+                source: "NGram index does not support fragment training".into(),
+                location: location!(),
+            });
+        }
+
         Self::train_ngram_index(data, index_store).await?;
         Ok(CreatedIndex {
-            index_details: prost_types::Any::from_msg(&pb::NGramIndexDetails::default()).unwrap(),
+            index_details: prost_types::Any::from_msg(&pbold::NGramIndexDetails::default())
+                .unwrap(),
             index_version: NGRAM_INDEX_VERSION,
         })
     }
@@ -1320,12 +1339,14 @@ mod tests {
     use datafusion_common::DataFusionError;
     use futures::{stream, TryStreamExt};
     use itertools::Itertools;
-    use lance_core::{cache::LanceCache, utils::mask::RowIdTreeMap, ROW_ID};
+    use lance_core::{
+        cache::LanceCache,
+        utils::{mask::RowIdTreeMap, tempfile::TempDir},
+        ROW_ID,
+    };
     use lance_datagen::{BatchCount, ByteCount, RowCount};
     use lance_io::object_store::ObjectStore;
-    use object_store::path::Path;
     use tantivy::tokenizer::TextAnalyzer;
-    use tempfile::{tempdir, TempDir};
 
     use crate::scalar::{
         lance_format::LanceIndexStore,
@@ -1386,10 +1407,10 @@ mod tests {
     ) -> (NGramIndex, Arc<TempDir>) {
         let spill_files = builder.train(data).await.unwrap();
 
-        let tmpdir = Arc::new(tempdir().unwrap());
+        let tmpdir = Arc::new(TempDir::default());
         let test_store = LanceIndexStore::new(
             Arc::new(ObjectStore::local()),
-            Path::from_filesystem_path(tmpdir.path()).unwrap(),
+            tmpdir.obj_path(),
             Arc::new(LanceCache::no_cache()),
         );
 
@@ -1592,10 +1613,10 @@ mod tests {
         let builder = NGramIndexBuilder::try_new(NGramIndexBuilderOptions::default()).unwrap();
         let (index, _tmpdir) = do_train(builder, empty_data()).await;
 
-        let new_tmpdir = Arc::new(tempdir().unwrap());
+        let new_tmpdir = Arc::new(TempDir::default());
         let test_store = Arc::new(LanceIndexStore::new(
             Arc::new(ObjectStore::local()),
-            Path::from_filesystem_path(new_tmpdir.path()).unwrap(),
+            new_tmpdir.obj_path(),
             Arc::new(LanceCache::no_cache()),
         ));
 
@@ -1629,10 +1650,10 @@ mod tests {
         let row_ids = row_ids_in_index(&index).await;
         assert_eq!(row_ids, vec![0, 1, 2, 3, 4]);
 
-        let new_tmpdir = Arc::new(tempdir().unwrap());
+        let new_tmpdir = Arc::new(TempDir::default());
         let test_store = Arc::new(LanceIndexStore::new(
             Arc::new(ObjectStore::local()),
-            Path::from_filesystem_path(new_tmpdir.path()).unwrap(),
+            new_tmpdir.obj_path(),
             Arc::new(LanceCache::no_cache()),
         ));
 
@@ -1671,10 +1692,10 @@ mod tests {
         let posting_list = get_posting_list_for_trigram(&index, "cat").await;
         assert_eq!(posting_list, vec![0, 4]);
 
-        let new_tmpdir = Arc::new(tempdir().unwrap());
+        let new_tmpdir = Arc::new(TempDir::default());
         let test_store = Arc::new(LanceIndexStore::new(
             Arc::new(ObjectStore::local()),
-            Path::from_filesystem_path(new_tmpdir.path()).unwrap(),
+            new_tmpdir.obj_path(),
             Arc::new(LanceCache::no_cache()),
         ));
 

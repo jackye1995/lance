@@ -18,10 +18,11 @@ use roaring::RoaringBitmap;
 use snafu::location;
 use tracing::instrument;
 
-use super::SargableQuery;
 use super::{bitmap::BitmapIndex, AnyQuery, IndexStore, LabelListQuery, ScalarIndex};
+use super::{BuiltinIndexType, SargableQuery, ScalarIndexParams};
 use super::{MetricsCollector, SearchResult};
 use crate::frag_reuse::FragReuseIndex;
+use crate::pbold;
 use crate::scalar::bitmap::BitmapIndexPlugin;
 use crate::scalar::expression::{LabelListQueryParser, ScalarQueryParser};
 use crate::scalar::registry::{
@@ -29,7 +30,7 @@ use crate::scalar::registry::{
     VALUE_COLUMN_NAME,
 };
 use crate::scalar::{CreatedIndex, UpdateCriteria};
-use crate::{pb, Index, IndexType};
+use crate::{Index, IndexType};
 
 pub const BITMAP_LOOKUP_NAME: &str = "bitmap_page_lookup.lance";
 const LABEL_LIST_INDEX_VERSION: u32 = 0;
@@ -194,7 +195,7 @@ impl ScalarIndex for LabelListIndex {
         self.values_index.remap(mapping, dest_store).await?;
 
         Ok(CreatedIndex {
-            index_details: prost_types::Any::from_msg(&pb::LabelListIndexDetails::default())
+            index_details: prost_types::Any::from_msg(&pbold::LabelListIndexDetails::default())
                 .unwrap(),
             index_version: LABEL_LIST_INDEX_VERSION,
         })
@@ -211,7 +212,7 @@ impl ScalarIndex for LabelListIndex {
             .await?;
 
         Ok(CreatedIndex {
-            index_details: prost_types::Any::from_msg(&pb::LabelListIndexDetails::default())
+            index_details: prost_types::Any::from_msg(&pbold::LabelListIndexDetails::default())
                 .unwrap(),
             index_version: LABEL_LIST_INDEX_VERSION,
         })
@@ -219,6 +220,10 @@ impl ScalarIndex for LabelListIndex {
 
     fn update_criteria(&self) -> UpdateCriteria {
         UpdateCriteria::only_new_data(TrainingCriteria::new(TrainingOrdering::None).with_row_id())
+    }
+
+    fn derive_index_params(&self) -> Result<ScalarIndexParams> {
+        Ok(ScalarIndexParams::for_builtin(BuiltinIndexType::LabelList))
     }
 }
 
@@ -349,6 +354,10 @@ pub struct LabelListIndexPlugin;
 
 #[async_trait]
 impl ScalarIndexPlugin for LabelListIndexPlugin {
+    fn name(&self) -> &str {
+        "LabelList"
+    }
+
     fn new_training_request(
         &self,
         _params: &str,
@@ -378,7 +387,7 @@ impl ScalarIndexPlugin for LabelListIndexPlugin {
     }
 
     fn version(&self) -> u32 {
-        0
+        LABEL_LIST_INDEX_VERSION
     }
 
     fn new_query_parser(
@@ -398,7 +407,15 @@ impl ScalarIndexPlugin for LabelListIndexPlugin {
         data: SendableRecordBatchStream,
         index_store: &dyn IndexStore,
         request: Box<dyn TrainingRequest>,
+        fragment_ids: Option<Vec<u32>>,
     ) -> Result<CreatedIndex> {
+        if fragment_ids.is_some() {
+            return Err(Error::InvalidInput {
+                source: "LabelList index does not support fragment training".into(),
+                location: location!(),
+            });
+        }
+
         let schema = data.schema();
         let field = schema
             .column_with_name(VALUE_COLUMN_NAME)
@@ -427,10 +444,10 @@ impl ScalarIndexPlugin for LabelListIndexPlugin {
         let data = unnest_chunks(data)?;
         let bitmap_plugin = BitmapIndexPlugin;
         bitmap_plugin
-            .train_index(data, index_store, request)
+            .train_index(data, index_store, request, fragment_ids)
             .await?;
         Ok(CreatedIndex {
-            index_details: prost_types::Any::from_msg(&pb::LabelListIndexDetails::default())
+            index_details: prost_types::Any::from_msg(&pbold::LabelListIndexDetails::default())
                 .unwrap(),
             index_version: LABEL_LIST_INDEX_VERSION,
         })

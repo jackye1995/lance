@@ -22,7 +22,7 @@ use lance::io::ObjectStore;
 use lance_core::cache::LanceCache;
 use lance_core::datatypes::Schema;
 use lance_encoding::decoder::{DecoderPlugins, FilterExpression};
-use lance_file::v2::reader::{FileReader, FileReaderOptions, ReaderProjection};
+use lance_file::reader::{FileReader, FileReaderOptions, ReaderProjection};
 use lance_io::object_store::{ObjectStoreParams, ObjectStoreRegistry};
 use lance_io::{
     scheduler::{ScanScheduler, SchedulerConfig},
@@ -50,12 +50,17 @@ impl BlockingFileReader {
         reader_projection: Option<ReaderProjection>,
         filter_expression: FilterExpression,
     ) -> Result<Box<dyn RecordBatchReader + Send + 'static>> {
-        Ok(self.inner.read_stream_projected_blocking(
-            read_batch_params,
-            batch_size,
-            reader_projection,
-            filter_expression,
-        )?)
+        let reader = self.inner.clone();
+        Ok(RT
+            .block_on(RT.spawn_blocking(move || {
+                reader.read_stream_projected_blocking(
+                    read_batch_params,
+                    batch_size,
+                    reader_projection,
+                    filter_expression,
+                )
+            }))
+            .unwrap()?)
     }
 
     pub fn schema(&self) -> Result<SchemaRef> {

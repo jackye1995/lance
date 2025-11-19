@@ -573,22 +573,16 @@ impl LanceFileSession {
         use futures::stream::StreamExt;
 
         rt().block_on(None, async {
-            // List all files under base_path
-            let stream = self.object_store.list(Some(self.base_path.clone()));
+            // Construct the full path to list from
+            let list_path = if let Some(prefix) = path {
+                self.base_path.child_path(&Path::from(prefix))
+            } else {
+                self.base_path.clone()
+            };
+
+            // List all files under the specified path
+            let stream = self.object_store.list(Some(list_path));
             let results: Vec<_> = stream.collect().await;
-
-            let base_path_str = self.base_path.as_ref();
-            let base_len = base_path_str.len();
-
-            // Build the prefix filter if provided
-            let prefix_filter = path.as_ref().and_then(|p| {
-                let p = p.trim_end_matches('/');
-                if p.is_empty() {
-                    None
-                } else {
-                    Some(format!("{}/", p))
-                }
-            });
 
             let mut paths: Vec<String> = Vec::new();
             for meta_result in results {
@@ -596,27 +590,17 @@ impl LanceFileSession {
                     PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{}", e))
                 })?;
 
-                let full_path = meta.location.as_ref();
                 // Strip the base_path prefix to make it relative
-                let relative = if full_path.starts_with(base_path_str) {
-                    // Skip base path and any leading slash
-                    let rel = &full_path[base_len..];
-                    rel.trim_start_matches('/')
+                // Use prefix_match which handles path separators correctly across platforms
+                let relative_parts = meta.location.prefix_match(&self.base_path);
+                let relative = if let Some(parts) = relative_parts {
+                    Path::from_iter(parts).as_ref().to_string()
                 } else {
-                    // If for some reason it doesn't start with base_path, return as-is
-                    full_path
+                    // Fallback if prefix doesn't match (shouldn't happen)
+                    meta.location.as_ref().to_string()
                 };
 
-                // Apply prefix filter if specified
-                let should_include = if let Some(ref prefix) = prefix_filter {
-                    relative.starts_with(prefix)
-                } else {
-                    true
-                };
-
-                if should_include {
-                    paths.push(relative.to_string());
-                }
+                paths.push(relative);
             }
 
             Ok(paths)

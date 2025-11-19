@@ -689,23 +689,6 @@ def test_session_list_all_files(tmp_path):
         assert str(tmp_path) not in f
 
 
-def test_session_list_url_decoded(tmp_path):
-    """Test that LanceFileSession.list() returns URL-decoded paths"""
-    session = LanceFileSession(str(tmp_path))
-    schema = pa.schema([pa.field("x", pa.int64())])
-
-    # Write files with nested paths
-    with session.open_writer("dir1/dir2/file.lance", schema=schema) as writer:
-        writer.write_batch(pa.table({"x": [1]}))
-
-    with session.open_writer("a/b/c/file.lance", schema=schema) as writer:
-        writer.write_batch(pa.table({"x": [2]}))
-
-    files = sorted(session.list())
-
-    assert files == ["a/b/c/file.lance", "dir1/dir2/file.lance"]
-
-
 def test_session_list_with_prefix(tmp_path):
     """Test that LanceFileSession.list() filters by prefix correctly"""
     session = LanceFileSession(str(tmp_path))

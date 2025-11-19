@@ -568,9 +568,9 @@ impl LanceFileSession {
     pub fn upload_file(&self, local_path: String, remote_path: String) -> PyResult<()> {
         rt().block_on(None, async {
             // Read the local file
-            let local_file = tokio::fs::File::open(&local_path)
-                .await
-                .map_err(|e| PyIOError::new_err(format!("Failed to open local file {}: {}", local_path, e)))?;
+            let local_file = tokio::fs::File::open(&local_path).await.map_err(|e| {
+                PyIOError::new_err(format!("Failed to open local file {}: {}", local_path, e))
+            })?;
 
             // Create a buffered reader
             let mut reader = tokio::io::BufReader::new(local_file);
@@ -580,10 +580,10 @@ impl LanceFileSession {
 
             // Create an output stream on the object store
             // This automatically handles multi-part upload for large files
-            let mut writer = self.object_store
-                .create(&full_path)
-                .await
-                .map_err(|e| PyIOError::new_err(format!("Failed to create remote file: {}", e)))?;
+            let mut writer =
+                self.object_store.create(&full_path).await.map_err(|e| {
+                    PyIOError::new_err(format!("Failed to create remote file: {}", e))
+                })?;
 
             // Copy the file content
             // ObjectStore's create() returns an ObjectWriter that automatically manages:
@@ -595,7 +595,8 @@ impl LanceFileSession {
                 .map_err(|e| PyIOError::new_err(format!("Failed to upload file: {}", e)))?;
 
             // Ensure all data is flushed and multi-part upload is completed
-            writer.shutdown()
+            writer
+                .shutdown()
                 .await
                 .map_err(|e| PyIOError::new_err(format!("Failed to finalize upload: {}", e)))?;
 
@@ -620,7 +621,8 @@ impl LanceFileSession {
             let full_path = self.base_path.child_path(&Path::from(remote_path));
 
             // Get the file from object store
-            let get_result = self.object_store
+            let get_result = self
+                .object_store
                 .inner
                 .get(&full_path)
                 .await
@@ -630,22 +632,24 @@ impl LanceFileSession {
             let mut stream = get_result.into_stream();
 
             // Create local file
-            let mut writer = tokio::fs::File::create(&local_path)
-                .await
-                .map_err(|e| PyIOError::new_err(format!("Failed to create local file {}: {}", local_path, e)))?;
+            let mut writer = tokio::fs::File::create(&local_path).await.map_err(|e| {
+                PyIOError::new_err(format!("Failed to create local file {}: {}", local_path, e))
+            })?;
 
             // Stream from remote to local
             // This efficiently handles large files by streaming chunks
             while let Some(chunk_result) = stream.next().await {
-                let chunk = chunk_result
-                    .map_err(|e| PyIOError::new_err(format!("Failed to read chunk from remote: {}", e)))?;
-                writer.write_all(&chunk)
-                    .await
-                    .map_err(|e| PyIOError::new_err(format!("Failed to write chunk to local file: {}", e)))?;
+                let chunk = chunk_result.map_err(|e| {
+                    PyIOError::new_err(format!("Failed to read chunk from remote: {}", e))
+                })?;
+                writer.write_all(&chunk).await.map_err(|e| {
+                    PyIOError::new_err(format!("Failed to write chunk to local file: {}", e))
+                })?;
             }
 
             // Ensure all data is flushed to disk
-            writer.flush()
+            writer
+                .flush()
                 .await
                 .map_err(|e| PyIOError::new_err(format!("Failed to flush local file: {}", e)))?;
 

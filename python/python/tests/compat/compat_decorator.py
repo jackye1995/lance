@@ -85,6 +85,8 @@ def last_beta_release():
                 "--pre",
                 "--extra-index-url",
                 "https://pypi.fury.io/lance-format/",
+                "--extra-index-url",
+                "https://pypi.fury.io/lancedb/",
             ],
             capture_output=True,
             text=True,

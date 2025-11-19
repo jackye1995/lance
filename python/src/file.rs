@@ -36,16 +36,13 @@ use lance_io::{
 };
 use object_store::path::Path;
 use pyo3::{
-    exceptions::{PyIOError, PyRuntimeError, PyValueError},
+    exceptions::{PyIOError, PyRuntimeError},
     pyclass, pyfunction, pymethods, IntoPyObjectExt, PyErr, PyObject, PyResult, Python,
 };
-use regex::Regex;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::{pin::Pin, sync::Arc};
 use tokio::sync::Mutex;
-use url::Url;
-
 #[pyclass(get_all)]
 #[derive(Clone, Debug, Serialize)]
 pub struct LanceBufferDescriptor {
@@ -373,28 +370,12 @@ impl Drop for LanceFileWriter {
     }
 }
 
-fn path_to_parent(path: &Path) -> PyResult<(Path, String)> {
-    let mut parts = path.parts().collect::<Vec<_>>();
-    if parts.is_empty() {
-        return Err(PyValueError::new_err(format!(
-            "Path {} is not a valid path to a file",
-            path,
-        )));
-    }
-    let filename = parts.pop().unwrap().as_ref().to_owned();
-    Ok((Path::from_iter(parts), filename))
-}
-
 pub async fn object_store_from_uri_or_path_no_options(
     uri_or_path: impl AsRef<str>,
 ) -> PyResult<(Arc<ObjectStore>, Path)> {
     object_store_from_uri_or_path(uri_or_path, None).await
 }
 
-// The ObjectStore::from_uri_or_path expects a path to a directory (and it creates it if it does
-// not exist).  We are given a path to a file and so we need to strip the last component
-// before creating the object store.  We then return the object store and the new relative path
-// to the file.
 pub async fn object_store_from_uri_or_path(
     uri_or_path: impl AsRef<str>,
     storage_options: Option<HashMap<String, String>>,
@@ -408,58 +389,25 @@ pub async fn object_store_from_uri_or_path_with_provider(
     storage_options_provider: Option<Arc<dyn lance_io::object_store::StorageOptionsProvider>>,
     s3_credentials_refresh_offset_seconds: Option<u64>,
 ) -> PyResult<(Arc<ObjectStore>, Path)> {
-    if let Ok(mut url) = Url::parse(uri_or_path.as_ref()) {
-        if url.scheme().len() > 1 {
-            let path = object_store::path::Path::parse(url.path()).map_err(|e| {
-                PyIOError::new_err(format!("Invalid URL path `{}`: {}", url.path(), e))
-            })?;
-            let (parent_path, filename) = path_to_parent(&path)?;
-            url.set_path(parent_path.as_ref());
-
-            let object_store_registry = Arc::new(lance::io::ObjectStoreRegistry::default());
-            let object_store_params = if storage_options.is_some()
-                || storage_options_provider.is_some()
-                || s3_credentials_refresh_offset_seconds.is_some()
-            {
-                let mut params = ObjectStoreParams {
-                    storage_options: storage_options.clone(),
-                    storage_options_provider,
-                    ..Default::default()
-                };
-                if let Some(offset_seconds) = s3_credentials_refresh_offset_seconds {
-                    params.s3_credentials_refresh_offset =
-                        std::time::Duration::from_secs(offset_seconds);
-                }
-                Some(params)
-            } else {
-                None
-            };
-
-            let (object_store, dir_path) = ObjectStore::from_uri_and_params(
-                object_store_registry,
-                url.as_str(),
-                &object_store_params.unwrap_or_default(),
-            )
-            .await
-            .infer_error()?;
-            let child_path = dir_path.child(filename);
-            return Ok((object_store, child_path));
-        }
-    }
-    let regex = Regex::new(r".:\\").unwrap();
-    let adjusted_path;
-    let uri_or_path: &str = if regex.is_match(uri_or_path.as_ref()) {
-        // Windows paths like C:\ currently do not get handled correctly by
-        // Path::parse (https://github.com/apache/arrow-rs-object-store/issues/499)
-        // and we need to change the first \ into a /
-        adjusted_path = uri_or_path.as_ref().to_string().replacen("\\", "/", 1);
-        adjusted_path.as_str()
-    } else {
-        uri_or_path.as_ref()
+    let object_store_registry = Arc::new(lance::io::ObjectStoreRegistry::default());
+    let mut object_store_params = ObjectStoreParams {
+        storage_options: storage_options.clone(),
+        storage_options_provider,
+        ..Default::default()
     };
-    let path = Path::parse(uri_or_path)
-        .map_err(|e| PyIOError::new_err(format!("Invalid path `{}`: {}", uri_or_path, e)))?;
-    let object_store = Arc::new(ObjectStore::local());
+    if let Some(offset_seconds) = s3_credentials_refresh_offset_seconds {
+        object_store_params.s3_credentials_refresh_offset =
+            std::time::Duration::from_secs(offset_seconds);
+    }
+
+    let (object_store, path) = ObjectStore::from_uri_and_params(
+        object_store_registry,
+        uri_or_path.as_ref(),
+        &object_store_params,
+    )
+    .await
+    .infer_error()?;
+
     Ok((object_store, path))
 }
 

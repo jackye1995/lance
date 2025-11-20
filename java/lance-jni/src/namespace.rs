@@ -7,7 +7,10 @@ use jni::sys::{jbyteArray, jlong, jstring};
 use jni::JNIEnv;
 use lance_namespace::models::*;
 use lance_namespace::LanceNamespace as LanceNamespaceTrait;
-use lance_namespace_impls::{ConnectBuilder, DirectoryNamespace, DirectoryNamespaceBuilder, RestAdapter, RestAdapterConfig, RestNamespace, RestNamespaceBuilder};
+use lance_namespace_impls::{
+    ConnectBuilder, DirectoryNamespace, DirectoryNamespaceBuilder, RestAdapter, RestAdapterConfig,
+    RestNamespace, RestNamespaceBuilder,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -35,7 +38,11 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_DirectoryNamespace_creat
     _obj: JObject,
     properties_map: JObject,
 ) -> jlong {
-    ok_or_throw_with_return!(env, create_directory_namespace_internal(&mut env, properties_map), 0)
+    ok_or_throw_with_return!(
+        env,
+        create_directory_namespace_internal(&mut env, properties_map),
+        0
+    )
 }
 
 fn create_directory_namespace_internal(env: &mut JNIEnv, properties_map: JObject) -> Result<jlong> {
@@ -44,10 +51,12 @@ fn create_directory_namespace_internal(env: &mut JNIEnv, properties_map: JObject
     let properties = to_rust_map(env, &jmap)?;
 
     // Build DirectoryNamespace using builder
-    let builder = DirectoryNamespaceBuilder::from_properties(properties, None)
-        .map_err(|e| Error::runtime_error(format!("Failed to create DirectoryNamespaceBuilder: {}", e)))?;
+    let builder = DirectoryNamespaceBuilder::from_properties(properties, None).map_err(|e| {
+        Error::runtime_error(format!("Failed to create DirectoryNamespaceBuilder: {}", e))
+    })?;
 
-    let namespace = RT.block_on(builder.build())
+    let namespace = RT
+        .block_on(builder.build())
         .map_err(|e| Error::runtime_error(format!("Failed to build DirectoryNamespace: {}", e)))?;
 
     let blocking_namespace = BlockingDirectoryNamespace { inner: namespace };
@@ -76,7 +85,12 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_DirectoryNamespace_names
 ) -> jstring {
     let namespace = unsafe { &*(handle as *const BlockingDirectoryNamespace) };
     let namespace_id = namespace.inner.namespace_id();
-    ok_or_throw_with_return!(env, env.new_string(namespace_id).map_err(Error::from), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        env.new_string(namespace_id).map_err(Error::from),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -86,9 +100,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_DirectoryNamespace_listN
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.list_namespaces(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.list_namespaces(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -98,9 +117,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_DirectoryNamespace_descr
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.describe_namespace(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.describe_namespace(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -110,9 +134,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_DirectoryNamespace_creat
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.create_namespace(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.create_namespace(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -122,9 +151,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_DirectoryNamespace_dropN
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.drop_namespace(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.drop_namespace(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -134,9 +168,12 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_DirectoryNamespace_names
     handle: jlong,
     request_json: JString,
 ) {
-    ok_or_throw_without_return!(env, call_namespace_void_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.namespace_exists(req))
-    }))
+    ok_or_throw_without_return!(
+        env,
+        call_namespace_void_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.namespace_exists(req))
+        })
+    )
 }
 
 #[no_mangle]
@@ -146,9 +183,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_DirectoryNamespace_listT
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.list_tables(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.list_tables(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -158,9 +200,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_DirectoryNamespace_descr
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.describe_table(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.describe_table(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -170,9 +217,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_DirectoryNamespace_regis
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.register_table(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.register_table(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -182,9 +234,12 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_DirectoryNamespace_table
     handle: jlong,
     request_json: JString,
 ) {
-    ok_or_throw_without_return!(env, call_namespace_void_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.table_exists(req))
-    }))
+    ok_or_throw_without_return!(
+        env,
+        call_namespace_void_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.table_exists(req))
+        })
+    )
 }
 
 #[no_mangle]
@@ -194,9 +249,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_DirectoryNamespace_dropT
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.drop_table(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.drop_table(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -206,9 +266,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_DirectoryNamespace_dereg
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.deregister_table(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.deregister_table(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -218,7 +283,11 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_DirectoryNamespace_count
     handle: jlong,
     request_json: JString,
 ) -> jlong {
-    ok_or_throw_with_return!(env, call_namespace_count_method(&mut env, handle, request_json), 0)
+    ok_or_throw_with_return!(
+        env,
+        call_namespace_count_method(&mut env, handle, request_json),
+        0
+    )
 }
 
 #[no_mangle]
@@ -229,9 +298,18 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_DirectoryNamespace_creat
     request_json: JString,
     request_data: JByteArray,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_namespace_with_data_method(&mut env, handle, request_json, request_data, |ns, req, data| {
-        RT.block_on(ns.inner.create_table(req, data))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_namespace_with_data_method(
+            &mut env,
+            handle,
+            request_json,
+            request_data,
+            |ns, req, data| { RT.block_on(ns.inner.create_table(req, data)) }
+        ),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -241,9 +319,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_DirectoryNamespace_creat
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.create_empty_table(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.create_empty_table(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -254,9 +337,18 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_DirectoryNamespace_inser
     request_json: JString,
     request_data: JByteArray,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_namespace_with_data_method(&mut env, handle, request_json, request_data, |ns, req, data| {
-        RT.block_on(ns.inner.insert_into_table(req, data))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_namespace_with_data_method(
+            &mut env,
+            handle,
+            request_json,
+            request_data,
+            |ns, req, data| { RT.block_on(ns.inner.insert_into_table(req, data)) }
+        ),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -267,9 +359,18 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_DirectoryNamespace_merge
     request_json: JString,
     request_data: JByteArray,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_namespace_with_data_method(&mut env, handle, request_json, request_data, |ns, req, data| {
-        RT.block_on(ns.inner.merge_insert_into_table(req, data))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_namespace_with_data_method(
+            &mut env,
+            handle,
+            request_json,
+            request_data,
+            |ns, req, data| { RT.block_on(ns.inner.merge_insert_into_table(req, data)) }
+        ),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -279,9 +380,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_DirectoryNamespace_updat
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.update_table(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.update_table(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -291,9 +397,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_DirectoryNamespace_delet
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.delete_from_table(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.delete_from_table(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -303,7 +414,12 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_DirectoryNamespace_query
     handle: jlong,
     request_json: JString,
 ) -> jbyteArray {
-    ok_or_throw_with_return!(env, call_namespace_query_method(&mut env, handle, request_json), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_namespace_query_method(&mut env, handle, request_json),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -313,9 +429,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_DirectoryNamespace_creat
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.create_table_index(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.create_table_index(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -325,9 +446,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_DirectoryNamespace_listT
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.list_table_indices(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.list_table_indices(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -337,9 +463,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_DirectoryNamespace_descr
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.describe_table_index_stats(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.describe_table_index_stats(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -349,9 +480,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_DirectoryNamespace_descr
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.describe_transaction(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.describe_transaction(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -361,9 +497,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_DirectoryNamespace_alter
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.alter_transaction(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.alter_transaction(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 // ============================================================================
@@ -376,7 +517,11 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_RestNamespace_createNati
     _obj: JObject,
     properties_map: JObject,
 ) -> jlong {
-    ok_or_throw_with_return!(env, create_rest_namespace_internal(&mut env, properties_map), 0)
+    ok_or_throw_with_return!(
+        env,
+        create_rest_namespace_internal(&mut env, properties_map),
+        0
+    )
 }
 
 fn create_rest_namespace_internal(env: &mut JNIEnv, properties_map: JObject) -> Result<jlong> {
@@ -385,8 +530,9 @@ fn create_rest_namespace_internal(env: &mut JNIEnv, properties_map: JObject) -> 
     let properties = to_rust_map(env, &jmap)?;
 
     // Build RestNamespace using builder
-    let builder = RestNamespaceBuilder::from_properties(properties)
-        .map_err(|e| Error::runtime_error(format!("Failed to create RestNamespaceBuilder: {}", e)))?;
+    let builder = RestNamespaceBuilder::from_properties(properties).map_err(|e| {
+        Error::runtime_error(format!("Failed to create RestNamespaceBuilder: {}", e))
+    })?;
 
     let namespace = builder.build();
 
@@ -416,7 +562,12 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_RestNamespace_namespaceI
 ) -> jstring {
     let namespace = unsafe { &*(handle as *const BlockingRestNamespace) };
     let namespace_id = namespace.inner.namespace_id();
-    ok_or_throw_with_return!(env, env.new_string(namespace_id).map_err(Error::from), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        env.new_string(namespace_id).map_err(Error::from),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -426,9 +577,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_RestNamespace_listNamesp
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.list_namespaces(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.list_namespaces(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -438,9 +594,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_RestNamespace_describeNa
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.describe_namespace(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.describe_namespace(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -450,9 +611,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_RestNamespace_createName
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.create_namespace(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.create_namespace(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -462,9 +628,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_RestNamespace_dropNamesp
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.drop_namespace(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.drop_namespace(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -474,9 +645,12 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_RestNamespace_namespaceE
     handle: jlong,
     request_json: JString,
 ) {
-    ok_or_throw_without_return!(env, call_rest_namespace_void_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.namespace_exists(req))
-    }))
+    ok_or_throw_without_return!(
+        env,
+        call_rest_namespace_void_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.namespace_exists(req))
+        })
+    )
 }
 
 #[no_mangle]
@@ -486,9 +660,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_RestNamespace_listTables
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.list_tables(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.list_tables(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -498,9 +677,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_RestNamespace_describeTa
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.describe_table(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.describe_table(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -510,9 +694,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_RestNamespace_registerTa
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.register_table(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.register_table(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -522,9 +711,12 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_RestNamespace_tableExist
     handle: jlong,
     request_json: JString,
 ) {
-    ok_or_throw_without_return!(env, call_rest_namespace_void_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.table_exists(req))
-    }))
+    ok_or_throw_without_return!(
+        env,
+        call_rest_namespace_void_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.table_exists(req))
+        })
+    )
 }
 
 #[no_mangle]
@@ -534,9 +726,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_RestNamespace_dropTableN
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.drop_table(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.drop_table(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -546,9 +743,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_RestNamespace_deregister
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.deregister_table(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.deregister_table(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -558,7 +760,11 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_RestNamespace_countTable
     handle: jlong,
     request_json: JString,
 ) -> jlong {
-    ok_or_throw_with_return!(env, call_rest_namespace_count_method(&mut env, handle, request_json), 0)
+    ok_or_throw_with_return!(
+        env,
+        call_rest_namespace_count_method(&mut env, handle, request_json),
+        0
+    )
 }
 
 #[no_mangle]
@@ -569,9 +775,18 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_RestNamespace_createTabl
     request_json: JString,
     request_data: JByteArray,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_rest_namespace_with_data_method(&mut env, handle, request_json, request_data, |ns, req, data| {
-        RT.block_on(ns.inner.create_table(req, data))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_rest_namespace_with_data_method(
+            &mut env,
+            handle,
+            request_json,
+            request_data,
+            |ns, req, data| { RT.block_on(ns.inner.create_table(req, data)) }
+        ),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -581,9 +796,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_RestNamespace_createEmpt
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.create_empty_table(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.create_empty_table(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -594,9 +814,18 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_RestNamespace_insertInto
     request_json: JString,
     request_data: JByteArray,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_rest_namespace_with_data_method(&mut env, handle, request_json, request_data, |ns, req, data| {
-        RT.block_on(ns.inner.insert_into_table(req, data))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_rest_namespace_with_data_method(
+            &mut env,
+            handle,
+            request_json,
+            request_data,
+            |ns, req, data| { RT.block_on(ns.inner.insert_into_table(req, data)) }
+        ),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -607,9 +836,18 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_RestNamespace_mergeInser
     request_json: JString,
     request_data: JByteArray,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_rest_namespace_with_data_method(&mut env, handle, request_json, request_data, |ns, req, data| {
-        RT.block_on(ns.inner.merge_insert_into_table(req, data))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_rest_namespace_with_data_method(
+            &mut env,
+            handle,
+            request_json,
+            request_data,
+            |ns, req, data| { RT.block_on(ns.inner.merge_insert_into_table(req, data)) }
+        ),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -619,9 +857,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_RestNamespace_updateTabl
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.update_table(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.update_table(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -631,9 +874,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_RestNamespace_deleteFrom
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.delete_from_table(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.delete_from_table(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -643,7 +891,12 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_RestNamespace_queryTable
     handle: jlong,
     request_json: JString,
 ) -> jbyteArray {
-    ok_or_throw_with_return!(env, call_rest_namespace_query_method(&mut env, handle, request_json), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_rest_namespace_query_method(&mut env, handle, request_json),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -653,9 +906,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_RestNamespace_createTabl
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.create_table_index(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.create_table_index(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -665,9 +923,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_RestNamespace_listTableI
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.list_table_indices(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.list_table_indices(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -677,9 +940,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_RestNamespace_describeTa
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.describe_table_index_stats(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.describe_table_index_stats(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -689,9 +957,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_RestNamespace_describeTr
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.describe_transaction(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.describe_transaction(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 #[no_mangle]
@@ -701,9 +974,14 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_RestNamespace_alterTrans
     handle: jlong,
     request_json: JString,
 ) -> jstring {
-    ok_or_throw_with_return!(env, call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
-        RT.block_on(ns.inner.alter_transaction(req))
-    }), std::ptr::null_mut()).into_raw()
+    ok_or_throw_with_return!(
+        env,
+        call_rest_namespace_method(&mut env, handle, request_json, |ns, req| {
+            RT.block_on(ns.inner.alter_transaction(req))
+        }),
+        std::ptr::null_mut()
+    )
+    .into_raw()
 }
 
 // ============================================================================
@@ -769,7 +1047,8 @@ fn call_namespace_count_method(
     let request: CountTableRowsRequest = serde_json::from_str(&request_str)
         .map_err(|e| Error::input_error(format!("Failed to parse request JSON: {}", e)))?;
 
-    let count = RT.block_on(namespace.inner.count_table_rows(request))
+    let count = RT
+        .block_on(namespace.inner.count_table_rows(request))
         .map_err(|e| Error::runtime_error(format!("Count table rows failed: {}", e)))?;
 
     Ok(count)
@@ -816,7 +1095,8 @@ fn call_namespace_query_method<'local>(
     let request: QueryTableRequest = serde_json::from_str(&request_str)
         .map_err(|e| Error::input_error(format!("Failed to parse request JSON: {}", e)))?;
 
-    let result_bytes = RT.block_on(namespace.inner.query_table(request))
+    let result_bytes = RT
+        .block_on(namespace.inner.query_table(request))
         .map_err(|e| Error::runtime_error(format!("Query table failed: {}", e)))?;
 
     let byte_array = env.byte_array_from_slice(&result_bytes)?;
@@ -882,7 +1162,8 @@ fn call_rest_namespace_count_method(
     let request: CountTableRowsRequest = serde_json::from_str(&request_str)
         .map_err(|e| Error::input_error(format!("Failed to parse request JSON: {}", e)))?;
 
-    let count = RT.block_on(namespace.inner.count_table_rows(request))
+    let count = RT
+        .block_on(namespace.inner.count_table_rows(request))
         .map_err(|e| Error::runtime_error(format!("Count table rows failed: {}", e)))?;
 
     Ok(count)
@@ -929,7 +1210,8 @@ fn call_rest_namespace_query_method<'local>(
     let request: QueryTableRequest = serde_json::from_str(&request_str)
         .map_err(|e| Error::input_error(format!("Failed to parse request JSON: {}", e)))?;
 
-    let result_bytes = RT.block_on(namespace.inner.query_table(request))
+    let result_bytes = RT
+        .block_on(namespace.inner.query_table(request))
         .map_err(|e| Error::runtime_error(format!("Query table failed: {}", e)))?;
 
     let byte_array = env.byte_array_from_slice(&result_bytes)?;
@@ -955,7 +1237,11 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_RestAdapter_createNative
     host: JString,
     port: jni::sys::jint,
 ) -> jlong {
-    ok_or_throw_with_return!(env, create_rest_adapter_internal(&mut env, namespace_impl, properties_map, host, port), 0)
+    ok_or_throw_with_return!(
+        env,
+        create_rest_adapter_internal(&mut env, namespace_impl, properties_map, host, port),
+        0
+    )
 }
 
 fn create_rest_adapter_internal(
@@ -967,7 +1253,7 @@ fn create_rest_adapter_internal(
 ) -> Result<jlong> {
     // Get namespace implementation type
     let impl_str: String = env.get_string(&namespace_impl)?.into();
-    
+
     // Convert Java HashMap to Rust HashMap
     let jmap = JMap::from_env(env, &properties_map)?;
     let properties = to_rust_map(env, &jmap)?;
@@ -978,7 +1264,8 @@ fn create_rest_adapter_internal(
         builder = builder.property(k, v);
     }
 
-    let backend = RT.block_on(builder.connect())
+    let backend = RT
+        .block_on(builder.connect())
         .map_err(|e| Error::runtime_error(format!("Failed to build backend namespace: {}", e)))?;
 
     // Get host string
@@ -1010,19 +1297,19 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_RestAdapter_serve(
 
 fn serve_internal(handle: jlong) -> Result<()> {
     let adapter = unsafe { &mut *(handle as *mut BlockingRestAdapter) };
-    
+
     let rest_adapter = RestAdapter::new(adapter.backend.clone(), adapter.config.clone());
-    
+
     // Spawn server in background
     let server_handle = RT.spawn(async move {
         let _ = rest_adapter.serve().await;
     });
-    
+
     adapter.server_handle = Some(server_handle);
-    
+
     // Give server time to start
     std::thread::sleep(std::time::Duration::from_millis(500));
-    
+
     Ok(())
 }
 
@@ -1033,7 +1320,7 @@ pub extern "system" fn Java_com_lancedb_lance_namespace_RestAdapter_stop(
     handle: jlong,
 ) {
     let adapter = unsafe { &mut *(handle as *mut BlockingRestAdapter) };
-    
+
     if let Some(server_handle) = adapter.server_handle.take() {
         server_handle.abort();
     }

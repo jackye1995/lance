@@ -25,7 +25,16 @@ import java.util.Map;
 
 /**
  * DirectoryNamespace implementation that provides Lance namespace functionality for directory-based
- * storage (local filesystem, S3, Azure, GCS, etc.).
+ * storage.
+ *
+ * <p>Supported storage backends:
+ *
+ * <ul>
+ *   <li>Local filesystem
+ *   <li>AWS S3 (s3://bucket/path)
+ *   <li>Azure Blob Storage (az://container/path)
+ *   <li>Google Cloud Storage (gs://bucket/path)
+ * </ul>
  *
  * <p>This class wraps the native Rust implementation and provides a Java interface that implements
  * the LanceNamespace interface from lance-namespace-core.
@@ -33,20 +42,21 @@ import java.util.Map;
  * <p>Configuration properties:
  *
  * <ul>
- *   <li>root (required): Root directory path or URI
+ *   <li>root (required): Root directory path or URI (e.g., /path/to/dir, s3://bucket/path,
+ *       az://container/path, gs://bucket/path)
  *   <li>manifest_enabled (optional): "true" or "false" (default: true)
  *   <li>dir_listing_enabled (optional): "true" or "false" (default: true)
  *   <li>inline_optimization_enabled (optional): "true" or "false" (default: true)
- *   <li>storage.* (optional): Storage options (e.g., storage.region=us-east-1)
+ *   <li>storage.* (optional): Storage options for cloud providers (e.g., storage.region=us-east-1
+ *       for S3, storage.account_name=myaccount for Azure)
  * </ul>
  *
- * <p>Example usage:
+ * <p>Example usage (local filesystem):
  *
  * <pre>{@code
  * Map<String, String> properties = new HashMap<>();
- * properties.put("root", "s3://my-bucket/data");
+ * properties.put("root", "/tmp/lance-data");
  * properties.put("manifest_enabled", "true");
- * properties.put("storage.region", "us-east-1");
  *
  * DirectoryNamespace namespace = new DirectoryNamespace();
  * namespace.initialize(properties, allocator);
@@ -55,6 +65,20 @@ import java.util.Map;
  * ListTablesResponse tables = namespace.listTables(request);
  *
  * // Clean up
+ * namespace.close();
+ * }</pre>
+ *
+ * <p>Example usage (AWS S3):
+ *
+ * <pre>{@code
+ * Map<String, String> properties = new HashMap<>();
+ * properties.put("root", "s3://my-bucket/lance-data");
+ * properties.put("storage.region", "us-east-1");
+ * // AWS credentials can be provided via environment variables or IAM roles
+ *
+ * DirectoryNamespace namespace = new DirectoryNamespace();
+ * namespace.initialize(properties, allocator);
+ * // Use namespace...
  * namespace.close();
  * }</pre>
  */

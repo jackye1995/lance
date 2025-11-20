@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The Lance Authors
 
-use std::collections::HashMap;
-
 use bytes::Bytes;
 use jni::objects::{JByteArray, JMap, JObject, JString};
 use jni::sys::{jbyteArray, jlong, jstring};
@@ -14,13 +12,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::error::{Error, Result};
-use crate::ok_or_throw;
 use crate::utils::to_rust_map;
 use crate::RT;
-
-// Native handle field names
-pub const NATIVE_DIRECTORY_NAMESPACE: &str = "nativeDirectoryNamespaceHandle";
-pub const NATIVE_REST_NAMESPACE: &str = "nativeRestNamespaceHandle";
 
 /// Blocking wrapper for DirectoryNamespace
 pub struct BlockingDirectoryNamespace {
@@ -952,8 +945,6 @@ pub struct BlockingRestAdapter {
     config: RestAdapterConfig,
     server_handle: Option<tokio::task::JoinHandle<()>>,
 }
-
-pub const NATIVE_REST_ADAPTER: &str = "nativeRestAdapterHandle";
 
 #[no_mangle]
 pub extern "system" fn Java_com_lancedb_lance_namespace_RestAdapter_createNative(

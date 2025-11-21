@@ -76,6 +76,36 @@ public class Dataset implements Closeable {
   private Dataset() {}
 
   /**
+   * Creates a builder for writing a dataset.
+   *
+   * <p>This builder supports writing datasets either directly to a URI or through a LanceNamespace.
+   *
+   * <p>Example usage with URI:
+   *
+   * <pre>{@code
+   * Dataset dataset = Dataset.write(reader)
+   *     .uri("s3://bucket/table.lance")
+   *     .mode(WriteMode.CREATE)
+   *     .execute();
+   * }</pre>
+   *
+   * <p>Example usage with namespace:
+   *
+   * <pre>{@code
+   * Dataset dataset = Dataset.write(reader)
+   *     .namespace(myNamespace, Arrays.asList("my_table"))
+   *     .mode(WriteMode.APPEND)
+   *     .execute();
+   * }</pre>
+   *
+   * @param reader ArrowReader containing the data to write
+   * @return A new WriteDatasetBuilder instance
+   */
+  public static WriteDatasetBuilder write(ArrowReader reader) {
+    return new WriteDatasetBuilder(reader);
+  }
+
+  /**
    * Creates an empty dataset.
    *
    * @param allocator the buffer allocator
@@ -83,7 +113,10 @@ public class Dataset implements Closeable {
    * @param schema dataset schema
    * @param params write params
    * @return Dataset
+   * @deprecated Use {@link #write(ArrowReader)} builder instead. For example: {@code
+   *     Dataset.write(reader).uri(path).mode(WriteMode.CREATE).execute()}
    */
+  @Deprecated
   public static Dataset create(
       BufferAllocator allocator, String path, Schema schema, WriteParams params) {
     Preconditions.checkNotNull(allocator);
@@ -116,7 +149,10 @@ public class Dataset implements Closeable {
    * @param path dataset uri
    * @param params write parameters
    * @return Dataset
+   * @deprecated Use {@link #write(ArrowReader)} builder instead. For example: {@code
+   *     Dataset.write(reader).uri(path).mode(WriteMode.CREATE).execute()}
    */
+  @Deprecated
   public static Dataset create(
       BufferAllocator allocator, ArrowArrayStream stream, String path, WriteParams params) {
     Preconditions.checkNotNull(allocator);

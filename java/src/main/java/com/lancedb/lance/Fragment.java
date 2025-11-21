@@ -15,6 +15,7 @@ package com.lancedb.lance;
 
 import com.lancedb.lance.fragment.FragmentMergeResult;
 import com.lancedb.lance.fragment.FragmentUpdateResult;
+import com.lancedb.lance.io.StorageOptionsProvider;
 import com.lancedb.lance.ipc.LanceScanner;
 import com.lancedb.lance.ipc.ScanOptions;
 
@@ -208,6 +209,26 @@ public class Fragment {
    */
   public static List<FragmentMetadata> create(
       String datasetUri, BufferAllocator allocator, VectorSchemaRoot root, WriteParams params) {
+    return create(datasetUri, allocator, root, params, null);
+  }
+
+  /**
+   * Create a fragment from the given data with optional storage options provider.
+   *
+   * @param datasetUri the dataset uri
+   * @param allocator the buffer allocator
+   * @param root the vector schema root
+   * @param params the write params
+   * @param storageOptionsProvider optional provider for dynamic storage options with automatic
+   *     credential refresh
+   * @return the fragment metadata
+   */
+  public static List<FragmentMetadata> create(
+      String datasetUri,
+      BufferAllocator allocator,
+      VectorSchemaRoot root,
+      WriteParams params,
+      StorageOptionsProvider storageOptionsProvider) {
     Preconditions.checkNotNull(datasetUri);
     Preconditions.checkNotNull(allocator);
     Preconditions.checkNotNull(root);
@@ -225,7 +246,8 @@ public class Fragment {
           params.getMode(),
           params.getEnableStableRowIds(),
           params.getDataStorageVersion(),
-          params.getStorageOptions());
+          params.getStorageOptions(),
+          Optional.ofNullable(storageOptionsProvider));
     }
   }
 
@@ -239,6 +261,24 @@ public class Fragment {
    */
   public static List<FragmentMetadata> create(
       String datasetUri, ArrowArrayStream stream, WriteParams params) {
+    return create(datasetUri, stream, params, null);
+  }
+
+  /**
+   * Create a fragment from the given arrow stream with optional storage options provider.
+   *
+   * @param datasetUri the dataset uri
+   * @param stream the arrow stream
+   * @param params the write params
+   * @param storageOptionsProvider optional provider for dynamic storage options with automatic
+   *     credential refresh
+   * @return the fragment metadata
+   */
+  public static List<FragmentMetadata> create(
+      String datasetUri,
+      ArrowArrayStream stream,
+      WriteParams params,
+      StorageOptionsProvider storageOptionsProvider) {
     Preconditions.checkNotNull(datasetUri);
     Preconditions.checkNotNull(stream);
     Preconditions.checkNotNull(params);
@@ -251,7 +291,8 @@ public class Fragment {
         params.getMode(),
         params.getEnableStableRowIds(),
         params.getDataStorageVersion(),
-        params.getStorageOptions());
+        params.getStorageOptions(),
+        Optional.ofNullable(storageOptionsProvider));
   }
 
   /**
@@ -269,7 +310,8 @@ public class Fragment {
       Optional<String> mode,
       Optional<Boolean> enableStableRowIds,
       Optional<String> dataStorageVersion,
-      Map<String, String> storageOptions);
+      Map<String, String> storageOptions,
+      Optional<StorageOptionsProvider> storageOptionsProvider);
 
   /**
    * Create a fragment from the given arrow stream.
@@ -285,5 +327,6 @@ public class Fragment {
       Optional<String> mode,
       Optional<Boolean> enableStableRowIds,
       Optional<String> dataStorageVersion,
-      Map<String, String> storageOptions);
+      Map<String, String> storageOptions,
+      Optional<StorageOptionsProvider> storageOptionsProvider);
 }

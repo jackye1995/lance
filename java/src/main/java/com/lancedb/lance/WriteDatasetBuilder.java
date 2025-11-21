@@ -52,7 +52,8 @@ import java.util.Optional;
  *
  * <pre>{@code
  * Dataset dataset = Dataset.write(reader)
- *     .namespace(myNamespace, Arrays.asList("my_table"))
+ *     .namespace(myNamespace)
+ *     .tableId(Arrays.asList("my_table"))
  *     .mode(WriteMode.CREATE)
  *     .execute();
  * }</pre>
@@ -94,7 +95,7 @@ public class WriteDatasetBuilder {
   /**
    * Sets the dataset URI.
    *
-   * <p>Either uri() or namespace() must be specified, but not both.
+   * <p>Either uri() or namespace()+tableId() must be specified, but not both.
    *
    * @param uri The dataset URI (e.g., "s3://bucket/table.lance" or "file:///path/to/table.lance")
    * @return this builder instance
@@ -105,16 +106,29 @@ public class WriteDatasetBuilder {
   }
 
   /**
-   * Sets the namespace and table identifier.
+   * Sets the namespace.
    *
-   * <p>Either uri() or namespace() must be specified, but not both.
+   * <p>Must be used together with tableId(). Either uri() or namespace()+tableId() must be
+   * specified, but not both.
    *
    * @param namespace The namespace implementation to use for table operations
+   * @return this builder instance
+   */
+  public WriteDatasetBuilder namespace(LanceNamespace namespace) {
+    this.namespace = namespace;
+    return this;
+  }
+
+  /**
+   * Sets the table identifier.
+   *
+   * <p>Must be used together with namespace(). Either uri() or namespace()+tableId() must be
+   * specified, but not both.
+   *
    * @param tableId The table identifier (e.g., Arrays.asList("my_table"))
    * @return this builder instance
    */
-  public WriteDatasetBuilder namespace(LanceNamespace namespace, List<String> tableId) {
-    this.namespace = namespace;
+  public WriteDatasetBuilder tableId(List<String> tableId) {
     this.tableId = tableId;
     return this;
   }
@@ -226,8 +240,8 @@ public class WriteDatasetBuilder {
   /**
    * Executes the write operation and returns the created dataset.
    *
-   * <p>If a namespace is configured, this automatically handles table creation or retrieval through
-   * the namespace API with credential vending support.
+   * <p>If a namespace is configured via namespace()+tableId(), this automatically handles table
+   * creation or retrieval through the namespace API with credential vending support.
    *
    * @return Dataset
    * @throws IllegalArgumentException if required parameters are missing or invalid
@@ -239,19 +253,17 @@ public class WriteDatasetBuilder {
 
     if (hasUri && hasNamespace) {
       throw new IllegalArgumentException(
-          "Cannot specify both uri and namespace. Use one or the other.");
+          "Cannot specify both uri() and namespace()+tableId(). Use one or the other.");
     }
     if (!hasUri && !hasNamespace) {
       if (namespace != null) {
         throw new IllegalArgumentException(
-            "namespace is set but tableId is missing. Both namespace and tableId must be provided"
-                + " together.");
+            "namespace() is set but tableId() is missing. Both must be provided together.");
       } else if (tableId != null) {
         throw new IllegalArgumentException(
-            "tableId is set but namespace is missing. Both namespace and tableId must be provided"
-                + " together.");
+            "tableId() is set but namespace() is missing. Both must be provided together.");
       } else {
-        throw new IllegalArgumentException("Either uri or namespace must be provided.");
+        throw new IllegalArgumentException("Either uri() or namespace()+tableId() must be called.");
       }
     }
 

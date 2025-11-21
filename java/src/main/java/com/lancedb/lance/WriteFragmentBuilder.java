@@ -263,6 +263,9 @@ public class WriteFragmentBuilder {
         vectorSchemaRoot != null || arrowArrayStream != null,
         "Either VectorSchemaRoot or ArrowArrayStream must be provided");
     Preconditions.checkState(
+        vectorSchemaRoot == null || arrowArrayStream == null,
+        "Cannot set both VectorSchemaRoot and ArrowArrayStream");
+    Preconditions.checkState(
         vectorSchemaRoot == null || allocator != null,
         "allocator is required when using VectorSchemaRoot");
     Preconditions.checkState(

@@ -319,7 +319,10 @@ public class StorageOptionsProviderWriteTest {
             nameVector.setValueCount(2);
             root.setRowCount(2);
 
-            WriteParams writeParams = new WriteParams.Builder().build();
+            // Get initial storage options from provider (which includes expires_at_millis)
+            Map<String, String> initialOptions = provider.fetchStorageOptions();
+            WriteParams writeParams =
+                new WriteParams.Builder().withStorageOptions(initialOptions).build();
 
             // Create fragments with provider
             List<FragmentMetadata> fragments =

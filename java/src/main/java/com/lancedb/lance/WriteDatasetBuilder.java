@@ -181,7 +181,7 @@ public class WriteDatasetBuilder {
   /**
    * Sets the schema for the dataset.
    *
-   * <p>If not provided, the schema will be inferred from the reader.
+   * <p>If the reader and stream not provided, this is used to create an empty dataset
    *
    * @param schema The dataset schema
    * @return this builder instance
@@ -203,8 +203,8 @@ public class WriteDatasetBuilder {
   }
 
   /**
-   * Sets whether to ignore storage options from the namespace's describe_table() or
-   * create_empty_table().
+   * Sets whether to ignore storage options from the namespace's describeTable() or
+   * createEmptyTable().
    *
    * @param ignoreNamespaceStorageOptions If true, storage options returned from namespace will be
    *     ignored

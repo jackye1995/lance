@@ -505,7 +505,8 @@ public class NamespaceIntegrationTest {
           // Use the write builder to create a dataset through namespace
           try (Dataset dataset =
               Dataset.write(testReader)
-                  .namespace(namespace, Arrays.asList(tableName))
+                  .namespace(namespace)
+                  .tableId(Arrays.asList(tableName))
                   .mode(WriteParams.WriteMode.CREATE)
                   .allocator(allocator)
                   .execute()) {
@@ -617,7 +618,8 @@ public class NamespaceIntegrationTest {
         // Use the write builder to append to dataset through namespace
         try (Dataset dataset =
             Dataset.write(testReader)
-                .namespace(namespace, Arrays.asList(tableName))
+                .namespace(namespace)
+                .tableId(Arrays.asList(tableName))
                 .mode(WriteParams.WriteMode.APPEND)
                 .allocator(allocator)
                 .execute()) {

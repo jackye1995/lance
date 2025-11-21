@@ -21,8 +21,10 @@ use lance_linalg::distance::DistanceType;
 
 use crate::error::{Error, Result};
 use crate::ffi::JNIEnvExt;
+use crate::storage_options::JavaStorageOptionsProvider;
 
 use lance_index::vector::Query;
+use lance_io::object_store::StorageOptionsProvider;
 use std::collections::HashMap;
 use std::str::FromStr;
 
@@ -45,6 +47,7 @@ pub fn extract_write_params(
     enable_stable_row_ids: &JObject,
     data_storage_version: &JObject,
     storage_options_obj: &JObject,
+    storage_options_provider_obj: &JObject, // Optional<StorageOptionsProvider>
 ) -> Result<WriteParams> {
     let mut write_params = WriteParams::default();
 
@@ -71,8 +74,36 @@ pub fn extract_write_params(
     let storage_options: HashMap<String, String> =
         extract_storage_options(env, storage_options_obj)?;
 
+    // Extract storage options provider if present
+    let storage_options_provider = if !storage_options_provider_obj.is_null() {
+        // Check if it's an Optional.empty()
+        let is_present = env
+            .call_method(storage_options_provider_obj, "isPresent", "()Z", &[])?
+            .z()?;
+        if is_present {
+            // Get the value from Optional
+            let provider_obj = env
+                .call_method(
+                    storage_options_provider_obj,
+                    "get",
+                    "()Ljava/lang/Object;",
+                    &[],
+                )?
+                .l()?;
+            Some(JavaStorageOptionsProvider::new(env, provider_obj)?)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let storage_options_provider_arc: Option<Arc<dyn StorageOptionsProvider>> =
+        storage_options_provider.map(|v| Arc::new(v) as Arc<dyn StorageOptionsProvider>);
+
     write_params.store_params = Some(ObjectStoreParams {
         storage_options: Some(storage_options),
+        storage_options_provider: storage_options_provider_arc,
         ..Default::default()
     });
     Ok(write_params)

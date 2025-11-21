@@ -49,8 +49,9 @@ fn inner_merge_insert<'local>(
     let retry_timeout_ms = extract_retry_timeout_ms(env, &jparam)?;
     let skip_auto_cleanup = extract_skip_auto_cleanup(env, &jparam)?;
 
-    let (new_ds, merge_stats) = unsafe {
+    let (new_ds, merge_stats, provider) = unsafe {
         let dataset = env.get_rust_field::<_, _, BlockingDataset>(jdataset, NATIVE_DATASET)?;
+        let provider = dataset.storage_options_provider.clone();
 
         let when_not_matched_by_source = extract_when_not_matched_by_source(
             dataset.inner.schema(),
@@ -70,12 +71,14 @@ fn inner_merge_insert<'local>(
         let stream_ptr = batch_address as *mut FFI_ArrowArrayStream;
         let source_stream = ArrowArrayStreamReader::from_raw(stream_ptr)?;
 
-        RT.block_on(async move { merge_insert_job.execute_reader(source_stream).await })?
+        let result = RT.block_on(async move { merge_insert_job.execute_reader(source_stream).await })?;
+        (result.0, result.1, provider)
     };
 
     MergeResult(
         BlockingDataset {
             inner: Arc::try_unwrap(new_ds).unwrap(),
+            storage_options_provider: provider,
         },
         merge_stats,
     )

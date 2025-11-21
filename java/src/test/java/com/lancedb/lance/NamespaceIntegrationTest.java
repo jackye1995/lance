@@ -156,6 +156,29 @@ public class NamespaceIntegrationTest {
     }
 
     @Override
+    public com.lancedb.lance.namespace.model.CreateEmptyTableResponse createEmptyTable(
+        com.lancedb.lance.namespace.model.CreateEmptyTableRequest request) {
+      callCount.incrementAndGet();
+
+      String tableName = String.join("/", request.getId());
+      // Generate a table URI for the new table
+      String tableUri = "s3://" + BUCKET_NAME + "/" + tableName + ".lance";
+      tableLocations.put(tableName, tableUri);
+
+      // Create storage options with expiration
+      Map<String, String> storageOptions = new HashMap<>(baseStorageOptions);
+      long expiresAtMillis = System.currentTimeMillis() + (credentialExpiresInSeconds * 1000L);
+      storageOptions.put("expires_at_millis", String.valueOf(expiresAtMillis));
+
+      com.lancedb.lance.namespace.model.CreateEmptyTableResponse response =
+          new com.lancedb.lance.namespace.model.CreateEmptyTableResponse();
+      response.setLocation(tableUri);
+      response.setStorageOptions(storageOptions);
+
+      return response;
+    }
+
+    @Override
     public DescribeTableResponse describeTable(DescribeTableRequest request) {
       int count = callCount.incrementAndGet();
 
@@ -397,6 +420,215 @@ public class NamespaceIntegrationTest {
             "Credentials should be refreshed once after expiration. "
                 + "Expected 2 total calls (1 initial + 1 refresh), got: "
                 + totalCallsAfterExpiration);
+      }
+    }
+  }
+
+  @Test
+  void testWriteDatasetBuilderWithNamespaceCreate() throws Exception {
+    try (BufferAllocator allocator = new RootAllocator()) {
+      // Set up storage options
+      Map<String, String> storageOptions = new HashMap<>();
+      storageOptions.put("allow_http", "true");
+      storageOptions.put("aws_access_key_id", ACCESS_KEY);
+      storageOptions.put("aws_secret_access_key", SECRET_KEY);
+      storageOptions.put("aws_endpoint", ENDPOINT_URL);
+      storageOptions.put("aws_region", REGION);
+
+      // Create mock namespace
+      MockLanceNamespace namespace = new MockLanceNamespace(storageOptions, 60);
+      String tableName = UUID.randomUUID().toString();
+
+      // Create schema and data
+      Schema schema =
+          new Schema(
+              Arrays.asList(
+                  new Field("a", FieldType.nullable(new ArrowType.Int(32, true)), null),
+                  new Field("b", FieldType.nullable(new ArrowType.Int(32, true)), null)));
+
+      try (VectorSchemaRoot root = VectorSchemaRoot.create(schema, allocator)) {
+        IntVector aVector = (IntVector) root.getVector("a");
+        IntVector bVector = (IntVector) root.getVector("b");
+
+        aVector.allocateNew(2);
+        bVector.allocateNew(2);
+
+        aVector.set(0, 1);
+        bVector.set(0, 2);
+        aVector.set(1, 10);
+        bVector.set(1, 20);
+
+        aVector.setValueCount(2);
+        bVector.setValueCount(2);
+        root.setRowCount(2);
+
+        // Use the write builder with namespace
+        try (org.apache.arrow.vector.ipc.ArrowReader reader =
+            new org.apache.arrow.vector.ipc.ArrowStreamReader(
+                new java.io.ByteArrayInputStream(new byte[0]), allocator)) {
+
+          // Create a test reader that returns our VectorSchemaRoot
+          org.apache.arrow.vector.ipc.ArrowReader testReader =
+              new org.apache.arrow.vector.ipc.ArrowReader(allocator) {
+                boolean firstRead = true;
+
+                @Override
+                public boolean loadNextBatch() {
+                  if (firstRead) {
+                    firstRead = false;
+                    return true;
+                  }
+                  return false;
+                }
+
+                @Override
+                public long bytesRead() {
+                  return 0;
+                }
+
+                @Override
+                protected void closeReadSource() {}
+
+                @Override
+                protected org.apache.arrow.vector.types.pojo.Schema readSchema() {
+                  return schema;
+                }
+
+                @Override
+                public VectorSchemaRoot getVectorSchemaRoot() {
+                  return root;
+                }
+              };
+
+          int callCountBefore = namespace.getCallCount();
+
+          // Use the write builder to create a dataset through namespace
+          try (Dataset dataset =
+              Dataset.write(testReader)
+                  .namespace(namespace, Arrays.asList(tableName))
+                  .mode(WriteParams.WriteMode.CREATE)
+                  .allocator(allocator)
+                  .execute()) {
+
+            // Verify createEmptyTable was called
+            int callCountAfter = namespace.getCallCount();
+            assertEquals(
+                1, callCountAfter - callCountBefore, "createEmptyTable should be called once");
+
+            // Verify dataset was created successfully
+            assertEquals(2, dataset.countRows());
+            assertEquals(schema, dataset.getSchema());
+          }
+        }
+      }
+    }
+  }
+
+  @Test
+  void testWriteDatasetBuilderWithNamespaceAppend() throws Exception {
+    try (BufferAllocator allocator = new RootAllocator()) {
+      // Set up storage options
+      Map<String, String> storageOptions = new HashMap<>();
+      storageOptions.put("allow_http", "true");
+      storageOptions.put("aws_access_key_id", ACCESS_KEY);
+      storageOptions.put("aws_secret_access_key", SECRET_KEY);
+      storageOptions.put("aws_endpoint", ENDPOINT_URL);
+      storageOptions.put("aws_region", REGION);
+
+      // Create initial dataset directly
+      String tableName = UUID.randomUUID().toString();
+      String tableUri = "s3://" + BUCKET_NAME + "/" + tableName + ".lance";
+
+      Schema schema =
+          new Schema(
+              Arrays.asList(
+                  new Field("a", FieldType.nullable(new ArrowType.Int(32, true)), null),
+                  new Field("b", FieldType.nullable(new ArrowType.Int(32, true)), null)));
+
+      try (VectorSchemaRoot root = VectorSchemaRoot.create(schema, allocator)) {
+        IntVector aVector = (IntVector) root.getVector("a");
+        IntVector bVector = (IntVector) root.getVector("b");
+
+        aVector.allocateNew(2);
+        bVector.allocateNew(2);
+
+        aVector.set(0, 1);
+        bVector.set(0, 2);
+        aVector.set(1, 10);
+        bVector.set(1, 20);
+
+        aVector.setValueCount(2);
+        bVector.setValueCount(2);
+        root.setRowCount(2);
+
+        WriteParams writeParams =
+            new WriteParams.Builder().withStorageOptions(storageOptions).build();
+
+        // Create initial dataset
+        try (Dataset dataset = Dataset.create(allocator, tableUri, schema, writeParams)) {
+          List<FragmentMetadata> fragments =
+              Fragment.create(tableUri, allocator, root, writeParams);
+          FragmentOperation.Append appendOp = new FragmentOperation.Append(fragments);
+          try (Dataset updatedDataset =
+              Dataset.commit(allocator, tableUri, appendOp, Optional.of(1L), storageOptions)) {
+            assertEquals(2, updatedDataset.countRows());
+          }
+        }
+
+        // Create mock namespace and register the table
+        MockLanceNamespace namespace = new MockLanceNamespace(storageOptions, 60);
+        namespace.registerTable(tableName, tableUri);
+
+        // Now append data using the write builder with namespace
+        org.apache.arrow.vector.ipc.ArrowReader testReader =
+            new org.apache.arrow.vector.ipc.ArrowReader(allocator) {
+              boolean firstRead = true;
+
+              @Override
+              public boolean loadNextBatch() {
+                if (firstRead) {
+                  firstRead = false;
+                  return true;
+                }
+                return false;
+              }
+
+              @Override
+              public long bytesRead() {
+                return 0;
+              }
+
+              @Override
+              protected void closeReadSource() {}
+
+              @Override
+              protected org.apache.arrow.vector.types.pojo.Schema readSchema() {
+                return schema;
+              }
+
+              @Override
+              public VectorSchemaRoot getVectorSchemaRoot() {
+                return root;
+              }
+            };
+
+        int callCountBefore = namespace.getCallCount();
+
+        // Use the write builder to append to dataset through namespace
+        try (Dataset dataset =
+            Dataset.write(testReader)
+                .namespace(namespace, Arrays.asList(tableName))
+                .mode(WriteParams.WriteMode.APPEND)
+                .allocator(allocator)
+                .execute()) {
+
+          // Verify describeTable was called
+          int callCountAfter = namespace.getCallCount();
+          assertEquals(1, callCountAfter - callCountBefore, "describeTable should be called once");
+
+          // Verify data was appended successfully
+          assertEquals(4, dataset.countRows()); // Original 2 + appended 2
+        }
       }
     }
   }

@@ -13,7 +13,10 @@
  */
 package com.lancedb.lance;
 
+import com.lancedb.lance.namespace.DirectoryNamespace;
 import com.lancedb.lance.namespace.LanceNamespace;
+import com.lancedb.lance.namespace.model.CreateEmptyTableRequest;
+import com.lancedb.lance.namespace.model.CreateEmptyTableResponse;
 import com.lancedb.lance.namespace.model.DescribeTableRequest;
 import com.lancedb.lance.namespace.model.DescribeTableResponse;
 
@@ -21,6 +24,7 @@ import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
 import org.apache.arrow.vector.IntVector;
 import org.apache.arrow.vector.VectorSchemaRoot;
+import org.apache.arrow.vector.ipc.ArrowReader;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.FieldType;
@@ -44,7 +48,6 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -53,7 +56,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 /**
  * Integration tests for Lance with S3 and credential refresh using StorageOptionsProvider.
  *
- * <p>This test simulates a mock credential provider that returns incrementing credentials and
+ * <p>This test simulates a tracking credential provider that returns incrementing credentials and
  * verifies that the credential refresh mechanism works correctly.
  *
  * <p>These tests require LocalStack to be running. Run with: docker compose up -d
@@ -120,85 +123,100 @@ public class NamespaceIntegrationTest {
   }
 
   /**
-   * Mock LanceNamespace implementation for testing.
+   * Tracking LanceNamespace implementation for testing.
    *
-   * <p>This implementation: - Returns table location and storage options via describeTable() -
-   * Tracks the number of times describeTable has been called - Returns credentials with short
-   * expiration times for testing refresh
+   * <p>This implementation wraps DirectoryNamespace and tracks API calls. It returns incrementing
+   * credentials with expiration timestamps to test the credential refresh mechanism.
    */
-  static class MockLanceNamespace implements LanceNamespace {
-    private final Map<String, String> tableLocations = new HashMap<>();
+  static class TrackingNamespace implements LanceNamespace {
+    private final String bucketName;
     private final Map<String, String> baseStorageOptions;
     private final int credentialExpiresInSeconds;
-    private final AtomicInteger callCount = new AtomicInteger(0);
+    private final AtomicInteger describeCallCount = new AtomicInteger(0);
+    private final AtomicInteger createCallCount = new AtomicInteger(0);
+    private final DirectoryNamespace inner;
 
-    public MockLanceNamespace(Map<String, String> storageOptions, int credentialExpiresInSeconds) {
+    public TrackingNamespace(
+        String bucketName, Map<String, String> storageOptions, int credentialExpiresInSeconds) {
+      this.bucketName = bucketName;
       this.baseStorageOptions = new HashMap<>(storageOptions);
       this.credentialExpiresInSeconds = credentialExpiresInSeconds;
+
+      // Create underlying DirectoryNamespace with storage options
+      Map<String, String> dirProps = new HashMap<>();
+      for (Map.Entry<String, String> entry : storageOptions.entrySet()) {
+        dirProps.put("storage." + entry.getKey(), entry.getValue());
+      }
+
+      // Set root based on bucket type
+      if (bucketName.startsWith("/") || bucketName.startsWith("file://")) {
+        dirProps.put("root", bucketName + "/namespace_root");
+      } else {
+        dirProps.put("root", "s3://" + bucketName + "/namespace_root");
+      }
+
+      this.inner = new DirectoryNamespace();
+      try (BufferAllocator allocator = new RootAllocator()) {
+        this.inner.initialize(dirProps, allocator);
+      }
+    }
+
+    public int getDescribeCallCount() {
+      return describeCallCount.get();
+    }
+
+    public int getCreateCallCount() {
+      return createCallCount.get();
     }
 
     @Override
     public void initialize(Map<String, String> configProperties, BufferAllocator allocator) {
-      // Not needed for test
-    }
-
-    public void registerTable(String tableName, String location) {
-      tableLocations.put(tableName, location);
-    }
-
-    public int getCallCount() {
-      return callCount.get();
+      // Already initialized in constructor
     }
 
     @Override
     public String namespaceId() {
-      return "MockLanceNamespace { }";
+      return "TrackingNamespace { inner: " + inner.namespaceId() + " }";
+    }
+
+    /**
+     * Modifies storage options to add incrementing credentials with expiration timestamp.
+     *
+     * @param storageOptions Original storage options
+     * @param count Call count to use for credential generation
+     * @return Modified storage options with new credentials
+     */
+    private Map<String, String> modifyStorageOptions(
+        Map<String, String> storageOptions, int count) {
+      Map<String, String> modified =
+          storageOptions != null ? new HashMap<>(storageOptions) : new HashMap<>();
+
+      modified.put("aws_access_key_id", "AKID_" + count);
+      modified.put("aws_secret_access_key", "SECRET_" + count);
+      modified.put("aws_session_token", "TOKEN_" + count);
+
+      long expiresAtMillis = System.currentTimeMillis() + (credentialExpiresInSeconds * 1000L);
+      modified.put("expires_at_millis", String.valueOf(expiresAtMillis));
+
+      return modified;
     }
 
     @Override
-    public com.lancedb.lance.namespace.model.CreateEmptyTableResponse createEmptyTable(
-        com.lancedb.lance.namespace.model.CreateEmptyTableRequest request) {
-      callCount.incrementAndGet();
+    public CreateEmptyTableResponse createEmptyTable(CreateEmptyTableRequest request) {
+      int count = createCallCount.incrementAndGet();
 
-      String tableName = String.join("/", request.getId());
-      // Generate a table URI for the new table
-      String tableUri = "s3://" + BUCKET_NAME + "/" + tableName + ".lance";
-      tableLocations.put(tableName, tableUri);
-
-      // Create storage options with expiration
-      Map<String, String> storageOptions = new HashMap<>(baseStorageOptions);
-      long expiresAtMillis = System.currentTimeMillis() + (credentialExpiresInSeconds * 1000L);
-      storageOptions.put("expires_at_millis", String.valueOf(expiresAtMillis));
-
-      com.lancedb.lance.namespace.model.CreateEmptyTableResponse response =
-          new com.lancedb.lance.namespace.model.CreateEmptyTableResponse();
-      response.setLocation(tableUri);
-      response.setStorageOptions(storageOptions);
+      CreateEmptyTableResponse response = inner.createEmptyTable(request);
+      response.setStorageOptions(modifyStorageOptions(response.getStorageOptions(), count));
 
       return response;
     }
 
     @Override
     public DescribeTableResponse describeTable(DescribeTableRequest request) {
-      int count = callCount.incrementAndGet();
+      int count = describeCallCount.incrementAndGet();
 
-      String tableName = String.join("/", request.getId());
-      String location = tableLocations.get(tableName);
-      if (location == null) {
-        throw new IllegalArgumentException("Table not found: " + tableName);
-      }
-
-      // Create storage options with expiration
-      Map<String, String> storageOptions = new HashMap<>(baseStorageOptions);
-      long expiresAtMillis = System.currentTimeMillis() + (credentialExpiresInSeconds * 1000L);
-      storageOptions.put("expires_at_millis", String.valueOf(expiresAtMillis));
-
-      DescribeTableResponse response = new DescribeTableResponse();
-      response.setLocation(location);
-      response.setStorageOptions(storageOptions);
-      if (request.getVersion() != null) {
-        response.setVersion(request.getVersion());
-      }
+      DescribeTableResponse response = inner.describeTable(request);
+      response.setStorageOptions(modifyStorageOptions(response.getStorageOptions(), count));
 
       return response;
     }
@@ -206,226 +224,6 @@ public class NamespaceIntegrationTest {
 
   @Test
   void testOpenDatasetWithoutRefresh() throws Exception {
-    try (BufferAllocator allocator = new RootAllocator()) {
-      // Create test dataset directly on S3
-      String tableName = UUID.randomUUID().toString();
-      String tableUri = "s3://" + BUCKET_NAME + "/" + tableName + ".lance";
-
-      Map<String, String> storageOptions = new HashMap<>();
-      storageOptions.put("allow_http", "true");
-      storageOptions.put("aws_access_key_id", ACCESS_KEY);
-      storageOptions.put("aws_secret_access_key", SECRET_KEY);
-      storageOptions.put("aws_endpoint", ENDPOINT_URL);
-      storageOptions.put("aws_region", REGION);
-
-      // Create schema and write dataset
-      Schema schema =
-          new Schema(
-              Arrays.asList(
-                  new Field("a", FieldType.nullable(new ArrowType.Int(32, true)), null),
-                  new Field("b", FieldType.nullable(new ArrowType.Int(32, true)), null)));
-
-      try (VectorSchemaRoot root = VectorSchemaRoot.create(schema, allocator)) {
-        IntVector aVector = (IntVector) root.getVector("a");
-        IntVector bVector = (IntVector) root.getVector("b");
-
-        aVector.allocateNew(2);
-        bVector.allocateNew(2);
-
-        aVector.set(0, 1);
-        bVector.set(0, 2);
-        aVector.set(1, 10);
-        bVector.set(1, 20);
-
-        aVector.setValueCount(2);
-        bVector.setValueCount(2);
-        root.setRowCount(2);
-
-        WriteParams writeParams =
-            new WriteParams.Builder().withStorageOptions(storageOptions).build();
-
-        // Create dataset using Dataset.create
-        try (Dataset dataset = Dataset.create(allocator, tableUri, schema, writeParams)) {
-          // Add data via fragments
-          List<FragmentMetadata> fragments =
-              Fragment.create(tableUri, allocator, root, writeParams);
-          FragmentOperation.Append appendOp = new FragmentOperation.Append(fragments);
-          try (Dataset updatedDataset =
-              Dataset.commit(allocator, tableUri, appendOp, Optional.of(1L), storageOptions)) {
-            assertEquals(2, updatedDataset.version());
-            assertEquals(2, updatedDataset.countRows());
-          }
-        }
-      }
-
-      // Create mock namespace with 60-second expiration (long enough to not expire during test)
-      MockLanceNamespace namespace = new MockLanceNamespace(storageOptions, 60);
-      namespace.registerTable(tableName, tableUri);
-
-      // Open dataset through namespace WITH refresh enabled
-      // Use 10-second refresh offset, so credentials effectively expire at T+50s
-      ReadOptions readOptions =
-          new ReadOptions.Builder()
-              .setS3CredentialsRefreshOffsetSeconds(10) // Refresh 10s before expiration
-              .build();
-
-      int callCountBeforeOpen = namespace.getCallCount();
-      try (Dataset dsFromNamespace =
-          Dataset.open()
-              .allocator(allocator)
-              .namespace(namespace)
-              .tableId(Arrays.asList(tableName))
-              .readOptions(readOptions)
-              .build()) {
-        // With the fix, describeTable should only be called once during open
-        // to get the table location and initial storage options
-        int callCountAfterOpen = namespace.getCallCount();
-        assertEquals(
-            1,
-            callCountAfterOpen - callCountBeforeOpen,
-            "describeTable should be called exactly once during open, got: "
-                + (callCountAfterOpen - callCountBeforeOpen));
-
-        // Verify we can read the data multiple times
-        assertEquals(2, dsFromNamespace.countRows());
-        assertEquals(2, dsFromNamespace.countRows());
-        assertEquals(2, dsFromNamespace.countRows());
-
-        // Perform operations that access S3
-        List<Fragment> fragments = dsFromNamespace.getFragments();
-        assertEquals(1, fragments.size());
-        List<Version> versions = dsFromNamespace.listVersions();
-        assertEquals(2, versions.size());
-
-        // With the fix, credentials are cached so no additional calls are made
-        int finalCallCount = namespace.getCallCount();
-        int totalCalls = finalCallCount - callCountBeforeOpen;
-        assertEquals(
-            1,
-            totalCalls,
-            "describeTable should only be called once total (credentials are cached), got: "
-                + totalCalls);
-      }
-    }
-  }
-
-  @Test
-  void testStorageOptionsProviderWithRefresh() throws Exception {
-    try (BufferAllocator allocator = new RootAllocator()) {
-      // Create test dataset
-      String tableName = UUID.randomUUID().toString();
-      String tableUri = "s3://" + BUCKET_NAME + "/" + tableName + ".lance";
-
-      Map<String, String> storageOptions = new HashMap<>();
-      storageOptions.put("allow_http", "true");
-      storageOptions.put("aws_access_key_id", ACCESS_KEY);
-      storageOptions.put("aws_secret_access_key", SECRET_KEY);
-      storageOptions.put("aws_endpoint", ENDPOINT_URL);
-      storageOptions.put("aws_region", REGION);
-
-      // Create schema and write dataset
-      Schema schema =
-          new Schema(
-              Arrays.asList(
-                  new Field("a", FieldType.nullable(new ArrowType.Int(32, true)), null),
-                  new Field("b", FieldType.nullable(new ArrowType.Int(32, true)), null)));
-
-      try (VectorSchemaRoot root = VectorSchemaRoot.create(schema, allocator)) {
-        IntVector aVector = (IntVector) root.getVector("a");
-        IntVector bVector = (IntVector) root.getVector("b");
-
-        aVector.allocateNew(2);
-        bVector.allocateNew(2);
-
-        aVector.set(0, 1);
-        bVector.set(0, 2);
-        aVector.set(1, 10);
-        bVector.set(1, 20);
-
-        aVector.setValueCount(2);
-        bVector.setValueCount(2);
-        root.setRowCount(2);
-
-        WriteParams writeParams =
-            new WriteParams.Builder().withStorageOptions(storageOptions).build();
-
-        // Create dataset using Dataset.create
-        try (Dataset dataset = Dataset.create(allocator, tableUri, schema, writeParams)) {
-          // Add data via fragments
-          List<FragmentMetadata> fragments =
-              Fragment.create(tableUri, allocator, root, writeParams);
-          FragmentOperation.Append appendOp = new FragmentOperation.Append(fragments);
-          try (Dataset updatedDataset =
-              Dataset.commit(allocator, tableUri, appendOp, Optional.of(1L), storageOptions)) {
-            assertEquals(2, updatedDataset.countRows());
-          }
-        }
-      }
-
-      // Create mock namespace with 5-second expiration for faster testing
-      MockLanceNamespace namespace = new MockLanceNamespace(storageOptions, 5);
-      namespace.registerTable(tableName, tableUri);
-
-      // Open dataset through namespace with refresh enabled
-      // Use 2-second refresh offset so credentials effectively expire at T+3s (5s - 2s)
-      ReadOptions readOptions =
-          new ReadOptions.Builder()
-              .setS3CredentialsRefreshOffsetSeconds(2) // Refresh 2s before expiration
-              .build();
-
-      int callCountBeforeOpen = namespace.getCallCount();
-      try (Dataset dsFromNamespace =
-          Dataset.open()
-              .allocator(allocator)
-              .namespace(namespace)
-              .tableId(Arrays.asList(tableName))
-              .readOptions(readOptions)
-              .build()) {
-        // With the fix, describeTable should only be called once during open
-        int callCountAfterOpen = namespace.getCallCount();
-        assertEquals(
-            1,
-            callCountAfterOpen - callCountBeforeOpen,
-            "describeTable should be called exactly once during open, got: "
-                + (callCountAfterOpen - callCountBeforeOpen));
-
-        // Verify we can read the data
-        assertEquals(2, dsFromNamespace.countRows());
-
-        // Record call count after initial reads
-        int callCountAfterInitialReads = namespace.getCallCount();
-        int callsAfterFirstRead = callCountAfterInitialReads - callCountBeforeOpen;
-        assertEquals(
-            1,
-            callsAfterFirstRead,
-            "describeTable should still be 1 (credentials are cached), got: "
-                + callsAfterFirstRead);
-
-        // Wait for credentials to be close to expiring (4 seconds - past the 3s refresh threshold)
-        Thread.sleep(4000);
-
-        // Perform read operations after expiration
-        // Access fragments and versions which require S3 access and trigger credential refresh
-        assertEquals(2, dsFromNamespace.countRows());
-        List<Fragment> fragments = dsFromNamespace.getFragments();
-        assertEquals(1, fragments.size());
-        List<Version> versions = dsFromNamespace.listVersions();
-        assertEquals(2, versions.size());
-
-        int finalCallCount = namespace.getCallCount();
-        int totalCallsAfterExpiration = finalCallCount - callCountBeforeOpen;
-        assertEquals(
-            2,
-            totalCallsAfterExpiration,
-            "Credentials should be refreshed once after expiration. "
-                + "Expected 2 total calls (1 initial + 1 refresh), got: "
-                + totalCallsAfterExpiration);
-      }
-    }
-  }
-
-  @Test
-  void testWriteDatasetBuilderWithNamespaceCreate() throws Exception {
     try (BufferAllocator allocator = new RootAllocator()) {
       // Set up storage options
       Map<String, String> storageOptions = new HashMap<>();
@@ -435,8 +233,8 @@ public class NamespaceIntegrationTest {
       storageOptions.put("aws_endpoint", ENDPOINT_URL);
       storageOptions.put("aws_region", REGION);
 
-      // Create mock namespace
-      MockLanceNamespace namespace = new MockLanceNamespace(storageOptions, 60);
+      // Create tracking namespace with 60-second expiration (long enough to not expire during test)
+      TrackingNamespace namespace = new TrackingNamespace(BUCKET_NAME, storageOptions, 60);
       String tableName = UUID.randomUUID().toString();
 
       // Create schema and data
@@ -462,65 +260,339 @@ public class NamespaceIntegrationTest {
         bVector.setValueCount(2);
         root.setRowCount(2);
 
-        // Use the write builder with namespace
-        try (org.apache.arrow.vector.ipc.ArrowReader reader =
-            new org.apache.arrow.vector.ipc.ArrowStreamReader(
-                new java.io.ByteArrayInputStream(new byte[0]), allocator)) {
+        // Create a test reader that returns our VectorSchemaRoot
+        ArrowReader testReader =
+            new ArrowReader(allocator) {
+              boolean firstRead = true;
 
-          // Create a test reader that returns our VectorSchemaRoot
-          org.apache.arrow.vector.ipc.ArrowReader testReader =
-              new org.apache.arrow.vector.ipc.ArrowReader(allocator) {
-                boolean firstRead = true;
-
-                @Override
-                public boolean loadNextBatch() {
-                  if (firstRead) {
-                    firstRead = false;
-                    return true;
-                  }
-                  return false;
+              @Override
+              public boolean loadNextBatch() {
+                if (firstRead) {
+                  firstRead = false;
+                  return true;
                 }
+                return false;
+              }
 
-                @Override
-                public long bytesRead() {
-                  return 0;
+              @Override
+              public long bytesRead() {
+                return 0;
+              }
+
+              @Override
+              protected void closeReadSource() {}
+
+              @Override
+              protected Schema readSchema() {
+                return schema;
+              }
+
+              @Override
+              public VectorSchemaRoot getVectorSchemaRoot() {
+                return root;
+              }
+            };
+
+        // Create dataset through namespace
+        try (Dataset dataset =
+            Dataset.write()
+                .allocator(allocator)
+                .reader(testReader)
+                .namespace(namespace)
+                .tableId(Arrays.asList(tableName))
+                .mode(WriteParams.WriteMode.CREATE)
+                .execute()) {
+          assertEquals(2, dataset.countRows());
+        }
+      }
+
+      // Verify createEmptyTable was called
+      assertEquals(1, namespace.getCreateCallCount(), "createEmptyTable should be called once");
+
+      // Open dataset through namespace WITH refresh enabled
+      // Use 10-second refresh offset, so credentials effectively expire at T+50s
+      ReadOptions readOptions =
+          new ReadOptions.Builder()
+              .setS3CredentialsRefreshOffsetSeconds(10) // Refresh 10s before expiration
+              .build();
+
+      int callCountBeforeOpen = namespace.getDescribeCallCount();
+      try (Dataset dsFromNamespace =
+          Dataset.open()
+              .allocator(allocator)
+              .namespace(namespace)
+              .tableId(Arrays.asList(tableName))
+              .readOptions(readOptions)
+              .build()) {
+        // With the fix, describeTable should only be called once during open
+        // to get the table location and initial storage options
+        int callCountAfterOpen = namespace.getDescribeCallCount();
+        assertEquals(
+            1,
+            callCountAfterOpen - callCountBeforeOpen,
+            "describeTable should be called exactly once during open, got: "
+                + (callCountAfterOpen - callCountBeforeOpen));
+
+        // Verify we can read the data multiple times
+        assertEquals(2, dsFromNamespace.countRows());
+        assertEquals(2, dsFromNamespace.countRows());
+        assertEquals(2, dsFromNamespace.countRows());
+
+        // Perform operations that access S3
+        List<Fragment> fragments = dsFromNamespace.getFragments();
+        assertEquals(1, fragments.size());
+        List<Version> versions = dsFromNamespace.listVersions();
+        assertEquals(1, versions.size());
+
+        // With the fix, credentials are cached so no additional calls are made
+        int finalCallCount = namespace.getDescribeCallCount();
+        int totalCalls = finalCallCount - callCountBeforeOpen;
+        assertEquals(
+            1,
+            totalCalls,
+            "describeTable should only be called once total (credentials are cached), got: "
+                + totalCalls);
+      }
+    }
+  }
+
+  @Test
+  void testStorageOptionsProviderWithRefresh() throws Exception {
+    try (BufferAllocator allocator = new RootAllocator()) {
+      // Set up storage options
+      Map<String, String> storageOptions = new HashMap<>();
+      storageOptions.put("allow_http", "true");
+      storageOptions.put("aws_access_key_id", ACCESS_KEY);
+      storageOptions.put("aws_secret_access_key", SECRET_KEY);
+      storageOptions.put("aws_endpoint", ENDPOINT_URL);
+      storageOptions.put("aws_region", REGION);
+
+      // Create tracking namespace with 5-second expiration for faster testing
+      TrackingNamespace namespace = new TrackingNamespace(BUCKET_NAME, storageOptions, 5);
+      String tableName = UUID.randomUUID().toString();
+
+      // Create schema and data
+      Schema schema =
+          new Schema(
+              Arrays.asList(
+                  new Field("a", FieldType.nullable(new ArrowType.Int(32, true)), null),
+                  new Field("b", FieldType.nullable(new ArrowType.Int(32, true)), null)));
+
+      try (VectorSchemaRoot root = VectorSchemaRoot.create(schema, allocator)) {
+        IntVector aVector = (IntVector) root.getVector("a");
+        IntVector bVector = (IntVector) root.getVector("b");
+
+        aVector.allocateNew(2);
+        bVector.allocateNew(2);
+
+        aVector.set(0, 1);
+        bVector.set(0, 2);
+        aVector.set(1, 10);
+        bVector.set(1, 20);
+
+        aVector.setValueCount(2);
+        bVector.setValueCount(2);
+        root.setRowCount(2);
+
+        // Create a test reader that returns our VectorSchemaRoot
+        ArrowReader testReader =
+            new ArrowReader(allocator) {
+              boolean firstRead = true;
+
+              @Override
+              public boolean loadNextBatch() {
+                if (firstRead) {
+                  firstRead = false;
+                  return true;
                 }
+                return false;
+              }
 
-                @Override
-                protected void closeReadSource() {}
+              @Override
+              public long bytesRead() {
+                return 0;
+              }
 
-                @Override
-                protected org.apache.arrow.vector.types.pojo.Schema readSchema() {
-                  return schema;
+              @Override
+              protected void closeReadSource() {}
+
+              @Override
+              protected Schema readSchema() {
+                return schema;
+              }
+
+              @Override
+              public VectorSchemaRoot getVectorSchemaRoot() {
+                return root;
+              }
+            };
+
+        // Create dataset through namespace with refresh enabled
+        try (Dataset dataset =
+            Dataset.write()
+                .allocator(allocator)
+                .reader(testReader)
+                .namespace(namespace)
+                .tableId(Arrays.asList(tableName))
+                .mode(WriteParams.WriteMode.CREATE)
+                .s3CredentialsRefreshOffsetSeconds(2) // Refresh 2s before expiration
+                .execute()) {
+          assertEquals(2, dataset.countRows());
+        }
+      }
+
+      // Verify createEmptyTable was called
+      assertEquals(1, namespace.getCreateCallCount(), "createEmptyTable should be called once");
+
+      // Open dataset through namespace with refresh enabled
+      // Use 2-second refresh offset so credentials effectively expire at T+3s (5s - 2s)
+      ReadOptions readOptions =
+          new ReadOptions.Builder()
+              .setS3CredentialsRefreshOffsetSeconds(2) // Refresh 2s before expiration
+              .build();
+
+      int callCountBeforeOpen = namespace.getDescribeCallCount();
+      try (Dataset dsFromNamespace =
+          Dataset.open()
+              .allocator(allocator)
+              .namespace(namespace)
+              .tableId(Arrays.asList(tableName))
+              .readOptions(readOptions)
+              .build()) {
+        // With the fix, describeTable should only be called once during open
+        int callCountAfterOpen = namespace.getDescribeCallCount();
+        assertEquals(
+            1,
+            callCountAfterOpen - callCountBeforeOpen,
+            "describeTable should be called exactly once during open, got: "
+                + (callCountAfterOpen - callCountBeforeOpen));
+
+        // Verify we can read the data
+        assertEquals(2, dsFromNamespace.countRows());
+
+        // Record call count after initial reads
+        int callCountAfterInitialReads = namespace.getDescribeCallCount();
+        int callsAfterFirstRead = callCountAfterInitialReads - callCountBeforeOpen;
+        assertEquals(
+            1,
+            callsAfterFirstRead,
+            "describeTable should still be 1 (credentials are cached), got: "
+                + callsAfterFirstRead);
+
+        // Wait for credentials to be close to expiring (4 seconds - past the 3s refresh threshold)
+        Thread.sleep(4000);
+
+        // Perform read operations after expiration
+        // Access fragments and versions which require S3 access and trigger credential refresh
+        assertEquals(2, dsFromNamespace.countRows());
+        List<Fragment> fragments = dsFromNamespace.getFragments();
+        assertEquals(1, fragments.size());
+        List<Version> versions = dsFromNamespace.listVersions();
+        assertEquals(1, versions.size());
+
+        int finalCallCount = namespace.getDescribeCallCount();
+        int totalCallsAfterExpiration = finalCallCount - callCountBeforeOpen;
+        assertEquals(
+            2,
+            totalCallsAfterExpiration,
+            "Credentials should be refreshed once after expiration. "
+                + "Expected 2 total calls (1 initial + 1 refresh), got: "
+                + totalCallsAfterExpiration);
+      }
+    }
+  }
+
+  @Test
+  void testWriteDatasetBuilderWithNamespaceCreate() throws Exception {
+    try (BufferAllocator allocator = new RootAllocator()) {
+      // Set up storage options
+      Map<String, String> storageOptions = new HashMap<>();
+      storageOptions.put("allow_http", "true");
+      storageOptions.put("aws_access_key_id", ACCESS_KEY);
+      storageOptions.put("aws_secret_access_key", SECRET_KEY);
+      storageOptions.put("aws_endpoint", ENDPOINT_URL);
+      storageOptions.put("aws_region", REGION);
+
+      // Create tracking namespace
+      TrackingNamespace namespace = new TrackingNamespace(BUCKET_NAME, storageOptions, 60);
+      String tableName = UUID.randomUUID().toString();
+
+      // Create schema and data
+      Schema schema =
+          new Schema(
+              Arrays.asList(
+                  new Field("a", FieldType.nullable(new ArrowType.Int(32, true)), null),
+                  new Field("b", FieldType.nullable(new ArrowType.Int(32, true)), null)));
+
+      try (VectorSchemaRoot root = VectorSchemaRoot.create(schema, allocator)) {
+        IntVector aVector = (IntVector) root.getVector("a");
+        IntVector bVector = (IntVector) root.getVector("b");
+
+        aVector.allocateNew(2);
+        bVector.allocateNew(2);
+
+        aVector.set(0, 1);
+        bVector.set(0, 2);
+        aVector.set(1, 10);
+        bVector.set(1, 20);
+
+        aVector.setValueCount(2);
+        bVector.setValueCount(2);
+        root.setRowCount(2);
+
+        // Create a test reader that returns our VectorSchemaRoot
+        ArrowReader testReader =
+            new ArrowReader(allocator) {
+              boolean firstRead = true;
+
+              @Override
+              public boolean loadNextBatch() {
+                if (firstRead) {
+                  firstRead = false;
+                  return true;
                 }
+                return false;
+              }
 
-                @Override
-                public VectorSchemaRoot getVectorSchemaRoot() {
-                  return root;
-                }
-              };
+              @Override
+              public long bytesRead() {
+                return 0;
+              }
 
-          int callCountBefore = namespace.getCallCount();
+              @Override
+              protected void closeReadSource() {}
 
-          // Use the write builder to create a dataset through namespace
-          try (Dataset dataset =
-              Dataset.write()
-                  .allocator(allocator)
-                  .reader(testReader)
-                  .namespace(namespace)
-                  .tableId(Arrays.asList(tableName))
-                  .mode(WriteParams.WriteMode.CREATE)
-                  .execute()) {
+              @Override
+              protected Schema readSchema() {
+                return schema;
+              }
 
-            // Verify createEmptyTable was called
-            int callCountAfter = namespace.getCallCount();
-            assertEquals(
-                1, callCountAfter - callCountBefore, "createEmptyTable should be called once");
+              @Override
+              public VectorSchemaRoot getVectorSchemaRoot() {
+                return root;
+              }
+            };
 
-            // Verify dataset was created successfully
-            assertEquals(2, dataset.countRows());
-            assertEquals(schema, dataset.getSchema());
-          }
+        int callCountBefore = namespace.getCreateCallCount();
+
+        // Use the write builder to create a dataset through namespace
+        try (Dataset dataset =
+            Dataset.write()
+                .allocator(allocator)
+                .reader(testReader)
+                .namespace(namespace)
+                .tableId(Arrays.asList(tableName))
+                .mode(WriteParams.WriteMode.CREATE)
+                .execute()) {
+
+          // Verify createEmptyTable was called
+          int callCountAfter = namespace.getCreateCallCount();
+          assertEquals(
+              1, callCountAfter - callCountBefore, "createEmptyTable should be called once");
+
+          // Verify dataset was created successfully
+          assertEquals(2, dataset.countRows());
+          assertEquals(schema, dataset.getSchema());
         }
       }
     }
@@ -537,9 +609,9 @@ public class NamespaceIntegrationTest {
       storageOptions.put("aws_endpoint", ENDPOINT_URL);
       storageOptions.put("aws_region", REGION);
 
-      // Create initial dataset directly
+      // Create tracking namespace
+      TrackingNamespace namespace = new TrackingNamespace(BUCKET_NAME, storageOptions, 60);
       String tableName = UUID.randomUUID().toString();
-      String tableUri = "s3://" + BUCKET_NAME + "/" + tableName + ".lance";
 
       Schema schema =
           new Schema(
@@ -563,27 +635,9 @@ public class NamespaceIntegrationTest {
         bVector.setValueCount(2);
         root.setRowCount(2);
 
-        WriteParams writeParams =
-            new WriteParams.Builder().withStorageOptions(storageOptions).build();
-
-        // Create initial dataset
-        try (Dataset dataset = Dataset.create(allocator, tableUri, schema, writeParams)) {
-          List<FragmentMetadata> fragments =
-              Fragment.create(tableUri, allocator, root, writeParams);
-          FragmentOperation.Append appendOp = new FragmentOperation.Append(fragments);
-          try (Dataset updatedDataset =
-              Dataset.commit(allocator, tableUri, appendOp, Optional.of(1L), storageOptions)) {
-            assertEquals(2, updatedDataset.countRows());
-          }
-        }
-
-        // Create mock namespace and register the table
-        MockLanceNamespace namespace = new MockLanceNamespace(storageOptions, 60);
-        namespace.registerTable(tableName, tableUri);
-
-        // Now append data using the write builder with namespace
-        org.apache.arrow.vector.ipc.ArrowReader testReader =
-            new org.apache.arrow.vector.ipc.ArrowReader(allocator) {
+        // Create a test reader that returns our VectorSchemaRoot
+        ArrowReader testReader =
+            new ArrowReader(allocator) {
               boolean firstRead = true;
 
               @Override
@@ -604,7 +658,7 @@ public class NamespaceIntegrationTest {
               protected void closeReadSource() {}
 
               @Override
-              protected org.apache.arrow.vector.types.pojo.Schema readSchema() {
+              protected Schema readSchema() {
                 return schema;
               }
 
@@ -614,21 +668,70 @@ public class NamespaceIntegrationTest {
               }
             };
 
-        int callCountBefore = namespace.getCallCount();
-
-        // Use the write builder to append to dataset through namespace
+        // Create initial dataset through namespace
         try (Dataset dataset =
             Dataset.write()
                 .allocator(allocator)
                 .reader(testReader)
                 .namespace(namespace)
                 .tableId(Arrays.asList(tableName))
+                .mode(WriteParams.WriteMode.CREATE)
+                .execute()) {
+          assertEquals(2, dataset.countRows());
+        }
+
+        assertEquals(1, namespace.getCreateCallCount(), "createEmptyTable should be called once");
+        int initialDescribeCount = namespace.getDescribeCallCount();
+
+        // Now append data using the write builder with namespace
+        ArrowReader appendReader =
+            new ArrowReader(allocator) {
+              boolean firstRead = true;
+
+              @Override
+              public boolean loadNextBatch() {
+                if (firstRead) {
+                  firstRead = false;
+                  return true;
+                }
+                return false;
+              }
+
+              @Override
+              public long bytesRead() {
+                return 0;
+              }
+
+              @Override
+              protected void closeReadSource() {}
+
+              @Override
+              protected Schema readSchema() {
+                return schema;
+              }
+
+              @Override
+              public VectorSchemaRoot getVectorSchemaRoot() {
+                return root;
+              }
+            };
+
+        // Use the write builder to append to dataset through namespace
+        try (Dataset dataset =
+            Dataset.write()
+                .allocator(allocator)
+                .reader(appendReader)
+                .namespace(namespace)
+                .tableId(Arrays.asList(tableName))
                 .mode(WriteParams.WriteMode.APPEND)
                 .execute()) {
 
           // Verify describeTable was called
-          int callCountAfter = namespace.getCallCount();
-          assertEquals(1, callCountAfter - callCountBefore, "describeTable should be called once");
+          int callCountAfter = namespace.getDescribeCallCount();
+          assertEquals(
+              1,
+              callCountAfter - initialDescribeCount,
+              "describeTable should be called once for append");
 
           // Verify data was appended successfully
           assertEquals(4, dataset.countRows()); // Original 2 + appended 2

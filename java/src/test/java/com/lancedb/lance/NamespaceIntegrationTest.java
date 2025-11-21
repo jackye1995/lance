@@ -603,6 +603,167 @@ public class NamespaceIntegrationTest {
   }
 
   @Test
+  void testWriteDatasetBuilderWithNamespaceCreateCallCounts() throws Exception {
+    try (BufferAllocator allocator = new RootAllocator()) {
+      // Set up storage options
+      Map<String, String> storageOptions = new HashMap<>();
+      storageOptions.put("allow_http", "true");
+      storageOptions.put("aws_access_key_id", ACCESS_KEY);
+      storageOptions.put("aws_secret_access_key", SECRET_KEY);
+      storageOptions.put("aws_endpoint", ENDPOINT_URL);
+      storageOptions.put("aws_region", REGION);
+
+      // Create tracking namespace with 60-second expiration (long enough that no refresh happens)
+      // Credentials expire at T+60s. With a 1s refresh offset, refresh would happen at T+59s.
+      // Since writes complete well under 59 seconds, NO credential refresh should occur.
+      TrackingNamespace namespace = new TrackingNamespace(BUCKET_NAME, storageOptions, 60);
+      String tableName = UUID.randomUUID().toString();
+
+      // Verify initial call counts
+      assertEquals(0, namespace.getCreateCallCount(), "createEmptyTable should not be called yet");
+      assertEquals(0, namespace.getDescribeCallCount(), "describeTable should not be called yet");
+
+      // Create schema and data
+      Schema schema =
+          new Schema(
+              Arrays.asList(
+                  new Field("a", FieldType.nullable(new ArrowType.Int(32, true)), null),
+                  new Field("b", FieldType.nullable(new ArrowType.Int(32, true)), null)));
+
+      try (VectorSchemaRoot root = VectorSchemaRoot.create(schema, allocator)) {
+        IntVector aVector = (IntVector) root.getVector("a");
+        IntVector bVector = (IntVector) root.getVector("b");
+
+        aVector.allocateNew(2);
+        bVector.allocateNew(2);
+
+        aVector.set(0, 1);
+        bVector.set(0, 2);
+        aVector.set(1, 10);
+        bVector.set(1, 20);
+
+        aVector.setValueCount(2);
+        bVector.setValueCount(2);
+        root.setRowCount(2);
+
+        // Create a test reader that returns our VectorSchemaRoot
+        ArrowReader testReader =
+            new ArrowReader(allocator) {
+              boolean firstRead = true;
+
+              @Override
+              public boolean loadNextBatch() {
+                if (firstRead) {
+                  firstRead = false;
+                  return true;
+                }
+                return false;
+              }
+
+              @Override
+              public long bytesRead() {
+                return 0;
+              }
+
+              @Override
+              protected void closeReadSource() {}
+
+              @Override
+              protected Schema readSchema() {
+                return schema;
+              }
+
+              @Override
+              public VectorSchemaRoot getVectorSchemaRoot() {
+                return root;
+              }
+            };
+
+        // Use the write builder to create a dataset through namespace
+        // Set a 1-second refresh offset. Credentials expire at T+60s, so refresh at T+59s.
+        // Write completes instantly, so NO describeTable call should happen for refresh.
+        try (Dataset dataset =
+            Dataset.write()
+                .allocator(allocator)
+                .reader(testReader)
+                .namespace(namespace)
+                .tableId(Arrays.asList(tableName))
+                .mode(WriteParams.WriteMode.CREATE)
+                .s3CredentialsRefreshOffsetSeconds(1)
+                .execute()) {
+
+          // Verify createEmptyTable was called exactly ONCE
+          assertEquals(
+              1, namespace.getCreateCallCount(), "createEmptyTable should be called exactly once");
+
+          // Verify describeTable was NOT called during CREATE
+          // Initial credentials come from createEmptyTable response, and since credentials
+          // don't expire during the fast write, NO refresh (describeTable) is needed
+          assertEquals(
+              0,
+              namespace.getDescribeCallCount(),
+              "describeTable should NOT be called during CREATE - "
+                  + "initial credentials come from createEmptyTable response and don't expire");
+
+          // Verify dataset was created successfully
+          assertEquals(2, dataset.countRows());
+          assertEquals(schema, dataset.getSchema());
+        }
+      }
+
+      // Verify counts after dataset is closed
+      assertEquals(
+          1, namespace.getCreateCallCount(), "createEmptyTable should still be 1 after close");
+      assertEquals(
+          0,
+          namespace.getDescribeCallCount(),
+          "describeTable should still be 0 after close (no refresh needed)");
+
+      // Now open the dataset through namespace with long-lived credentials (60s expiration)
+      // With 1s refresh offset, credentials are valid for 59s - plenty of time for reads
+      ReadOptions readOptions =
+          new ReadOptions.Builder().setS3CredentialsRefreshOffsetSeconds(1).build();
+
+      try (Dataset dsFromNamespace =
+          Dataset.open()
+              .allocator(allocator)
+              .namespace(namespace)
+              .tableId(Arrays.asList(tableName))
+              .readOptions(readOptions)
+              .build()) {
+
+        // createEmptyTable should NOT be called during open (only during CREATE)
+        assertEquals(
+            1,
+            namespace.getCreateCallCount(),
+            "createEmptyTable should still be 1 (not called during open)");
+
+        // describeTable is called exactly ONCE during open to get table location
+        assertEquals(
+            1,
+            namespace.getDescribeCallCount(),
+            "describeTable should be called exactly once during open");
+
+        // Verify we can read the data multiple times
+        assertEquals(2, dsFromNamespace.countRows());
+        assertEquals(2, dsFromNamespace.countRows());
+        assertEquals(2, dsFromNamespace.countRows());
+
+        // After multiple reads, no additional describeTable calls should be made
+        // (credentials are cached and don't expire during this fast test)
+        assertEquals(
+            1,
+            namespace.getDescribeCallCount(),
+            "describeTable should still be 1 after reads (credentials cached, no refresh needed)");
+      }
+
+      // Final verification
+      assertEquals(1, namespace.getCreateCallCount(), "Final: createEmptyTable = 1");
+      assertEquals(1, namespace.getDescribeCallCount(), "Final: describeTable = 1");
+    }
+  }
+
+  @Test
   void testWriteDatasetBuilderWithNamespaceAppend() throws Exception {
     try (BufferAllocator allocator = new RootAllocator()) {
       // Set up storage options

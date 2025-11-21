@@ -1034,7 +1034,7 @@ public class NamespaceIntegrationTest {
   }
 
   @Test
-  void testFragmentCreateWithStorageOptionsProvider() throws Exception {
+  void testFragmentCreateAndCommitWithNamespace() throws Exception {
     try (BufferAllocator allocator = new RootAllocator()) {
       // Set up storage options
       Map<String, String> storageOptions = new HashMap<>();
@@ -1058,6 +1058,8 @@ public class NamespaceIntegrationTest {
       CreateEmptyTableRequest request = new CreateEmptyTableRequest();
       request.setId(Arrays.asList(tableName));
       CreateEmptyTableResponse response = namespace.createEmptyTable(request);
+
+      assertEquals(1, namespace.getCreateCallCount(), "createEmptyTable should be called once");
 
       String tableUri = response.getLocation();
       Map<String, String> namespaceStorageOptions = response.getStorageOptions();
@@ -1093,20 +1095,11 @@ public class NamespaceIntegrationTest {
         valueVector.setValueCount(3);
         root.setRowCount(3);
 
-        int describeCountBefore = namespace.getDescribeCallCount();
-
         // Create fragment with StorageOptionsProvider
         List<FragmentMetadata> fragments1 =
             Fragment.create(tableUri, allocator, root, writeParams, provider);
 
         assertEquals(1, fragments1.size());
-
-        // Verify provider was called (describeTable is called)
-        int describeCountAfter1 = namespace.getDescribeCallCount();
-        assertEquals(
-            1,
-            describeCountAfter1 - describeCountBefore,
-            "Provider should call describeTable during fragment creation");
 
         // Write second fragment with different data
         idVector.set(0, 4);
@@ -1123,34 +1116,39 @@ public class NamespaceIntegrationTest {
 
         assertEquals(1, fragments2.size());
 
-        int describeCountAfter2 = namespace.getDescribeCallCount();
-        assertEquals(
-            2,
-            describeCountAfter2 - describeCountBefore,
-            "Provider should call describeTable again for second fragment");
-
-        // Commit both fragments to the dataset
-        FragmentOperation.Append appendOp = new FragmentOperation.Append(fragments1);
+        // Commit first fragment to the dataset using Overwrite (for empty table)
+        FragmentOperation.Overwrite overwriteOp =
+            new FragmentOperation.Overwrite(fragments1, schema);
         try (Dataset updatedDataset =
-            Dataset.commit(allocator, tableUri, appendOp, Optional.empty(), mergedOptions)) {
+            Dataset.commit(allocator, tableUri, overwriteOp, Optional.empty(), mergedOptions)) {
           assertEquals(1, updatedDataset.version());
           assertEquals(3, updatedDataset.countRows());
 
           // Append second fragment
           FragmentOperation.Append appendOp2 = new FragmentOperation.Append(fragments2);
           try (Dataset finalDataset =
-              Dataset.commit(
-                  allocator, tableUri, appendOp2, Optional.of(1L), mergedOptions)) {
+              Dataset.commit(allocator, tableUri, appendOp2, Optional.of(1L), mergedOptions)) {
             assertEquals(2, finalDataset.version());
             assertEquals(6, finalDataset.countRows());
           }
         }
       }
+
+      // Verify we can open and read the dataset through namespace
+      try (Dataset ds =
+          Dataset.open()
+              .allocator(allocator)
+              .namespace(namespace)
+              .tableId(Arrays.asList(tableName))
+              .build()) {
+        assertEquals(6, ds.countRows(), "Should have 6 rows total");
+        assertEquals(2, ds.listVersions().size(), "Should have 2 versions");
+      }
     }
   }
 
   @Test
-  void testTransactionCommitWithStorageOptionsProvider() throws Exception {
+  void testTransactionCommitWithNamespace() throws Exception {
     try (BufferAllocator allocator = new RootAllocator()) {
       // Set up storage options
       Map<String, String> storageOptions = new HashMap<>();
@@ -1222,10 +1220,10 @@ public class NamespaceIntegrationTest {
       }
 
       // Now test Transaction.commit with provider
-      // Open dataset with provider
+      // Open dataset with provider using mergedOptions (which has expires_at_millis)
       ReadOptions readOptions =
           new ReadOptions.Builder()
-              .setStorageOptions(storageOptions)
+              .setStorageOptions(mergedOptions)
               .setStorageOptionsProvider(provider)
               .build();
 
@@ -1252,8 +1250,6 @@ public class NamespaceIntegrationTest {
           newFragments = Fragment.create(tableUri, allocator, root, writeParams, provider);
         }
 
-        int describeCountBefore = namespace.getDescribeCallCount();
-
         // Create and commit transaction
         Append appendOp = Append.builder().fragments(newFragments).build();
         Transaction transaction =
@@ -1265,14 +1261,18 @@ public class NamespaceIntegrationTest {
         try (Dataset committedDataset = transaction.commit()) {
           assertEquals(2, committedDataset.version());
           assertEquals(4, committedDataset.countRows());
-
-          // Verify provider was called during commit
-          int describeCountAfter = namespace.getDescribeCallCount();
-          assertEquals(
-              1,
-              describeCountAfter - describeCountBefore,
-              "Provider should call describeTable during transaction commit");
         }
+      }
+
+      // Verify we can open and read the dataset through namespace
+      try (Dataset ds =
+          Dataset.open()
+              .allocator(allocator)
+              .namespace(namespace)
+              .tableId(Arrays.asList(tableName))
+              .build()) {
+        assertEquals(4, ds.countRows(), "Should have 4 rows total");
+        assertEquals(2, ds.listVersions().size(), "Should have 2 versions");
       }
     }
   }

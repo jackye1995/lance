@@ -79,30 +79,33 @@ public class Dataset implements Closeable {
    * Creates a builder for writing a dataset.
    *
    * <p>This builder supports writing datasets either directly to a URI or through a LanceNamespace.
+   * Data can be provided via reader() or stream() methods.
    *
-   * <p>Example usage with URI:
+   * <p>Example usage with URI and reader:
    *
    * <pre>{@code
-   * Dataset dataset = Dataset.write(reader)
+   * Dataset dataset = Dataset.write()
+   *     .reader(myReader)
    *     .uri("s3://bucket/table.lance")
    *     .mode(WriteMode.CREATE)
    *     .execute();
    * }</pre>
    *
-   * <p>Example usage with namespace:
+   * <p>Example usage with namespace and empty table:
    *
    * <pre>{@code
-   * Dataset dataset = Dataset.write(reader)
-   *     .namespace(myNamespace, Arrays.asList("my_table"))
-   *     .mode(WriteMode.APPEND)
+   * Dataset dataset = Dataset.write()
+   *     .schema(mySchema)
+   *     .namespace(myNamespace)
+   *     .tableId(Arrays.asList("my_table"))
+   *     .mode(WriteMode.CREATE)
    *     .execute();
    * }</pre>
    *
-   * @param reader ArrowReader containing the data to write
    * @return A new WriteDatasetBuilder instance
    */
-  public static WriteDatasetBuilder write(ArrowReader reader) {
-    return new WriteDatasetBuilder(reader);
+  public static WriteDatasetBuilder write() {
+    return new WriteDatasetBuilder();
   }
 
   /**
@@ -113,8 +116,9 @@ public class Dataset implements Closeable {
    * @param schema dataset schema
    * @param params write params
    * @return Dataset
-   * @deprecated Use {@link #write(ArrowReader)} builder instead. For example: {@code
-   *     Dataset.write(reader).uri(path).mode(WriteMode.CREATE).execute()}
+   * @deprecated Use {@link #write()} builder instead. For example: {@code
+   *     Dataset.write().allocator(allocator).schema(schema).uri(path)
+   *     .mode(WriteMode.CREATE).execute()}
    */
   @Deprecated
   public static Dataset create(
@@ -135,7 +139,8 @@ public class Dataset implements Closeable {
               params.getMode(),
               params.getEnableStableRowIds(),
               params.getDataStorageVersion(),
-              params.getStorageOptions());
+              params.getStorageOptions(),
+              params.getS3CredentialsRefreshOffsetSeconds());
       dataset.allocator = allocator;
       return dataset;
     }
@@ -149,8 +154,9 @@ public class Dataset implements Closeable {
    * @param path dataset uri
    * @param params write parameters
    * @return Dataset
-   * @deprecated Use {@link #write(ArrowReader)} builder instead. For example: {@code
-   *     Dataset.write(reader).uri(path).mode(WriteMode.CREATE).execute()}
+   * @deprecated Use {@link #write()} builder instead. For example: {@code
+   *     Dataset.write().allocator(allocator).stream(stream).uri(path)
+   *     .mode(WriteMode.CREATE).execute()}
    */
   @Deprecated
   public static Dataset create(
@@ -169,7 +175,8 @@ public class Dataset implements Closeable {
             params.getMode(),
             params.getEnableStableRowIds(),
             params.getDataStorageVersion(),
-            params.getStorageOptions());
+            params.getStorageOptions(),
+            params.getS3CredentialsRefreshOffsetSeconds());
     dataset.allocator = allocator;
     return dataset;
   }
@@ -183,7 +190,8 @@ public class Dataset implements Closeable {
       Optional<String> mode,
       Optional<Boolean> enableStableRowIds,
       Optional<String> dataStorageVersion,
-      Map<String, String> storageOptions);
+      Map<String, String> storageOptions,
+      Optional<Long> s3CredentialsRefreshOffsetSeconds);
 
   private static native Dataset createWithFfiStream(
       long arrowStreamMemoryAddress,
@@ -194,14 +202,17 @@ public class Dataset implements Closeable {
       Optional<String> mode,
       Optional<Boolean> enableStableRowIds,
       Optional<String> dataStorageVersion,
-      Map<String, String> storageOptions);
+      Map<String, String> storageOptions,
+      Optional<Long> s3CredentialsRefreshOffsetSeconds);
 
   /**
    * Open a dataset from the specified path.
    *
    * @param path file path
    * @return Dataset
+   * @deprecated Use {@link #open()} builder instead: {@code Dataset.open().uri(path).build()}
    */
+  @Deprecated
   public static Dataset open(String path) {
     return open(new RootAllocator(Long.MAX_VALUE), true, path, new ReadOptions.Builder().build());
   }
@@ -212,7 +223,10 @@ public class Dataset implements Closeable {
    * @param path file path
    * @param options the open options
    * @return Dataset
+   * @deprecated Use {@link #open()} builder instead: {@code
+   *     Dataset.open().uri(path).readOptions(options).build()}
    */
+  @Deprecated
   public static Dataset open(String path, ReadOptions options) {
     return open(new RootAllocator(Long.MAX_VALUE), true, path, options);
   }
@@ -223,7 +237,10 @@ public class Dataset implements Closeable {
    * @param path file path
    * @param allocator Arrow buffer allocator
    * @return Dataset
+   * @deprecated Use {@link #open()} builder instead: {@code
+   *     Dataset.open().allocator(allocator).uri(path).build()}
    */
+  @Deprecated
   public static Dataset open(String path, BufferAllocator allocator) {
     return open(allocator, path, new ReadOptions.Builder().build());
   }
@@ -235,7 +252,10 @@ public class Dataset implements Closeable {
    * @param path file path
    * @param options the open options
    * @return Dataset
+   * @deprecated Use {@link #open()} builder instead: {@code
+   *     Dataset.open().allocator(allocator).uri(path).readOptions(options).build()}
    */
+  @Deprecated
   public static Dataset open(BufferAllocator allocator, String path, ReadOptions options) {
     return open(allocator, false, path, options);
   }

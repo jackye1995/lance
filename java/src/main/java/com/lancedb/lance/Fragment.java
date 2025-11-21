@@ -247,7 +247,8 @@ public class Fragment {
           params.getEnableStableRowIds(),
           params.getDataStorageVersion(),
           params.getStorageOptions(),
-          Optional.ofNullable(storageOptionsProvider));
+          Optional.ofNullable(storageOptionsProvider),
+          params.getS3CredentialsRefreshOffsetSeconds());
     }
   }
 
@@ -292,7 +293,8 @@ public class Fragment {
         params.getEnableStableRowIds(),
         params.getDataStorageVersion(),
         params.getStorageOptions(),
-        Optional.ofNullable(storageOptionsProvider));
+        Optional.ofNullable(storageOptionsProvider),
+        params.getS3CredentialsRefreshOffsetSeconds());
   }
 
   /**
@@ -311,7 +313,8 @@ public class Fragment {
       Optional<Boolean> enableStableRowIds,
       Optional<String> dataStorageVersion,
       Map<String, String> storageOptions,
-      Optional<StorageOptionsProvider> storageOptionsProvider);
+      Optional<StorageOptionsProvider> storageOptionsProvider,
+      Optional<Long> s3CredentialsRefreshOffsetSeconds);
 
   /**
    * Create a fragment from the given arrow stream.
@@ -328,5 +331,6 @@ public class Fragment {
       Optional<Boolean> enableStableRowIds,
       Optional<String> dataStorageVersion,
       Map<String, String> storageOptions,
-      Optional<StorageOptionsProvider> storageOptionsProvider);
+      Optional<StorageOptionsProvider> storageOptionsProvider,
+      Optional<Long> s3CredentialsRefreshOffsetSeconds);
 }

@@ -296,9 +296,7 @@ impl BlockingDataset {
                 .with_store_params(store_params)
                 .execute(transaction),
         )?;
-        Ok(BlockingDataset {
-            inner: new_dataset,
-        })
+        Ok(BlockingDataset { inner: new_dataset })
     }
 
     pub fn read_transaction(&self) -> Result<Option<Transaction>> {
@@ -338,6 +336,7 @@ pub extern "system" fn Java_com_lancedb_lance_Dataset_createWithFfiSchema<'local
     enable_stable_row_ids: JObject, // Optional<Boolean>
     data_storage_version: JObject,  // Optional<String>
     storage_options_obj: JObject,   // Map<String, String>
+    s3_credentials_refresh_offset_seconds_obj: JObject, // Optional<Long>
 ) -> JObject<'local> {
     ok_or_throw!(
         env,
@@ -351,7 +350,8 @@ pub extern "system" fn Java_com_lancedb_lance_Dataset_createWithFfiSchema<'local
             mode,
             enable_stable_row_ids,
             data_storage_version,
-            storage_options_obj
+            storage_options_obj,
+            s3_credentials_refresh_offset_seconds_obj
         )
     )
 }
@@ -368,6 +368,7 @@ fn inner_create_with_ffi_schema<'local>(
     enable_stable_row_ids: JObject, // Optional<Boolean>
     data_storage_version: JObject,  // Optional<String>
     storage_options_obj: JObject,   // Map<String, String>
+    s3_credentials_refresh_offset_seconds_obj: JObject, // Optional<Long>
 ) -> Result<JObject<'local>> {
     let c_schema_ptr = arrow_schema_addr as *mut FFI_ArrowSchema;
     let c_schema = unsafe { FFI_ArrowSchema::from_raw(c_schema_ptr) };
@@ -384,6 +385,7 @@ fn inner_create_with_ffi_schema<'local>(
         enable_stable_row_ids,
         data_storage_version,
         storage_options_obj,
+        s3_credentials_refresh_offset_seconds_obj,
         reader,
     )
 }
@@ -415,6 +417,7 @@ pub extern "system" fn Java_com_lancedb_lance_Dataset_createWithFfiStream<'local
     enable_stable_row_ids: JObject, // Optional<Boolean>
     data_storage_version: JObject,  // Optional<String>
     storage_options_obj: JObject,   // Map<String, String>
+    s3_credentials_refresh_offset_seconds_obj: JObject, // Optional<Long>
 ) -> JObject<'local> {
     ok_or_throw!(
         env,
@@ -428,7 +431,8 @@ pub extern "system" fn Java_com_lancedb_lance_Dataset_createWithFfiStream<'local
             mode,
             enable_stable_row_ids,
             data_storage_version,
-            storage_options_obj
+            storage_options_obj,
+            s3_credentials_refresh_offset_seconds_obj
         )
     )
 }
@@ -445,6 +449,7 @@ fn inner_create_with_ffi_stream<'local>(
     enable_stable_row_ids: JObject, // Optional<Boolean>
     data_storage_version: JObject,  // Optional<String>
     storage_options_obj: JObject,   // Map<String, String>
+    s3_credentials_refresh_offset_seconds_obj: JObject, // Optional<Long>
 ) -> Result<JObject<'local>> {
     let stream_ptr = arrow_array_stream_addr as *mut FFI_ArrowArrayStream;
     let reader = unsafe { ArrowArrayStreamReader::from_raw(stream_ptr) }?;
@@ -458,6 +463,7 @@ fn inner_create_with_ffi_stream<'local>(
         enable_stable_row_ids,
         data_storage_version,
         storage_options_obj,
+        s3_credentials_refresh_offset_seconds_obj,
         reader,
     )
 }
@@ -473,6 +479,7 @@ fn create_dataset<'local>(
     enable_stable_row_ids: JObject,
     data_storage_version: JObject,
     storage_options_obj: JObject,
+    s3_credentials_refresh_offset_seconds_obj: JObject,
     reader: impl RecordBatchReader + Send + 'static,
 ) -> Result<JObject<'local>> {
     let path_str = path.extract(env)?;
@@ -489,6 +496,7 @@ fn create_dataset<'local>(
         &data_storage_version,
         &storage_options_obj,
         &empty_provider,
+        &s3_credentials_refresh_offset_seconds_obj,
     )?;
 
     let dataset = BlockingDataset::write(reader, &path_str, Some(write_params))?;

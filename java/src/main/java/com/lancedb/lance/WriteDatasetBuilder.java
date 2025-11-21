@@ -39,10 +39,11 @@ import java.util.Optional;
  * URI or through a LanceNamespace. When using a namespace, the table location and storage options
  * are automatically managed with credential vending support.
  *
- * <p>Example usage with URI:
+ * <p>Example usage with URI and reader:
  *
  * <pre>{@code
- * Dataset dataset = Dataset.write(reader)
+ * Dataset dataset = Dataset.write(allocator)
+ *     .reader(myReader)
  *     .uri("s3://bucket/table.lance")
  *     .mode(WriteMode.CREATE)
  *     .execute();
@@ -51,7 +52,8 @@ import java.util.Optional;
  * <p>Example usage with namespace:
  *
  * <pre>{@code
- * Dataset dataset = Dataset.write(reader)
+ * Dataset dataset = Dataset.write(allocator)
+ *     .reader(myReader)
  *     .namespace(myNamespace)
  *     .tableId(Arrays.asList("my_table"))
  *     .mode(WriteMode.CREATE)
@@ -59,8 +61,9 @@ import java.util.Optional;
  * }</pre>
  */
 public class WriteDatasetBuilder {
-  private final ArrowReader reader;
   private BufferAllocator allocator;
+  private ArrowReader reader;
+  private ArrowArrayStream stream;
   private String uri;
   private LanceNamespace namespace;
   private List<String> tableId;
@@ -73,22 +76,52 @@ public class WriteDatasetBuilder {
   private Optional<Long> maxBytesPerFile = Optional.empty();
   private Optional<Boolean> enableStableRowIds = Optional.empty();
   private Optional<WriteParams.LanceFileVersion> dataStorageVersion = Optional.empty();
+  private Optional<Long> s3CredentialsRefreshOffsetSeconds = Optional.empty();
 
   /** Creates a new builder instance. Package-private, use Dataset.write() instead. */
-  WriteDatasetBuilder(ArrowReader reader) {
-    Preconditions.checkNotNull(reader, "reader must not be null");
-    this.reader = reader;
+  WriteDatasetBuilder() {
+    // allocator is optional and can be set via allocator() method
   }
 
   /**
-   * Sets the buffer allocator.
+   * Sets the buffer allocator to use for Arrow operations.
    *
-   * @param allocator Arrow buffer allocator
+   * <p>If not provided, a default RootAllocator will be created automatically.
+   *
+   * @param allocator The buffer allocator
    * @return this builder instance
    */
   public WriteDatasetBuilder allocator(BufferAllocator allocator) {
-    Preconditions.checkNotNull(allocator);
+    Preconditions.checkNotNull(allocator, "allocator must not be null");
     this.allocator = allocator;
+    return this;
+  }
+
+  /**
+   * Sets the ArrowReader containing the data to write.
+   *
+   * <p>Either reader() or stream() or schema() (for empty tables) must be provided.
+   *
+   * @param reader ArrowReader containing the data
+   * @return this builder instance
+   */
+  public WriteDatasetBuilder reader(ArrowReader reader) {
+    Preconditions.checkNotNull(reader);
+    this.reader = reader;
+    return this;
+  }
+
+  /**
+   * Sets the ArrowArrayStream containing the data to write.
+   *
+   * <p>Either reader() or stream() or schema() (for empty tables) must be provided.
+   *
+   * @param stream ArrowArrayStream containing the data
+   * @return this builder instance
+   */
+  public WriteDatasetBuilder stream(ArrowArrayStream stream) {
+    Preconditions.checkNotNull(stream);
+    this.stream = stream;
     return this;
   }
 
@@ -238,6 +271,21 @@ public class WriteDatasetBuilder {
   }
 
   /**
+   * Sets the S3 credentials refresh offset in seconds.
+   *
+   * <p>This parameter controls how long before credential expiration to refresh them. For example,
+   * if credentials expire at T+60s and this is set to 10, credentials will be refreshed at T+50s.
+   *
+   * @param s3CredentialsRefreshOffsetSeconds Refresh offset in seconds
+   * @return this builder instance
+   */
+  public WriteDatasetBuilder s3CredentialsRefreshOffsetSeconds(
+      long s3CredentialsRefreshOffsetSeconds) {
+    this.s3CredentialsRefreshOffsetSeconds = Optional.of(s3CredentialsRefreshOffsetSeconds);
+    return this;
+  }
+
+  /**
    * Executes the write operation and returns the created dataset.
    *
    * <p>If a namespace is configured via namespace()+tableId(), this automatically handles table
@@ -247,6 +295,11 @@ public class WriteDatasetBuilder {
    * @throws IllegalArgumentException if required parameters are missing or invalid
    */
   public Dataset execute() {
+    // Auto-create allocator if not provided
+    if (allocator == null) {
+      allocator = new RootAllocator(Long.MAX_VALUE);
+    }
+
     // Validate that exactly one of uri or namespace is provided
     boolean hasUri = uri != null;
     boolean hasNamespace = namespace != null && tableId != null;
@@ -267,9 +320,20 @@ public class WriteDatasetBuilder {
       }
     }
 
-    // Create allocator if not provided
-    if (allocator == null) {
-      allocator = new RootAllocator(Long.MAX_VALUE);
+    // Validate data source - exactly one of reader, stream, or schema must be provided
+    int dataSourceCount = 0;
+    if (reader != null) dataSourceCount++;
+    if (stream != null) dataSourceCount++;
+    if (schema != null && reader == null && stream == null) dataSourceCount++;
+
+    if (dataSourceCount == 0) {
+      throw new IllegalArgumentException(
+          "Must provide data via reader(), stream(), or schema() (for empty tables).");
+    }
+    if (dataSourceCount > 1) {
+      throw new IllegalArgumentException(
+          "Cannot specify multiple data sources. "
+              + "Use only one of: reader(), stream(), or schema().");
     }
 
     // Handle namespace-based writing
@@ -329,6 +393,8 @@ public class WriteDatasetBuilder {
     maxBytesPerFile.ifPresent(paramsBuilder::withMaxBytesPerFile);
     enableStableRowIds.ifPresent(paramsBuilder::withEnableStableRowIds);
     dataStorageVersion.ifPresent(paramsBuilder::withDataStorageVersion);
+    s3CredentialsRefreshOffsetSeconds.ifPresent(
+        paramsBuilder::withS3CredentialsRefreshOffsetSeconds);
 
     WriteParams params = paramsBuilder.build();
 
@@ -345,6 +411,8 @@ public class WriteDatasetBuilder {
     maxBytesPerFile.ifPresent(paramsBuilder::withMaxBytesPerFile);
     enableStableRowIds.ifPresent(paramsBuilder::withEnableStableRowIds);
     dataStorageVersion.ifPresent(paramsBuilder::withDataStorageVersion);
+    s3CredentialsRefreshOffsetSeconds.ifPresent(
+        paramsBuilder::withS3CredentialsRefreshOffsetSeconds);
 
     WriteParams params = paramsBuilder.build();
 
@@ -352,9 +420,24 @@ public class WriteDatasetBuilder {
   }
 
   private Dataset createDatasetWithStream(String path, WriteParams params) {
-    try (ArrowArrayStream stream = ArrowArrayStream.allocateNew(allocator)) {
-      Data.exportArrayStream(allocator, reader, stream);
+    // If stream is directly provided, use it
+    if (stream != null) {
       return Dataset.create(allocator, stream, path, params);
     }
+
+    // If reader is provided, convert to stream
+    if (reader != null) {
+      try (ArrowArrayStream tempStream = ArrowArrayStream.allocateNew(allocator)) {
+        Data.exportArrayStream(allocator, reader, tempStream);
+        return Dataset.create(allocator, tempStream, path, params);
+      }
+    }
+
+    // If only schema is provided (empty table), use Dataset.create with schema
+    if (schema != null) {
+      return Dataset.create(allocator, path, schema, params);
+    }
+
+    throw new IllegalStateException("No data source provided");
   }
 }

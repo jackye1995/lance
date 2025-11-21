@@ -199,6 +199,27 @@ public class Fragment {
       String rightOn);
 
   /**
+   * Create a new fragment writer builder.
+   *
+   * <p>Example usage:
+   *
+   * <pre>{@code
+   * List<FragmentMetadata> fragments = Fragment.write()
+   *     .datasetUri("s3://bucket/dataset.lance")
+   *     .allocator(allocator)
+   *     .data(vectorSchemaRoot)
+   *     .storageOptions(storageOptions)
+   *     .s3CredentialsRefreshOffsetSeconds(10)
+   *     .execute();
+   * }</pre>
+   *
+   * @return a new fragment writer builder
+   */
+  public static WriteFragmentBuilder write() {
+    return new WriteFragmentBuilder();
+  }
+
+  /**
    * Create a fragment from the given data.
    *
    * @param datasetUri the dataset uri
@@ -206,7 +227,10 @@ public class Fragment {
    * @param root the vector schema root
    * @param params the write params
    * @return the fragment metadata
+   * @deprecated Use {@link #write()} builder instead. For example: {@code Fragment.write()
+   *     .datasetUri(uri).allocator(allocator).data(root).writeParams(params).execute()}
    */
+  @Deprecated
   public static List<FragmentMetadata> create(
       String datasetUri, BufferAllocator allocator, VectorSchemaRoot root, WriteParams params) {
     return create(datasetUri, allocator, root, params, null);
@@ -222,7 +246,11 @@ public class Fragment {
    * @param storageOptionsProvider optional provider for dynamic storage options with automatic
    *     credential refresh
    * @return the fragment metadata
+   * @deprecated Use {@link #write()} builder instead. For example: {@code Fragment.write()
+   *     .datasetUri(uri).allocator(allocator).data(root).writeParams(params)
+   *     .storageOptionsProvider(provider).execute()}
    */
+  @Deprecated
   public static List<FragmentMetadata> create(
       String datasetUri,
       BufferAllocator allocator,
@@ -259,7 +287,10 @@ public class Fragment {
    * @param stream the arrow stream
    * @param params the write params
    * @return the fragment metadata
+   * @deprecated Use {@link #write()} builder instead. For example: {@code Fragment.write()
+   *     .datasetUri(uri).data(stream).writeParams(params).execute()}
    */
+  @Deprecated
   public static List<FragmentMetadata> create(
       String datasetUri, ArrowArrayStream stream, WriteParams params) {
     return create(datasetUri, stream, params, null);
@@ -274,7 +305,11 @@ public class Fragment {
    * @param storageOptionsProvider optional provider for dynamic storage options with automatic
    *     credential refresh
    * @return the fragment metadata
+   * @deprecated Use {@link #write()} builder instead. For example: {@code
+   *     Fragment.write().datasetUri(uri).data(stream).writeParams(params)
+   *     .storageOptionsProvider(provider).execute()}
    */
+  @Deprecated
   public static List<FragmentMetadata> create(
       String datasetUri,
       ArrowArrayStream stream,

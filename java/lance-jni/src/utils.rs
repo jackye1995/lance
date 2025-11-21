@@ -48,6 +48,7 @@ pub fn extract_write_params(
     data_storage_version: &JObject,
     storage_options_obj: &JObject,
     storage_options_provider_obj: &JObject, // Optional<StorageOptionsProvider>
+    s3_credentials_refresh_offset_seconds_obj: &JObject, // Optional<Long>
 ) -> Result<WriteParams> {
     let mut write_params = WriteParams::default();
 
@@ -101,9 +102,16 @@ pub fn extract_write_params(
     let storage_options_provider_arc: Option<Arc<dyn StorageOptionsProvider>> =
         storage_options_provider.map(|v| Arc::new(v) as Arc<dyn StorageOptionsProvider>);
 
+    // Extract s3_credentials_refresh_offset_seconds if present
+    let s3_credentials_refresh_offset = env
+        .get_long_opt(s3_credentials_refresh_offset_seconds_obj)?
+        .map(|v| std::time::Duration::from_secs(v as u64))
+        .unwrap_or_else(|| std::time::Duration::from_secs(10));
+
     write_params.store_params = Some(ObjectStoreParams {
         storage_options: Some(storage_options),
         storage_options_provider: storage_options_provider_arc,
+        s3_credentials_refresh_offset,
         ..Default::default()
     });
     Ok(write_params)

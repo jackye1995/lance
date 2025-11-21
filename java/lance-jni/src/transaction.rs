@@ -679,7 +679,14 @@ fn inner_commit_transaction<'local>(
         .call_method(&java_transaction, "writeParams", "()Ljava/util/Map;", &[])?
         .l()?;
     let write_param_jmap = JMap::from_env(env, &write_param_jobj)?;
-    let write_param = to_rust_map(env, &write_param_jmap)?;
+    let mut write_param = to_rust_map(env, &write_param_jmap)?;
+
+    // Extract s3_credentials_refresh_offset_seconds from write_param
+    let s3_credentials_refresh_offset = write_param
+        .remove("s3_credentials_refresh_offset_seconds")
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(std::time::Duration::from_secs)
+        .unwrap_or_else(|| std::time::Duration::from_secs(10));
 
     // Get the Dataset's storage_options_provider
     let storage_options_provider = {
@@ -692,6 +699,7 @@ fn inner_commit_transaction<'local>(
     let store_params = ObjectStoreParams {
         storage_options: Some(write_param),
         storage_options_provider,
+        s3_credentials_refresh_offset,
         ..Default::default()
     };
 

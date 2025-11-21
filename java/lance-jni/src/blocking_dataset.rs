@@ -56,13 +56,12 @@ pub const NATIVE_DATASET: &str = "nativeDatasetHandle";
 #[derive(Clone)]
 pub struct BlockingDataset {
     pub(crate) inner: Dataset,
-    pub(crate) storage_options_provider: Option<Arc<dyn StorageOptionsProvider>>,
 }
 
 impl BlockingDataset {
     /// Get the storage options provider that was used when opening this dataset
     pub fn get_storage_options_provider(&self) -> Option<Arc<dyn StorageOptionsProvider>> {
-        self.storage_options_provider.clone()
+        self.inner.storage_options_provider()
     }
 
     pub fn drop(uri: &str, storage_options: HashMap<String, String>) -> Result<()> {
@@ -87,15 +86,8 @@ impl BlockingDataset {
         uri: &str,
         params: Option<WriteParams>,
     ) -> Result<Self> {
-        let storage_options_provider = params
-            .as_ref()
-            .and_then(|p| p.store_params.as_ref())
-            .and_then(|sp| sp.storage_options_provider.clone());
         let inner = RT.block_on(Dataset::write(reader, uri, params))?;
-        Ok(Self {
-            inner,
-            storage_options_provider,
-        })
+        Ok(Self { inner })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -148,10 +140,7 @@ impl BlockingDataset {
         }
 
         let inner = RT.block_on(builder.load())?;
-        Ok(Self {
-            inner,
-            storage_options_provider,
-        })
+        Ok(Self { inner })
     }
 
     pub fn commit(
@@ -172,10 +161,7 @@ impl BlockingDataset {
             Default::default(),
             false, // TODO: support enable_v2_manifest_paths
         ))?;
-        Ok(Self {
-            inner,
-            storage_options_provider: None,
-        })
+        Ok(Self { inner })
     }
 
     pub fn latest_version(&self) -> Result<u64> {
@@ -194,18 +180,12 @@ impl BlockingDataset {
 
     pub fn checkout_version(&mut self, version: u64) -> Result<Self> {
         let inner = RT.block_on(self.inner.checkout_version(version))?;
-        Ok(Self {
-            inner,
-            storage_options_provider: self.storage_options_provider.clone(),
-        })
+        Ok(Self { inner })
     }
 
     pub fn checkout_tag(&mut self, tag: &str) -> Result<Self> {
         let inner = RT.block_on(self.inner.checkout_version(tag))?;
-        Ok(Self {
-            inner,
-            storage_options_provider: self.storage_options_provider.clone(),
-        })
+        Ok(Self { inner })
     }
 
     pub fn checkout_latest(&mut self) -> Result<()> {
@@ -239,10 +219,7 @@ impl BlockingDataset {
             None => Ref::from(version),
         };
         let inner = RT.block_on(self.inner.create_branch(branch, reference, None))?;
-        Ok(Self {
-            inner,
-            storage_options_provider: self.storage_options_provider.clone(),
-        })
+        Ok(Self { inner })
     }
 
     pub fn delete_branch(&mut self, branch: &str) -> Result<()> {
@@ -262,10 +239,7 @@ impl BlockingDataset {
             Ref::Version(branch, version)
         };
         let inner = RT.block_on(self.inner.checkout_version(reference))?;
-        Ok(Self {
-            inner,
-            storage_options_provider: self.storage_options_provider.clone(),
-        })
+        Ok(Self { inner })
     }
 
     pub fn create_tag(
@@ -317,7 +291,6 @@ impl BlockingDataset {
         transaction: Transaction,
         store_params: ObjectStoreParams,
     ) -> Result<Self> {
-        let storage_options_provider = store_params.storage_options_provider.clone();
         let new_dataset = RT.block_on(
             CommitBuilder::new(Arc::new(self.clone().inner))
                 .with_store_params(store_params)
@@ -325,7 +298,6 @@ impl BlockingDataset {
         )?;
         Ok(BlockingDataset {
             inner: new_dataset,
-            storage_options_provider,
         })
     }
 
@@ -1340,11 +1312,10 @@ fn inner_shallow_clone<'local>(
         }
     };
 
-    let (new_ds, provider) = {
+    let new_ds = {
         let mut dataset_guard =
             unsafe { env.get_rust_field::<_, _, BlockingDataset>(java_dataset, NATIVE_DATASET) }?;
-        let provider = dataset_guard.storage_options_provider.clone();
-        let new_ds = RT.block_on(
+        RT.block_on(
             dataset_guard.inner.shallow_clone(
                 &target_path_str,
                 reference,
@@ -1357,15 +1328,10 @@ fn inner_shallow_clone<'local>(
                     })
                     .unwrap_or(None),
             ),
-        )?;
-        (new_ds, provider)
+        )?
     };
 
-    BlockingDataset {
-        inner: new_ds,
-        storage_options_provider: provider,
-    }
-    .into_java(env)
+    BlockingDataset { inner: new_ds }.into_java(env)
 }
 
 #[no_mangle]
@@ -2153,16 +2119,12 @@ fn inner_create_branch_on_tag<'local>(
     let new_blocking_dataset = {
         let mut dataset_guard =
             unsafe { env.get_rust_field::<_, _, BlockingDataset>(java_dataset, NATIVE_DATASET) }?;
-        let provider = dataset_guard.storage_options_provider.clone();
         let inner = RT.block_on(dataset_guard.inner.create_branch(
             branch_name.as_str(),
             reference,
             None,
         ))?;
-        BlockingDataset {
-            inner,
-            storage_options_provider: provider,
-        }
+        BlockingDataset { inner }
     };
     new_blocking_dataset.into_java(env)
 }

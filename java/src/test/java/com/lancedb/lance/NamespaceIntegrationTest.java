@@ -15,6 +15,7 @@ package com.lancedb.lance;
 
 import com.lancedb.lance.namespace.DirectoryNamespace;
 import com.lancedb.lance.namespace.LanceNamespace;
+import com.lancedb.lance.namespace.LanceNamespaceStorageOptionsProvider;
 import com.lancedb.lance.namespace.model.CreateEmptyTableRequest;
 import com.lancedb.lance.namespace.model.CreateEmptyTableResponse;
 import com.lancedb.lance.namespace.model.DescribeTableRequest;
@@ -44,10 +45,12 @@ import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
 import software.amazon.awssdk.services.s3.model.S3Object;
 
 import java.net.URI;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -736,6 +739,295 @@ public class NamespaceIntegrationTest {
           // Verify data was appended successfully
           assertEquals(4, dataset.countRows()); // Original 2 + appended 2
         }
+      }
+    }
+  }
+
+  @Test
+  void testWriteDatasetBuilderWithNamespaceOverwrite() throws Exception {
+    try (BufferAllocator allocator = new RootAllocator()) {
+      // Set up storage options
+      Map<String, String> storageOptions = new HashMap<>();
+      storageOptions.put("allow_http", "true");
+      storageOptions.put("aws_access_key_id", ACCESS_KEY);
+      storageOptions.put("aws_secret_access_key", SECRET_KEY);
+      storageOptions.put("aws_endpoint", ENDPOINT_URL);
+      storageOptions.put("aws_region", REGION);
+
+      // Create tracking namespace
+      TrackingNamespace namespace = new TrackingNamespace(BUCKET_NAME, storageOptions, 60);
+      String tableName = UUID.randomUUID().toString();
+
+      Schema schema =
+          new Schema(
+              Arrays.asList(
+                  new Field("a", FieldType.nullable(new ArrowType.Int(32, true)), null),
+                  new Field("b", FieldType.nullable(new ArrowType.Int(32, true)), null)));
+
+      // Create initial dataset with 1 row
+      try (VectorSchemaRoot root = VectorSchemaRoot.create(schema, allocator)) {
+        IntVector aVector = (IntVector) root.getVector("a");
+        IntVector bVector = (IntVector) root.getVector("b");
+
+        aVector.allocateNew(1);
+        bVector.allocateNew(1);
+
+        aVector.set(0, 1);
+        bVector.set(0, 2);
+
+        aVector.setValueCount(1);
+        bVector.setValueCount(1);
+        root.setRowCount(1);
+
+        ArrowReader createReader =
+            new ArrowReader(allocator) {
+              boolean firstRead = true;
+
+              @Override
+              public boolean loadNextBatch() {
+                if (firstRead) {
+                  firstRead = false;
+                  return true;
+                }
+                return false;
+              }
+
+              @Override
+              public long bytesRead() {
+                return 0;
+              }
+
+              @Override
+              protected void closeReadSource() {}
+
+              @Override
+              protected Schema readSchema() {
+                return schema;
+              }
+
+              @Override
+              public VectorSchemaRoot getVectorSchemaRoot() {
+                return root;
+              }
+            };
+
+        try (Dataset dataset =
+            Dataset.write()
+                .allocator(allocator)
+                .reader(createReader)
+                .namespace(namespace)
+                .tableId(Arrays.asList(tableName))
+                .mode(WriteParams.WriteMode.CREATE)
+                .execute()) {
+          assertEquals(1, dataset.countRows());
+        }
+
+        assertEquals(1, namespace.getCreateCallCount(), "createEmptyTable should be called once");
+        assertEquals(0, namespace.getDescribeCallCount(), "describeTable should not be called yet");
+
+        // Now overwrite with 2 rows
+        aVector.allocateNew(2);
+        bVector.allocateNew(2);
+
+        aVector.set(0, 10);
+        bVector.set(0, 20);
+        aVector.set(1, 100);
+        bVector.set(1, 200);
+
+        aVector.setValueCount(2);
+        bVector.setValueCount(2);
+        root.setRowCount(2);
+
+        ArrowReader overwriteReader =
+            new ArrowReader(allocator) {
+              boolean firstRead = true;
+
+              @Override
+              public boolean loadNextBatch() {
+                if (firstRead) {
+                  firstRead = false;
+                  return true;
+                }
+                return false;
+              }
+
+              @Override
+              public long bytesRead() {
+                return 0;
+              }
+
+              @Override
+              protected void closeReadSource() {}
+
+              @Override
+              protected Schema readSchema() {
+                return schema;
+              }
+
+              @Override
+              public VectorSchemaRoot getVectorSchemaRoot() {
+                return root;
+              }
+            };
+
+        try (Dataset dataset =
+            Dataset.write()
+                .allocator(allocator)
+                .reader(overwriteReader)
+                .namespace(namespace)
+                .tableId(Arrays.asList(tableName))
+                .mode(WriteParams.WriteMode.OVERWRITE)
+                .execute()) {
+
+          // Verify describeTable was called for overwrite
+          assertEquals(1, namespace.getCreateCallCount(), "createEmptyTable should still be 1");
+          int describeCountAfterOverwrite = namespace.getDescribeCallCount();
+          assertEquals(
+              1, describeCountAfterOverwrite, "describeTable should be called once for overwrite");
+
+          // Verify data was overwritten successfully
+          assertEquals(2, dataset.countRows());
+          assertEquals(
+              2, dataset.listVersions().size()); // Version 1 (create) + Version 2 (overwrite)
+        }
+
+        // Verify we can open and read the dataset through namespace
+        try (Dataset ds =
+            Dataset.open()
+                .allocator(allocator)
+                .namespace(namespace)
+                .tableId(Arrays.asList(tableName))
+                .build()) {
+          assertEquals(2, ds.countRows(), "Should have 2 rows after overwrite");
+          assertEquals(2, ds.listVersions().size(), "Should have 2 versions");
+        }
+      }
+    }
+  }
+
+  @Test
+  void testDistributedWriteWithNamespace() throws Exception {
+    try (BufferAllocator allocator = new RootAllocator()) {
+      // Set up storage options
+      Map<String, String> storageOptions = new HashMap<>();
+      storageOptions.put("allow_http", "true");
+      storageOptions.put("aws_access_key_id", ACCESS_KEY);
+      storageOptions.put("aws_secret_access_key", SECRET_KEY);
+      storageOptions.put("aws_endpoint", ENDPOINT_URL);
+      storageOptions.put("aws_region", REGION);
+
+      // Create tracking namespace
+      TrackingNamespace namespace = new TrackingNamespace(BUCKET_NAME, storageOptions, 60);
+      String tableName = UUID.randomUUID().toString();
+
+      Schema schema =
+          new Schema(
+              Arrays.asList(
+                  new Field("a", FieldType.nullable(new ArrowType.Int(32, true)), null),
+                  new Field("b", FieldType.nullable(new ArrowType.Int(32, true)), null)));
+
+      // Step 1: Create empty table via namespace
+      CreateEmptyTableRequest request = new CreateEmptyTableRequest();
+      request.setId(Arrays.asList(tableName));
+      CreateEmptyTableResponse response = namespace.createEmptyTable(request);
+
+      assertEquals(1, namespace.getCreateCallCount(), "createEmptyTable should be called once");
+      assertEquals(0, namespace.getDescribeCallCount(), "describeTable should not be called yet");
+
+      String tableUri = response.getLocation();
+      Map<String, String> namespaceStorageOptions = response.getStorageOptions();
+
+      // Merge storage options
+      Map<String, String> mergedOptions = new HashMap<>(storageOptions);
+      if (namespaceStorageOptions != null) {
+        mergedOptions.putAll(namespaceStorageOptions);
+      }
+
+      // Create storage options provider
+      LanceNamespaceStorageOptionsProvider storageOptionsProvider =
+          new LanceNamespaceStorageOptionsProvider(namespace, Arrays.asList(tableName));
+
+      WriteParams writeParams = new WriteParams.Builder().withStorageOptions(mergedOptions).build();
+
+      // Step 2: Write multiple fragments in parallel (simulated)
+      List<FragmentMetadata> allFragments = new ArrayList<>();
+
+      // Fragment 1: 2 rows
+      try (VectorSchemaRoot root = VectorSchemaRoot.create(schema, allocator)) {
+        IntVector aVector = (IntVector) root.getVector("a");
+        IntVector bVector = (IntVector) root.getVector("b");
+
+        aVector.allocateNew(2);
+        bVector.allocateNew(2);
+        aVector.set(0, 1);
+        bVector.set(0, 2);
+        aVector.set(1, 3);
+        bVector.set(1, 4);
+        aVector.setValueCount(2);
+        bVector.setValueCount(2);
+        root.setRowCount(2);
+
+        List<FragmentMetadata> fragment1 =
+            Fragment.create(tableUri, allocator, root, writeParams, storageOptionsProvider);
+        allFragments.addAll(fragment1);
+      }
+
+      // Fragment 2: 2 rows
+      try (VectorSchemaRoot root = VectorSchemaRoot.create(schema, allocator)) {
+        IntVector aVector = (IntVector) root.getVector("a");
+        IntVector bVector = (IntVector) root.getVector("b");
+
+        aVector.allocateNew(2);
+        bVector.allocateNew(2);
+        aVector.set(0, 10);
+        bVector.set(0, 20);
+        aVector.set(1, 30);
+        bVector.set(1, 40);
+        aVector.setValueCount(2);
+        bVector.setValueCount(2);
+        root.setRowCount(2);
+
+        List<FragmentMetadata> fragment2 =
+            Fragment.create(tableUri, allocator, root, writeParams, storageOptionsProvider);
+        allFragments.addAll(fragment2);
+      }
+
+      // Fragment 3: 1 row
+      try (VectorSchemaRoot root = VectorSchemaRoot.create(schema, allocator)) {
+        IntVector aVector = (IntVector) root.getVector("a");
+        IntVector bVector = (IntVector) root.getVector("b");
+
+        aVector.allocateNew(1);
+        bVector.allocateNew(1);
+        aVector.set(0, 100);
+        bVector.set(0, 200);
+        aVector.setValueCount(1);
+        bVector.setValueCount(1);
+        root.setRowCount(1);
+
+        List<FragmentMetadata> fragment3 =
+            Fragment.create(tableUri, allocator, root, writeParams, storageOptionsProvider);
+        allFragments.addAll(fragment3);
+      }
+
+      // Step 3: Commit all fragments as one operation
+      FragmentOperation.Overwrite overwriteOp =
+          new FragmentOperation.Overwrite(allFragments, schema);
+
+      try (Dataset dataset =
+          Dataset.commit(allocator, tableUri, overwriteOp, Optional.empty(), mergedOptions)) {
+        assertEquals(5, dataset.countRows(), "Should have 5 total rows from all fragments");
+        assertEquals(1, dataset.listVersions().size(), "Should have 1 version after commit");
+      }
+
+      // Step 4: Open dataset through namespace and verify
+      try (Dataset dsFromNamespace =
+          Dataset.open()
+              .allocator(allocator)
+              .namespace(namespace)
+              .tableId(Arrays.asList(tableName))
+              .build()) {
+        assertEquals(5, dsFromNamespace.countRows(), "Should read 5 rows through namespace");
       }
     }
   }

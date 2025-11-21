@@ -13,7 +13,9 @@
  */
 package com.lancedb.lance;
 
+import com.lancedb.lance.io.StorageOptionsProvider;
 import com.lancedb.lance.namespace.LanceNamespace;
+import com.lancedb.lance.namespace.LanceNamespaceStorageOptionsProvider;
 import com.lancedb.lance.namespace.model.CreateEmptyTableRequest;
 import com.lancedb.lance.namespace.model.CreateEmptyTableResponse;
 import com.lancedb.lance.namespace.model.DescribeTableRequest;
@@ -398,8 +400,14 @@ public class WriteDatasetBuilder {
 
     WriteParams params = paramsBuilder.build();
 
+    // Create storage options provider for credential refresh during long-running writes
+    StorageOptionsProvider storageOptionsProvider =
+        ignoreNamespaceStorageOptions
+            ? null
+            : new LanceNamespaceStorageOptionsProvider(namespace, tableId);
+
     // Use Dataset.create() which handles CREATE/APPEND/OVERWRITE modes
-    return createDatasetWithStream(tableUri, params);
+    return createDatasetWithStream(tableUri, params, storageOptionsProvider);
   }
 
   private Dataset executeWithUri() {
@@ -416,20 +424,21 @@ public class WriteDatasetBuilder {
 
     WriteParams params = paramsBuilder.build();
 
-    return createDatasetWithStream(uri, params);
+    return createDatasetWithStream(uri, params, null);
   }
 
-  private Dataset createDatasetWithStream(String path, WriteParams params) {
+  private Dataset createDatasetWithStream(
+      String path, WriteParams params, StorageOptionsProvider storageOptionsProvider) {
     // If stream is directly provided, use it
     if (stream != null) {
-      return Dataset.create(allocator, stream, path, params);
+      return Dataset.create(allocator, stream, path, params, storageOptionsProvider);
     }
 
     // If reader is provided, convert to stream
     if (reader != null) {
       try (ArrowArrayStream tempStream = ArrowArrayStream.allocateNew(allocator)) {
         Data.exportArrayStream(allocator, reader, tempStream);
-        return Dataset.create(allocator, tempStream, path, params);
+        return Dataset.create(allocator, tempStream, path, params, storageOptionsProvider);
       }
     }
 

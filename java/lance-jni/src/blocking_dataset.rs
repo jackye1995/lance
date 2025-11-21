@@ -385,6 +385,7 @@ fn inner_create_with_ffi_schema<'local>(
         enable_stable_row_ids,
         data_storage_version,
         storage_options_obj,
+        JObject::null(), // No provider for schema-only creation
         s3_credentials_refresh_offset_seconds_obj,
         reader,
     )
@@ -432,6 +433,42 @@ pub extern "system" fn Java_com_lancedb_lance_Dataset_createWithFfiStream<'local
             enable_stable_row_ids,
             data_storage_version,
             storage_options_obj,
+            JObject::null(),
+            s3_credentials_refresh_offset_seconds_obj
+        )
+    )
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_lancedb_lance_Dataset_createWithFfiStreamAndProvider<'local>(
+    mut env: JNIEnv<'local>,
+    _obj: JObject,
+    arrow_array_stream_addr: jlong,
+    path: JString,
+    max_rows_per_file: JObject,            // Optional<Integer>
+    max_rows_per_group: JObject,           // Optional<Integer>
+    max_bytes_per_file: JObject,           // Optional<Long>
+    mode: JObject,                         // Optional<String>
+    enable_stable_row_ids: JObject,        // Optional<Boolean>
+    data_storage_version: JObject,         // Optional<String>
+    storage_options_obj: JObject,          // Map<String, String>
+    storage_options_provider_obj: JObject, // Optional<StorageOptionsProvider>
+    s3_credentials_refresh_offset_seconds_obj: JObject, // Optional<Long>
+) -> JObject<'local> {
+    ok_or_throw!(
+        env,
+        inner_create_with_ffi_stream(
+            &mut env,
+            arrow_array_stream_addr,
+            path,
+            max_rows_per_file,
+            max_rows_per_group,
+            max_bytes_per_file,
+            mode,
+            enable_stable_row_ids,
+            data_storage_version,
+            storage_options_obj,
+            storage_options_provider_obj,
             s3_credentials_refresh_offset_seconds_obj
         )
     )
@@ -442,13 +479,14 @@ fn inner_create_with_ffi_stream<'local>(
     env: &mut JNIEnv<'local>,
     arrow_array_stream_addr: jlong,
     path: JString,
-    max_rows_per_file: JObject,     // Optional<Integer>
-    max_rows_per_group: JObject,    // Optional<Integer>
-    max_bytes_per_file: JObject,    // Optional<Long>
-    mode: JObject,                  // Optional<String>
-    enable_stable_row_ids: JObject, // Optional<Boolean>
-    data_storage_version: JObject,  // Optional<String>
-    storage_options_obj: JObject,   // Map<String, String>
+    max_rows_per_file: JObject,            // Optional<Integer>
+    max_rows_per_group: JObject,           // Optional<Integer>
+    max_bytes_per_file: JObject,           // Optional<Long>
+    mode: JObject,                         // Optional<String>
+    enable_stable_row_ids: JObject,        // Optional<Boolean>
+    data_storage_version: JObject,         // Optional<String>
+    storage_options_obj: JObject,          // Map<String, String>
+    storage_options_provider_obj: JObject, // Optional<StorageOptionsProvider>
     s3_credentials_refresh_offset_seconds_obj: JObject, // Optional<Long>
 ) -> Result<JObject<'local>> {
     let stream_ptr = arrow_array_stream_addr as *mut FFI_ArrowArrayStream;
@@ -463,6 +501,7 @@ fn inner_create_with_ffi_stream<'local>(
         enable_stable_row_ids,
         data_storage_version,
         storage_options_obj,
+        storage_options_provider_obj,
         s3_credentials_refresh_offset_seconds_obj,
         reader,
     )
@@ -479,13 +518,12 @@ fn create_dataset<'local>(
     enable_stable_row_ids: JObject,
     data_storage_version: JObject,
     storage_options_obj: JObject,
+    storage_options_provider_obj: JObject, // Optional<StorageOptionsProvider>
     s3_credentials_refresh_offset_seconds_obj: JObject,
     reader: impl RecordBatchReader + Send + 'static,
 ) -> Result<JObject<'local>> {
     let path_str = path.extract(env)?;
 
-    // Dataset.create() doesn't support storage_options_provider yet, pass empty Optional
-    let empty_provider = JObject::null();
     let write_params = extract_write_params(
         env,
         &max_rows_per_file,
@@ -495,7 +533,7 @@ fn create_dataset<'local>(
         &enable_stable_row_ids,
         &data_storage_version,
         &storage_options_obj,
-        &empty_provider,
+        &storage_options_provider_obj,
         &s3_credentials_refresh_offset_seconds_obj,
     )?;
 

@@ -20,6 +20,7 @@ import com.lancedb.lance.namespace.model.CreateEmptyTableRequest;
 import com.lancedb.lance.namespace.model.CreateEmptyTableResponse;
 import com.lancedb.lance.namespace.model.DescribeTableRequest;
 import com.lancedb.lance.namespace.model.DescribeTableResponse;
+import com.lancedb.lance.operation.Append;
 
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
@@ -1028,6 +1029,250 @@ public class NamespaceIntegrationTest {
               .tableId(Arrays.asList(tableName))
               .build()) {
         assertEquals(5, dsFromNamespace.countRows(), "Should read 5 rows through namespace");
+      }
+    }
+  }
+
+  @Test
+  void testFragmentCreateWithStorageOptionsProvider() throws Exception {
+    try (BufferAllocator allocator = new RootAllocator()) {
+      // Set up storage options
+      Map<String, String> storageOptions = new HashMap<>();
+      storageOptions.put("allow_http", "true");
+      storageOptions.put("aws_access_key_id", ACCESS_KEY);
+      storageOptions.put("aws_secret_access_key", SECRET_KEY);
+      storageOptions.put("aws_endpoint", ENDPOINT_URL);
+      storageOptions.put("aws_region", REGION);
+
+      // Create tracking namespace with 60-second expiration
+      TrackingNamespace namespace = new TrackingNamespace(BUCKET_NAME, storageOptions, 60);
+      String tableName = UUID.randomUUID().toString();
+
+      Schema schema =
+          new Schema(
+              Arrays.asList(
+                  new Field("id", FieldType.nullable(new ArrowType.Int(32, true)), null),
+                  new Field("value", FieldType.nullable(new ArrowType.Int(32, true)), null)));
+
+      // Create empty table via namespace
+      CreateEmptyTableRequest request = new CreateEmptyTableRequest();
+      request.setId(Arrays.asList(tableName));
+      CreateEmptyTableResponse response = namespace.createEmptyTable(request);
+
+      String tableUri = response.getLocation();
+      Map<String, String> namespaceStorageOptions = response.getStorageOptions();
+
+      // Merge storage options
+      Map<String, String> mergedOptions = new HashMap<>(storageOptions);
+      if (namespaceStorageOptions != null) {
+        mergedOptions.putAll(namespaceStorageOptions);
+      }
+
+      // Create storage options provider
+      LanceNamespaceStorageOptionsProvider provider =
+          new LanceNamespaceStorageOptionsProvider(namespace, Arrays.asList(tableName));
+
+      WriteParams writeParams = new WriteParams.Builder().withStorageOptions(mergedOptions).build();
+
+      try (VectorSchemaRoot root = VectorSchemaRoot.create(schema, allocator)) {
+        IntVector idVector = (IntVector) root.getVector("id");
+        IntVector valueVector = (IntVector) root.getVector("value");
+
+        // Write first fragment
+        idVector.allocateNew(3);
+        valueVector.allocateNew(3);
+
+        idVector.set(0, 1);
+        valueVector.set(0, 100);
+        idVector.set(1, 2);
+        valueVector.set(1, 200);
+        idVector.set(2, 3);
+        valueVector.set(2, 300);
+
+        idVector.setValueCount(3);
+        valueVector.setValueCount(3);
+        root.setRowCount(3);
+
+        int describeCountBefore = namespace.getDescribeCallCount();
+
+        // Create fragment with StorageOptionsProvider
+        List<FragmentMetadata> fragments1 =
+            Fragment.create(tableUri, allocator, root, writeParams, provider);
+
+        assertEquals(1, fragments1.size());
+
+        // Verify provider was called (describeTable is called)
+        int describeCountAfter1 = namespace.getDescribeCallCount();
+        assertEquals(
+            1,
+            describeCountAfter1 - describeCountBefore,
+            "Provider should call describeTable during fragment creation");
+
+        // Write second fragment with different data
+        idVector.set(0, 4);
+        valueVector.set(0, 400);
+        idVector.set(1, 5);
+        valueVector.set(1, 500);
+        idVector.set(2, 6);
+        valueVector.set(2, 600);
+        root.setRowCount(3);
+
+        // Create another fragment with the same provider
+        List<FragmentMetadata> fragments2 =
+            Fragment.create(tableUri, allocator, root, writeParams, provider);
+
+        assertEquals(1, fragments2.size());
+
+        int describeCountAfter2 = namespace.getDescribeCallCount();
+        assertEquals(
+            2,
+            describeCountAfter2 - describeCountBefore,
+            "Provider should call describeTable again for second fragment");
+
+        // Commit both fragments to the dataset
+        FragmentOperation.Append appendOp = new FragmentOperation.Append(fragments1);
+        try (Dataset updatedDataset =
+            Dataset.commit(allocator, tableUri, appendOp, Optional.empty(), mergedOptions)) {
+          assertEquals(1, updatedDataset.version());
+          assertEquals(3, updatedDataset.countRows());
+
+          // Append second fragment
+          FragmentOperation.Append appendOp2 = new FragmentOperation.Append(fragments2);
+          try (Dataset finalDataset =
+              Dataset.commit(
+                  allocator, tableUri, appendOp2, Optional.of(1L), mergedOptions)) {
+            assertEquals(2, finalDataset.version());
+            assertEquals(6, finalDataset.countRows());
+          }
+        }
+      }
+    }
+  }
+
+  @Test
+  void testTransactionCommitWithStorageOptionsProvider() throws Exception {
+    try (BufferAllocator allocator = new RootAllocator()) {
+      // Set up storage options
+      Map<String, String> storageOptions = new HashMap<>();
+      storageOptions.put("allow_http", "true");
+      storageOptions.put("aws_access_key_id", ACCESS_KEY);
+      storageOptions.put("aws_secret_access_key", SECRET_KEY);
+      storageOptions.put("aws_endpoint", ENDPOINT_URL);
+      storageOptions.put("aws_region", REGION);
+
+      // Create tracking namespace
+      TrackingNamespace namespace = new TrackingNamespace(BUCKET_NAME, storageOptions, 60);
+      String tableName = UUID.randomUUID().toString();
+
+      Schema schema =
+          new Schema(
+              Arrays.asList(
+                  new Field("id", FieldType.nullable(new ArrowType.Int(32, true)), null),
+                  new Field("name", FieldType.nullable(new ArrowType.Utf8()), null)));
+
+      // Create empty table via namespace
+      CreateEmptyTableRequest request = new CreateEmptyTableRequest();
+      request.setId(Arrays.asList(tableName));
+      CreateEmptyTableResponse response = namespace.createEmptyTable(request);
+
+      String tableUri = response.getLocation();
+      Map<String, String> namespaceStorageOptions = response.getStorageOptions();
+
+      // Merge storage options
+      Map<String, String> mergedOptions = new HashMap<>(storageOptions);
+      if (namespaceStorageOptions != null) {
+        mergedOptions.putAll(namespaceStorageOptions);
+      }
+
+      // Create storage options provider
+      LanceNamespaceStorageOptionsProvider provider =
+          new LanceNamespaceStorageOptionsProvider(namespace, Arrays.asList(tableName));
+
+      // First, write some initial data using Fragment.create and commit
+      WriteParams writeParams = new WriteParams.Builder().withStorageOptions(mergedOptions).build();
+
+      List<FragmentMetadata> initialFragments;
+      try (VectorSchemaRoot root = VectorSchemaRoot.create(schema, allocator)) {
+        IntVector idVector = (IntVector) root.getVector("id");
+        org.apache.arrow.vector.VarCharVector nameVector =
+            (org.apache.arrow.vector.VarCharVector) root.getVector("name");
+
+        idVector.allocateNew(2);
+        nameVector.allocateNew(2);
+
+        idVector.set(0, 1);
+        nameVector.setSafe(0, "Alice".getBytes());
+        idVector.set(1, 2);
+        nameVector.setSafe(1, "Bob".getBytes());
+
+        idVector.setValueCount(2);
+        nameVector.setValueCount(2);
+        root.setRowCount(2);
+
+        initialFragments = Fragment.create(tableUri, allocator, root, writeParams, provider);
+      }
+
+      // Commit initial fragments
+      FragmentOperation.Overwrite overwriteOp =
+          new FragmentOperation.Overwrite(initialFragments, schema);
+      try (Dataset dataset =
+          Dataset.commit(allocator, tableUri, overwriteOp, Optional.empty(), mergedOptions)) {
+        assertEquals(1, dataset.version());
+        assertEquals(2, dataset.countRows());
+      }
+
+      // Now test Transaction.commit with provider
+      // Open dataset with provider
+      ReadOptions readOptions =
+          new ReadOptions.Builder()
+              .setStorageOptions(storageOptions)
+              .setStorageOptionsProvider(provider)
+              .build();
+
+      try (Dataset datasetWithProvider = Dataset.open(allocator, tableUri, readOptions)) {
+        // Create more fragments to append
+        List<FragmentMetadata> newFragments;
+        try (VectorSchemaRoot root = VectorSchemaRoot.create(schema, allocator)) {
+          IntVector idVector = (IntVector) root.getVector("id");
+          org.apache.arrow.vector.VarCharVector nameVector =
+              (org.apache.arrow.vector.VarCharVector) root.getVector("name");
+
+          idVector.allocateNew(2);
+          nameVector.allocateNew(2);
+
+          idVector.set(0, 3);
+          nameVector.setSafe(0, "Charlie".getBytes());
+          idVector.set(1, 4);
+          nameVector.setSafe(1, "Diana".getBytes());
+
+          idVector.setValueCount(2);
+          nameVector.setValueCount(2);
+          root.setRowCount(2);
+
+          newFragments = Fragment.create(tableUri, allocator, root, writeParams, provider);
+        }
+
+        int describeCountBefore = namespace.getDescribeCallCount();
+
+        // Create and commit transaction
+        Append appendOp = Append.builder().fragments(newFragments).build();
+        Transaction transaction =
+            new Transaction.Builder(datasetWithProvider)
+                .readVersion(datasetWithProvider.version())
+                .operation(appendOp)
+                .build();
+
+        try (Dataset committedDataset = transaction.commit()) {
+          assertEquals(2, committedDataset.version());
+          assertEquals(4, committedDataset.countRows());
+
+          // Verify provider was called during commit
+          int describeCountAfter = namespace.getDescribeCallCount();
+          assertEquals(
+              1,
+              describeCountAfter - describeCountBefore,
+              "Provider should call describeTable during transaction commit");
+        }
       }
     }
   }

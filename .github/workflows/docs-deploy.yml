@@ -92,9 +92,9 @@ jobs:
           nav:
             - index.md
             - Lance: lance
-            - Ray: ray.md
-            - Spark: spark.md
-            - Namespace: namespace.md
+            - Lance Namespace: namespace.md
+            - Lance Ray: ray.md
+            - Lance Spark: spark.md
           EOF
 
           # Create .pages for lance subfolder

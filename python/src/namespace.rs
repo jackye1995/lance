@@ -15,6 +15,12 @@ use lance_namespace_impls::{ConnectBuilder, RestAdapter, RestAdapterConfig};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 use pythonize::{depythonize, pythonize};
+#[cfg(feature = "rest-adapter")]
+use tokio::sync::Notify;
+#[cfg(feature = "rest-adapter")]
+use tokio::task::JoinHandle;
+#[cfg(feature = "rest-adapter")]
+use tokio::time::{timeout, Duration};
 
 use crate::error::PythonErrorExt;
 use crate::session::Session;
@@ -356,6 +362,8 @@ impl PyRestNamespace {
 pub struct PyRestAdapter {
     backend: Arc<dyn lance_namespace::LanceNamespace>,
     config: RestAdapterConfig,
+    shutdown_signal: Arc<Notify>,
+    server_handle: Option<JoinHandle<lance_core::Result<()>>>,
 }
 
 #[cfg(feature = "rest-adapter")]
@@ -394,16 +402,24 @@ impl PyRestAdapter {
 
         let config = RestAdapterConfig { host, port };
 
-        Ok(Self { backend, config })
+        Ok(Self {
+            backend,
+            config,
+            shutdown_signal: Arc::new(Notify::new()),
+            server_handle: None,
+        })
     }
 
     /// Start the REST server in the background
     fn serve(&mut self, py: Python) -> PyResult<()> {
         let adapter = RestAdapter::new(self.backend.clone(), self.config.clone());
+        let shutdown_signal = self.shutdown_signal.clone();
 
-        crate::rt().spawn_background(Some(py), async move {
-            let _ = adapter.serve().await;
+        let handle = crate::rt().runtime.spawn(async move {
+            adapter.serve_with_shutdown(shutdown_signal).await
         });
+
+        self.server_handle = Some(handle);
 
         // Give server time to start
         py.allow_threads(|| {
@@ -413,9 +429,39 @@ impl PyRestAdapter {
         Ok(())
     }
 
-    /// Stop the REST server
-    fn stop(&mut self) {
-        // Server will be stopped when dropped
+    /// Stop the REST server gracefully
+    fn stop(&mut self, py: Python) -> PyResult<()> {
+        // Trigger shutdown
+        self.shutdown_signal.notify_one();
+
+        // Wait for server to complete with 5 second timeout
+        if let Some(handle) = self.server_handle.take() {
+            py.allow_threads(|| {
+                let shutdown_future = async {
+                    match timeout(Duration::from_secs(5), handle).await {
+                        Ok(Ok(Ok(()))) => Ok::<(), lance_core::Error>(()),
+                        Ok(Ok(Err(e))) => {
+                            eprintln!("Server error during shutdown: {}", e);
+                            Ok(())
+                        }
+                        Ok(Err(e)) => {
+                            eprintln!("Server task panicked: {}", e);
+                            Ok(())
+                        }
+                        Err(_) => {
+                            // Timeout - this is okay, just log it
+                            eprintln!("Warning: Server shutdown timed out after 5 seconds");
+                            Ok(())
+                        }
+                    }
+                };
+
+                // Use the crate runtime to block on shutdown without py
+                crate::rt().block_on(None, shutdown_future)
+            })?;
+        }
+
+        Ok(())
     }
 
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
@@ -424,11 +470,12 @@ impl PyRestAdapter {
 
     fn __exit__(
         mut slf: PyRefMut<'_, Self>,
+        py: Python,
         _exc_type: &Bound<'_, PyAny>,
         _exc_value: &Bound<'_, PyAny>,
         _traceback: &Bound<'_, PyAny>,
     ) -> PyResult<bool> {
-        slf.stop();
+        slf.stop(py)?;
         Ok(false)
     }
 

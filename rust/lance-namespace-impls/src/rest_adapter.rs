@@ -18,6 +18,7 @@ use axum::{
     Json, Router,
 };
 use serde::Deserialize;
+use tokio::sync::Notify;
 use tower_http::trace::TraceLayer;
 
 use lance_core::{Error, Result};
@@ -87,6 +88,31 @@ impl RestAdapter {
             })?;
 
         axum::serve(listener, self.router())
+            .await
+            .map_err(|e| Error::IO {
+                source: Box::new(e),
+                location: snafu::location!(),
+            })?;
+
+        Ok(())
+    }
+
+    /// Start the REST server with graceful shutdown support
+    pub async fn serve_with_shutdown(self, shutdown_signal: Arc<Notify>) -> Result<()> {
+        let addr = format!("{}:{}", self.config.host, self.config.port);
+        let listener = tokio::net::TcpListener::bind(&addr)
+            .await
+            .map_err(|e| Error::IO {
+                source: Box::new(e),
+                location: snafu::location!(),
+            })?;
+
+        let shutdown_future = async move {
+            shutdown_signal.notified().await;
+        };
+
+        axum::serve(listener, self.router())
+            .with_graceful_shutdown(shutdown_future)
             .await
             .map_err(|e| Error::IO {
                 source: Box::new(e),

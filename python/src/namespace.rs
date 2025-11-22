@@ -415,9 +415,9 @@ impl PyRestAdapter {
         let adapter = RestAdapter::new(self.backend.clone(), self.config.clone());
         let shutdown_signal = self.shutdown_signal.clone();
 
-        let handle = crate::rt().runtime.spawn(async move {
-            adapter.serve_with_shutdown(shutdown_signal).await
-        });
+        let handle = crate::rt()
+            .runtime
+            .spawn(async move { adapter.serve_with_shutdown(shutdown_signal).await });
 
         self.server_handle = Some(handle);
 

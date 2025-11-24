@@ -454,33 +454,14 @@ class LanceNamespaceStorageOptionsProvider(StorageOptionsProvider):
 
         Returns
         -------
-        Dict[str, str]
+        Dict[str, str] or None
             Flat dictionary of string key-value pairs containing storage options
-            and expires_at_millis
-
-        Raises
-        ------
-        RuntimeError
-            If the namespace doesn't return storage options or expiration time
+            and expires_at_millis. Returns None if the namespace does not
+            provide storage options.
         """
         request = DescribeTableRequest(id=self._table_id, version=None)
         response = self._namespace.describe_table(request)
-        storage_options = response.storage_options
-        if storage_options is None:
-            raise RuntimeError(
-                "Namespace did not return storage_options. "
-                "Ensure the namespace supports storage options providing."
-            )
-
-        # Verify expires_at_millis is present
-        if "expires_at_millis" not in storage_options:
-            raise RuntimeError(
-                "Namespace storage_options missing 'expires_at_millis'. "
-                "Storage options refresh will not work properly."
-            )
-
-        # Return the storage_options directly - it's already a flat Map<String, String>
-        return storage_options
+        return response.storage_options
 
     def provider_id(self) -> str:
         """Return a human-readable unique identifier for this provider instance.

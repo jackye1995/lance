@@ -77,8 +77,8 @@ public class LanceNamespaceStorageOptionsProvider implements StorageOptionsProvi
    * <p>This calls namespace.describeTable() to get the latest credentials and their expiration
    * time.
    *
-   * @return Flat map of string key-value pairs containing credentials and expires_at_millis
-   * @throws RuntimeException if the namespace doesn't return storage credentials or expiration time
+   * @return Flat map of string key-value pairs containing credentials and expires_at_millis.
+   *     Returns null if the namespace does not provide storage options.
    */
   @Override
   public Map<String, String> fetchStorageOptions() {
@@ -89,23 +89,7 @@ public class LanceNamespaceStorageOptionsProvider implements StorageOptionsProvi
     // Call namespace to describe the table and get credentials
     DescribeTableResponse response = namespace.describeTable(request);
 
-    // Extract storage options - should already be a flat Map<String, String>
-    Map<String, String> storageOptions = response.getStorageOptions();
-    if (storageOptions == null || storageOptions.isEmpty()) {
-      throw new RuntimeException(
-          "Namespace did not return storage_options. "
-              + "Ensure the namespace supports credential vending.");
-    }
-
-    // Verify expires_at_millis is present
-    if (!storageOptions.containsKey("expires_at_millis")) {
-      throw new RuntimeException(
-          "Namespace storage_options missing 'expires_at_millis'. "
-              + "Credential refresh will not work properly.");
-    }
-
-    // Return storage_options directly - it's already a flat Map<String, String>
-    return storageOptions;
+    return response.getStorageOptions();
   }
 
   /**

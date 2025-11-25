@@ -8,7 +8,7 @@ import os
 import warnings
 from typing import TYPE_CHECKING, Dict, List, Optional, Union
 
-from lance_namespace import DescribeTableRequest, LanceNamespace
+from lance_namespace import DescribeTableRequest
 
 from . import io, log
 from .blob import BlobColumn, BlobFile
@@ -34,7 +34,7 @@ from .lance import (
     bytes_read_counter,
     iops_counter,
 )
-from .namespace import LanceNamespaceStorageOptionsProvider
+from .namespace import LanceNamespace, LanceNamespaceStorageOptionsProvider
 from .schema import json_to_schema, schema_to_json
 from .util import sanitize_ts
 

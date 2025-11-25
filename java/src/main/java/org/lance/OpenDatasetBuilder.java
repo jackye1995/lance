@@ -13,9 +13,9 @@
  */
 package org.lance;
 
+import org.lance.namespace.LanceNamespace;
 import org.lance.namespace.LanceNamespaceStorageOptionsProvider;
 
-import com.lancedb.lance.namespace.LanceNamespace;
 import com.lancedb.lance.namespace.model.DescribeTableRequest;
 import com.lancedb.lance.namespace.model.DescribeTableResponse;
 import org.apache.arrow.memory.BufferAllocator;

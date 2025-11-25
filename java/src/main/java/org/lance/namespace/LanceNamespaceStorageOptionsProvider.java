@@ -57,7 +57,7 @@ import java.util.Map;
  */
 public class LanceNamespaceStorageOptionsProvider implements StorageOptionsProvider {
 
-  private final com.lancedb.lance.namespace.LanceNamespace namespace;
+  private final LanceNamespace namespace;
   private final List<String> tableId;
 
   /**
@@ -66,8 +66,7 @@ public class LanceNamespaceStorageOptionsProvider implements StorageOptionsProvi
    * @param namespace The namespace instance to fetch storage options from
    * @param tableId The table identifier (e.g., ["workspace", "table_name"])
    */
-  public LanceNamespaceStorageOptionsProvider(
-      com.lancedb.lance.namespace.LanceNamespace namespace, List<String> tableId) {
+  public LanceNamespaceStorageOptionsProvider(LanceNamespace namespace, List<String> tableId) {
     this.namespace = namespace;
     this.tableId = tableId;
   }

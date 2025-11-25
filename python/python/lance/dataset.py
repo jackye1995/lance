@@ -71,8 +71,9 @@ from .udf import batch_udf as batch_udf
 from .util import _target_partition_size_to_num_partitions, td_to_micros
 
 if TYPE_CHECKING:
-    from lance_namespace import LanceNamespace
     from pyarrow._compute import Expression
+
+    from lance.namespace import LanceNamespace
 
     from .commit import CommitLock
     from .io import StorageOptionsProvider

@@ -14,10 +14,10 @@
 package org.lance;
 
 import org.lance.namespace.DirectoryNamespace;
+import org.lance.namespace.LanceNamespace;
 import org.lance.namespace.LanceNamespaceStorageOptionsProvider;
 import org.lance.operation.Append;
 
-import com.lancedb.lance.namespace.LanceNamespace;
 import com.lancedb.lance.namespace.model.CreateEmptyTableRequest;
 import com.lancedb.lance.namespace.model.CreateEmptyTableResponse;
 import com.lancedb.lance.namespace.model.DescribeTableRequest;

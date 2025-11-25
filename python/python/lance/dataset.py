@@ -5369,9 +5369,11 @@ def write_dataset(
         # - APPEND/OVERWRITE mode: calls namespace.describe_table()
         # - Both modes: create storage options provider and merge storage options
 
-        from lance_namespace import CreateEmptyTableRequest, DescribeTableRequest
-
-        from .namespace import LanceNamespaceStorageOptionsProvider
+        from .namespace import (
+            CreateEmptyTableRequest,
+            DescribeTableRequest,
+            LanceNamespaceStorageOptionsProvider,
+        )
 
         # Determine which namespace method to call based on mode
         if mode == "create":

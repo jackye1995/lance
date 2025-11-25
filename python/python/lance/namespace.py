@@ -14,7 +14,7 @@ import importlib
 from abc import ABC, abstractmethod
 from typing import Dict, List
 
-from lance_namespace import (
+from lance_namespace_urllib3_client.models import (
     AlterTransactionRequest,
     AlterTransactionResponse,
     CountTableRowsRequest,
@@ -75,13 +75,60 @@ except ImportError:
     PyRestAdapter = None
 
 __all__ = [
+    # Interface and factory
     "LanceNamespace",
     "connect",
     "register_namespace_impl",
+    # Implementations
     "DirectoryNamespace",
     "RestNamespace",
     "RestAdapter",
     "LanceNamespaceStorageOptionsProvider",
+    # Request/Response types (re-exported from lance_namespace_urllib3_client)
+    "AlterTransactionRequest",
+    "AlterTransactionResponse",
+    "CountTableRowsRequest",
+    "CreateEmptyTableRequest",
+    "CreateEmptyTableResponse",
+    "CreateNamespaceRequest",
+    "CreateNamespaceResponse",
+    "CreateTableIndexRequest",
+    "CreateTableIndexResponse",
+    "CreateTableRequest",
+    "CreateTableResponse",
+    "DeleteFromTableRequest",
+    "DeleteFromTableResponse",
+    "DeregisterTableRequest",
+    "DeregisterTableResponse",
+    "DescribeNamespaceRequest",
+    "DescribeNamespaceResponse",
+    "DescribeTableIndexStatsRequest",
+    "DescribeTableIndexStatsResponse",
+    "DescribeTableRequest",
+    "DescribeTableResponse",
+    "DescribeTransactionRequest",
+    "DescribeTransactionResponse",
+    "DropNamespaceRequest",
+    "DropNamespaceResponse",
+    "DropTableRequest",
+    "DropTableResponse",
+    "InsertIntoTableRequest",
+    "InsertIntoTableResponse",
+    "ListNamespacesRequest",
+    "ListNamespacesResponse",
+    "ListTableIndicesRequest",
+    "ListTableIndicesResponse",
+    "ListTablesRequest",
+    "ListTablesResponse",
+    "MergeInsertIntoTableRequest",
+    "MergeInsertIntoTableResponse",
+    "NamespaceExistsRequest",
+    "QueryTableRequest",
+    "RegisterTableRequest",
+    "RegisterTableResponse",
+    "TableExistsRequest",
+    "UpdateTableRequest",
+    "UpdateTableResponse",
 ]
 
 
@@ -117,9 +164,7 @@ class LanceNamespace(ABC):
         """
         pass
 
-    def list_namespaces(
-        self, request: ListNamespacesRequest
-    ) -> ListNamespacesResponse:
+    def list_namespaces(self, request: ListNamespacesRequest) -> ListNamespacesResponse:
         """List namespaces."""
         raise NotImplementedError("Not supported: list_namespaces")
 
@@ -279,9 +324,9 @@ class DirectoryNamespace(LanceNamespace):
     ...     **{"storage.region": "us-west-2"}
     ... )
     >>>
-    >>> # Compatible with lance_namespace.connect()
-    >>> import lance_namespace
-    >>> ns = lance_namespace.connect("dir", {"root": "memory://test"})
+    >>> # Using the connect() factory function
+    >>> import lance.namespace
+    >>> ns = lance.namespace.connect("dir", {"root": "memory://test"})
     """
 
     def __init__(self, session=None, **properties):
@@ -396,9 +441,9 @@ class RestNamespace(LanceNamespace):
     ...     **{"header.Authorization": "Bearer token"}
     ... )
     >>>
-    >>> # Compatible with lance_namespace.connect()
-    >>> import lance_namespace
-    >>> ns = lance_namespace.connect("rest", {"uri": "http://localhost:4099"})
+    >>> # Using the connect() factory function
+    >>> import lance.namespace
+    >>> ns = lance.namespace.connect("rest", {"uri": "http://localhost:4099"})
     """
 
     def __init__(self, **properties):
@@ -587,7 +632,7 @@ class LanceNamespaceStorageOptionsProvider(StorageOptionsProvider):
     ----------
     namespace : LanceNamespace
         The namespace instance to fetch storage options from. Use
-        lance_namespace.connect() from the lance_namespace PyPI package.
+        lance.namespace.connect() to create a namespace instance.
     table_id : List[str]
         The table identifier (e.g., ["workspace", "table_name"])
 
@@ -598,10 +643,10 @@ class LanceNamespaceStorageOptionsProvider(StorageOptionsProvider):
     .. code-block:: python
 
         import lance
-        import lance_namespace
+        import lance.namespace
 
-        # Connect to a namespace (using the lance_namespace package)
-        namespace = lance_namespace.connect("http://localhost:4099")
+        # Connect to a namespace
+        namespace = lance.namespace.connect("rest", {"uri": "http://localhost:4099"})
 
         # Create storage options provider
         provider = lance.LanceNamespaceStorageOptionsProvider(

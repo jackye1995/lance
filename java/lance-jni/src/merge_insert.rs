@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 #[no_mangle]
-pub extern "system" fn Java_com_lancedb_lance_Dataset_nativeMergeInsert<'a>(
+pub extern "system" fn Java_org_lance_Dataset_nativeMergeInsert<'a>(
     mut env: JNIEnv<'a>,
     jdataset: JObject,    // Dataset object
     jparam: JObject,      // MergeInsertParams object

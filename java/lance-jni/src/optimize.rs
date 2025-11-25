@@ -31,7 +31,7 @@ use crate::{
 use crate::error::Result;
 
 #[no_mangle]
-pub extern "system" fn Java_com_lancedb_lance_compaction_Compaction_nativePlanCompaction<'local>(
+pub extern "system" fn Java_org_lance_compaction_Compaction_nativePlanCompaction<'local>(
     mut env: JNIEnv<'local>,
     _obj: JObject,
     java_dataset: JObject,                    // Dataset
@@ -96,9 +96,7 @@ fn inner_plan_compaction<'local>(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_lancedb_lance_compaction_Compaction_nativeCommitCompaction<
-    'local,
->(
+pub extern "system" fn Java_org_lance_compaction_Compaction_nativeCommitCompaction<'local>(
     mut env: JNIEnv<'local>,
     _obj: JObject,
     java_dataset: JObject,                    // Dataset
@@ -174,7 +172,7 @@ fn inner_commit_compaction<'local>(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_lancedb_lance_compaction_CompactionTask_nativeExecute<'local>(
+pub extern "system" fn Java_org_lance_compaction_CompactionTask_nativeExecute<'local>(
     mut env: JNIEnv<'local>,
     _obj: JObject,                            // CompactionTask itself
     java_dataset: JObject,                    // Dataset

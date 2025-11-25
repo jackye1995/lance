@@ -359,7 +359,7 @@ impl FromJObjectWithEnv<Uuid> for JObject<'_> {
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_lancedb_lance_Dataset_nativeReadTransaction<'local>(
+pub extern "system" fn Java_org_lance_Dataset_nativeReadTransaction<'local>(
     mut env: JNIEnv<'local>,
     java_dataset: JObject,
 ) -> JObject<'local> {
@@ -654,7 +654,7 @@ fn convert_to_java_schema<'local>(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_lancedb_lance_Dataset_nativeCommitTransaction<'local>(
+pub extern "system" fn Java_org_lance_Dataset_nativeCommitTransaction<'local>(
     mut env: JNIEnv<'local>,
     java_dataset: JObject,
     java_transaction: JObject,

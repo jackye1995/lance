@@ -257,7 +257,8 @@ const COMPACTION_PLAN_CLASS: &str = "org/lance/compaction/CompactionPlan";
 const COMPACTION_PLAN_CONSTRUCTOR_SIG: &str =
     "(Ljava/util/List;JLorg/lance/compaction/CompactionOptions;)V";
 const REWRITE_RESULT_CLASS: &str = "org/lance/compaction/RewriteResult";
-const REWRITE_RESULT_CONSTRUCTOR_SIG: &str = "(Lorg/lance/compaction/CompactionMetrics;Ljava/util/List;Ljava/util/List;JLjava/util/Map;[B)V";
+const REWRITE_RESULT_CONSTRUCTOR_SIG: &str =
+    "(Lorg/lance/compaction/CompactionMetrics;Ljava/util/List;Ljava/util/List;JLjava/util/Map;[B)V";
 const COMPACTION_OPTIONS_CLASS: &str = "org/lance/compaction/CompactionOptions";
 const COMPACTION_OPTIONS_CONSTRUCTOR_SIG: &str =
     "(Ljava/util/Optional;Ljava/util/Optional;Ljava/util/Optional;Ljava/util/Optional;Ljava/util/Optional;Ljava/util/Optional;Ljava/util/Optional;Ljava/util/Optional;)V";

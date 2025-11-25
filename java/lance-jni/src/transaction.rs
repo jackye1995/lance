@@ -302,12 +302,7 @@ impl FromJObjectWithEnv<DataReplacementGroup> for JObject<'_> {
     fn extract_object(&self, env: &mut JNIEnv<'_>) -> Result<DataReplacementGroup> {
         let fragment_id = env.call_method(self, "fragmentId", "()J", &[])?.j()? as u64;
         let new_file = env
-            .call_method(
-                self,
-                "replacedFile",
-                "()Lorg/lance/fragment/DataFile;",
-                &[],
-            )?
+            .call_method(self, "replacedFile", "()Lorg/lance/fragment/DataFile;", &[])?
             .l()?
             .extract_object(env)?;
 

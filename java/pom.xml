@@ -107,7 +107,7 @@
         </dependency>
         <dependency>
             <groupId>com.lancedb</groupId>
-            <artifactId>lance-namespace-core</artifactId>
+            <artifactId>lance-namespace-apache-client</artifactId>
             <version>0.0.20</version>
         </dependency>
         <dependency>

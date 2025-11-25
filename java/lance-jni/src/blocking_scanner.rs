@@ -277,7 +277,7 @@ fn attach_native_scanner<'local>(
 }
 
 fn create_java_scanner_object<'a>(env: &mut JNIEnv<'a>) -> Result<JObject<'a>> {
-    let res = env.new_object("com/lancedb/lance/ipc/LanceScanner", "()V", &[])?;
+    let res = env.new_object("org/lance/ipc/LanceScanner", "()V", &[])?;
     Ok(res)
 }
 

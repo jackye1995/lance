@@ -88,7 +88,7 @@ fn attach_native_reader<'local>(
 }
 
 fn create_java_reader_object<'a>(env: &mut JNIEnv<'a>) -> Result<JObject<'a>> {
-    let res = env.new_object("com/lancedb/lance/file/LanceFileReader", "()V", &[])?;
+    let res = env.new_object("org/lance/file/LanceFileReader", "()V", &[])?;
     Ok(res)
 }
 

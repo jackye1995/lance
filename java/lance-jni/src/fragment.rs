@@ -443,22 +443,22 @@ fn inner_update_column<'local>(
     result.into_java(env)
 }
 
-const DATA_FILE_CLASS: &str = "com/lancedb/lance/fragment/DataFile";
+const DATA_FILE_CLASS: &str = "org/lance/fragment/DataFile";
 const DATA_FILE_CONSTRUCTOR_SIG: &str =
     "(Ljava/lang/String;[I[IIILjava/lang/Long;Ljava/lang/Integer;)V";
-const DELETE_FILE_CLASS: &str = "com/lancedb/lance/fragment/DeletionFile";
+const DELETE_FILE_CLASS: &str = "org/lance/fragment/DeletionFile";
 const DELETE_FILE_CONSTRUCTOR_SIG: &str =
-    "(JJLjava/lang/Long;Lcom/lancedb/lance/fragment/DeletionFileType;Ljava/lang/Integer;)V";
-const DELETE_FILE_TYPE_CLASS: &str = "com/lancedb/lance/fragment/DeletionFileType";
-const FRAGMENT_METADATA_CLASS: &str = "com/lancedb/lance/FragmentMetadata";
-const FRAGMENT_METADATA_CONSTRUCTOR_SIG: &str ="(ILjava/util/List;Ljava/lang/Long;Lcom/lancedb/lance/fragment/DeletionFile;Lcom/lancedb/lance/fragment/RowIdMeta;)V";
-const ROW_ID_META_CLASS: &str = "com/lancedb/lance/fragment/RowIdMeta";
+    "(JJLjava/lang/Long;Lorg/lance/fragment/DeletionFileType;Ljava/lang/Integer;)V";
+const DELETE_FILE_TYPE_CLASS: &str = "org/lance/fragment/DeletionFileType";
+const FRAGMENT_METADATA_CLASS: &str = "org/lance/FragmentMetadata";
+const FRAGMENT_METADATA_CONSTRUCTOR_SIG: &str ="(ILjava/util/List;Ljava/lang/Long;Lorg/lance/fragment/DeletionFile;Lorg/lance/fragment/RowIdMeta;)V";
+const ROW_ID_META_CLASS: &str = "org/lance/fragment/RowIdMeta";
 const ROW_ID_META_CONSTRUCTOR_SIG: &str = "(Ljava/lang/String;)V";
-const FRAGMENT_MERGE_RESULT_CLASS: &str = "com/lancedb/lance/fragment/FragmentMergeResult";
+const FRAGMENT_MERGE_RESULT_CLASS: &str = "org/lance/fragment/FragmentMergeResult";
 const FRAGMENT_MERGE_RESULT_CONSTRUCTOR_SIG: &str =
-    "(Lcom/lancedb/lance/FragmentMetadata;Lcom/lancedb/lance/schema/LanceSchema;)V";
-const FRAGMENT_UPDATE_RESULT_CLASS: &str = "com/lancedb/lance/fragment/FragmentUpdateResult";
-const FRAGMENT_UPDATE_RESULT_CONSTRUCTOR_SIG: &str = "(Lcom/lancedb/lance/FragmentMetadata;[J)V";
+    "(Lorg/lance/FragmentMetadata;Lorg/lance/schema/LanceSchema;)V";
+const FRAGMENT_UPDATE_RESULT_CLASS: &str = "org/lance/fragment/FragmentUpdateResult";
+const FRAGMENT_UPDATE_RESULT_CONSTRUCTOR_SIG: &str = "(Lorg/lance/FragmentMetadata;[J)V";
 
 impl IntoJava for &FragmentMergeResult {
     fn into_java<'a>(self, env: &mut JNIEnv<'a>) -> Result<JObject<'a>> {

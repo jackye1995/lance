@@ -12,7 +12,7 @@ use lance::dataset::BlobFile;
 use std::mem::transmute;
 use std::sync::Arc;
 
-const BLOB_FILE_CLASS: &str = "com/lancedb/lance/BlobFile";
+const BLOB_FILE_CLASS: &str = "org/lance/BlobFile";
 const BLOB_FILE_CTOR_SIG: &str = "()V";
 const NATIVE_BLOB: &str = "nativeBlobHandle";
 

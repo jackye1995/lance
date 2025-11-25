@@ -249,16 +249,16 @@ fn inner_execute_task<'local>(
     rewrite_result.into_java(env)
 }
 
-const TASK_DATA_CLASS: &str = "com/lancedb/lance/compaction/TaskData";
+const TASK_DATA_CLASS: &str = "org/lance/compaction/TaskData";
 const TASK_DATA_CONSTRUCTOR_SIG: &str = "(Ljava/util/List;)V";
-const COMPACTION_METRICS_CLASS: &str = "com/lancedb/lance/compaction/CompactionMetrics";
+const COMPACTION_METRICS_CLASS: &str = "org/lance/compaction/CompactionMetrics";
 const COMPACTION_METRICS_CONSTRUCTOR_SIG: &str = "(JJJJ)V";
-const COMPACTION_PLAN_CLASS: &str = "com/lancedb/lance/compaction/CompactionPlan";
+const COMPACTION_PLAN_CLASS: &str = "org/lance/compaction/CompactionPlan";
 const COMPACTION_PLAN_CONSTRUCTOR_SIG: &str =
-    "(Ljava/util/List;JLcom/lancedb/lance/compaction/CompactionOptions;)V";
-const REWRITE_RESULT_CLASS: &str = "com/lancedb/lance/compaction/RewriteResult";
-const REWRITE_RESULT_CONSTRUCTOR_SIG: &str = "(Lcom/lancedb/lance/compaction/CompactionMetrics;Ljava/util/List;Ljava/util/List;JLjava/util/Map;[B)V";
-const COMPACTION_OPTIONS_CLASS: &str = "com/lancedb/lance/compaction/CompactionOptions";
+    "(Ljava/util/List;JLorg/lance/compaction/CompactionOptions;)V";
+const REWRITE_RESULT_CLASS: &str = "org/lance/compaction/RewriteResult";
+const REWRITE_RESULT_CONSTRUCTOR_SIG: &str = "(Lorg/lance/compaction/CompactionMetrics;Ljava/util/List;Ljava/util/List;JLjava/util/Map;[B)V";
+const COMPACTION_OPTIONS_CLASS: &str = "org/lance/compaction/CompactionOptions";
 const COMPACTION_OPTIONS_CONSTRUCTOR_SIG: &str =
     "(Ljava/util/Optional;Ljava/util/Optional;Ljava/util/Optional;Ljava/util/Optional;Ljava/util/Optional;Ljava/util/Optional;Ljava/util/Optional;Ljava/util/Optional;)V";
 
@@ -421,7 +421,7 @@ impl FromJObjectWithEnv<RewriteResult> for JObject<'_> {
             .call_method(
                 self,
                 "getMetrics",
-                "()Lcom/lancedb/lance/compaction/CompactionMetrics;",
+                "()Lorg/lance/compaction/CompactionMetrics;",
                 &[],
             )?
             .l()?;

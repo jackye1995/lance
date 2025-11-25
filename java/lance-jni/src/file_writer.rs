@@ -58,7 +58,7 @@ fn attach_native_writer<'local>(
 }
 
 fn create_java_writer_object<'a>(env: &mut JNIEnv<'a>) -> Result<JObject<'a>> {
-    let res = env.new_object("com/lancedb/lance/file/LanceFileWriter", "()V", &[])?;
+    let res = env.new_object("org/lance/file/LanceFileWriter", "()V", &[])?;
     Ok(res)
 }
 

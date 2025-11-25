@@ -570,7 +570,7 @@ impl IntoJava for Version {
         }
 
         let java_version = env.new_object(
-            "com/lancedb/lance/Version",
+            "org/lance/Version",
             "(JLjava/time/ZonedDateTime;Ljava/util/TreeMap;)V",
             &[
                 JValue::Long(self.version as i64),
@@ -601,7 +601,7 @@ fn attach_native_dataset<'local>(
 }
 
 fn create_java_dataset_object<'a>(env: &mut JNIEnv<'a>) -> Result<JObject<'a>> {
-    let object = env.new_object("com/lancedb/lance/Dataset", "()V", &[])?;
+    let object = env.new_object("org/lance/Dataset", "()V", &[])?;
     Ok(object)
 }
 
@@ -1421,20 +1421,20 @@ fn inner_get_data_statistics<'local>(
             unsafe { env.get_rust_field::<_, _, BlockingDataset>(java_dataset, NATIVE_DATASET) }?;
         dataset_guard.calculate_data_stats()?
     };
-    let data_stats = env.new_object("com/lancedb/lance/ipc/DataStatistics", "()V", &[])?;
+    let data_stats = env.new_object("org/lance/ipc/DataStatistics", "()V", &[])?;
 
     for field in stats.fields {
         let id = field.id as jint;
         let byte_size = field.bytes_on_disk as jlong;
         let filed_jobj = env.new_object(
-            "com/lancedb/lance/ipc/FieldStatistics",
+            "org/lance/ipc/FieldStatistics",
             "(IJ)V",
             &[JValue::Int(id), JValue::Long(byte_size)],
         )?;
         env.call_method(
             &data_stats,
             "addFiledStatistics",
-            "(Lcom/lancedb/lance/ipc/FieldStatistics;)V",
+            "(Lorg/lance/ipc/FieldStatistics;)V",
             &[JValue::Object(&filed_jobj)],
         )?;
     }
@@ -1889,7 +1889,7 @@ fn inner_list_tags<'local>(
 
     for (tag_name, tag_contents) in tag_map {
         let java_tag = env.new_object(
-            "com/lancedb/lance/Tag",
+            "org/lance/Tag",
             "(Ljava/lang/String;JI)V",
             &[
                 JValue::Object(&env.new_string(tag_name)?.into()),
@@ -2087,7 +2087,7 @@ fn inner_list_branches<'local>(
             JObject::null()
         };
         let jbranch = env.new_object(
-            "com/lancedb/lance/Branch",
+            "org/lance/Branch",
             "(Ljava/lang/String;Ljava/lang/String;JJI)V",
             &[
                 JValue::Object(&jname),
@@ -2438,7 +2438,7 @@ fn inner_cleanup_with_policy<'local>(
     }?;
 
     let jstats = env.new_object(
-        "com/lancedb/lance/cleanup/RemovalStats",
+        "org/lance/cleanup/RemovalStats",
         "(JJ)V",
         &[
             JValue::Long(stats.bytes_removed as i64),

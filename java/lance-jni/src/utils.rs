@@ -76,28 +76,12 @@ pub fn extract_write_params(
         extract_storage_options(env, storage_options_obj)?;
 
     // Extract storage options provider if present
-    let storage_options_provider = if !storage_options_provider_obj.is_null() {
-        // Check if it's an Optional.empty()
-        let is_present = env
-            .call_method(storage_options_provider_obj, "isPresent", "()Z", &[])?
-            .z()?;
-        if is_present {
-            // Get the value from Optional
-            let provider_obj = env
-                .call_method(
-                    storage_options_provider_obj,
-                    "get",
-                    "()Ljava/lang/Object;",
-                    &[],
-                )?
-                .l()?;
-            Some(JavaStorageOptionsProvider::new(env, provider_obj)?)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    let storage_options_provider = env.get_optional(storage_options_provider_obj, |env, obj| {
+        let provider_obj = env
+            .call_method(obj, "get", "()Ljava/lang/Object;", &[])?
+            .l()?;
+        JavaStorageOptionsProvider::new(env, provider_obj)
+    })?;
 
     let storage_options_provider_arc: Option<Arc<dyn StorageOptionsProvider>> =
         storage_options_provider.map(|v| Arc::new(v) as Arc<dyn StorageOptionsProvider>);

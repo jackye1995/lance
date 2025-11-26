@@ -755,15 +755,7 @@ def register_namespace_impl(name: str, class_path: str) -> None:
     name : str
         Short name for the implementation (e.g., "glue", "hive2", "unity")
     class_path : str
-        Full class path (e.g., "lance_namespace.glue.GlueNamespace")
-
-    Example
-    -------
-    >>> import lance.namespace
-    >>> lance.namespace.register_namespace_impl(
-    ...     "glue", "lance_namespace.glue.GlueNamespace"
-    ... )
-    >>> ns = lance.namespace.connect("glue", {"catalog_id": "123"})
+        Full class path (e.g., "lance_glue.GlueNamespace")
     """
     _REGISTERED_IMPLS[name] = class_path
 
@@ -797,15 +789,6 @@ def connect(impl: str, properties: Dict[str, str]) -> LanceNamespace:
     ValueError
         If the implementation class cannot be loaded or does not
         implement LanceNamespace interface
-
-    Examples
-    --------
-    >>> import lance.namespace
-    >>> # Using built-in aliases
-    >>> ns = lance.namespace.connect("dir", {"root": "memory://test"})
-    >>> ns = lance.namespace.connect("rest", {"uri": "http://localhost:4099"})
-    >>> # Using full class path
-    >>> ns = lance.namespace.connect("my.module.CustomNamespace", {"key": "value"})
     """
     # Check native impls first, then registered plugins, then treat as full class path
     impl_class = NATIVE_IMPLS.get(impl) or _REGISTERED_IMPLS.get(impl) or impl

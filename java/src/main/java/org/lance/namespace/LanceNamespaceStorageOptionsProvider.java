@@ -14,9 +14,8 @@
 package org.lance.namespace;
 
 import org.lance.io.StorageOptionsProvider;
-
-import com.lancedb.lance.namespace.model.DescribeTableRequest;
-import com.lancedb.lance.namespace.model.DescribeTableResponse;
+import org.lance.namespace.model.DescribeTableRequest;
+import org.lance.namespace.model.DescribeTableResponse;
 
 import java.util.List;
 import java.util.Map;

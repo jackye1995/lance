@@ -13,7 +13,8 @@
  */
 package org.lance.namespace;
 
-import com.lancedb.lance.namespace.model.*;
+import org.lance.namespace.model.*;
+
 import org.apache.arrow.memory.BufferAllocator;
 
 import java.lang.reflect.Constructor;
@@ -68,7 +69,7 @@ public interface LanceNamespace {
    * short names like "glue" instead of full class paths.
    *
    * @param name Short name for the implementation (e.g., "glue", "hive2", "unity")
-   * @param className Full class name (e.g., "com.lancedb.lance.namespace.glue.GlueNamespace")
+   * @param className Full class name (e.g., "org.lance.namespace.glue.GlueNamespace")
    */
   static void registerNamespaceImpl(String name, String className) {
     REGISTERED_IMPLS.put(name, className);

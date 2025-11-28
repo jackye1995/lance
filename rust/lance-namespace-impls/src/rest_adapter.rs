@@ -79,6 +79,7 @@ impl RestAdapter {
     /// Start the REST server (blocking)
     pub async fn serve(self) -> Result<()> {
         let addr = format!("{}:{}", self.config.host, self.config.port);
+        log::info!("RestAdapter::serve() binding to {}", addr);
         let listener = tokio::net::TcpListener::bind(&addr)
             .await
             .map_err(|e| Error::IO {
@@ -86,6 +87,10 @@ impl RestAdapter {
                 location: snafu::location!(),
             })?;
 
+        log::info!(
+            "RestAdapter::serve() successfully bound to {}, starting to accept connections",
+            addr
+        );
         axum::serve(listener, self.router())
             .await
             .map_err(|e| Error::IO {
@@ -191,10 +196,20 @@ async fn create_namespace(
     Json(mut request): Json<CreateNamespaceRequest>,
 ) -> Response {
     request.id = Some(parse_id(&id, params.delimiter.as_deref()));
+    log::info!(
+        "REST create_namespace: received request for id={:?}",
+        request.id
+    );
 
     match backend.create_namespace(request).await {
-        Ok(response) => (StatusCode::CREATED, Json(response)).into_response(),
-        Err(e) => error_to_response(e),
+        Ok(response) => {
+            log::info!("REST create_namespace: success");
+            (StatusCode::CREATED, Json(response)).into_response()
+        }
+        Err(e) => {
+            log::error!("REST create_namespace: error={:?}", e);
+            error_to_response(e)
+        }
     }
 }
 

@@ -371,11 +371,18 @@ impl PyRestAdapter {
         host: String,
         port: u16,
     ) -> PyResult<Self> {
+        log::info!(
+            "PyRestAdapter::new() creating backend with impl={}, host={}, port={}",
+            namespace_impl,
+            host,
+            port
+        );
         let mut props = HashMap::new();
 
         if let Some(dict) = namespace_properties {
             props = dict_to_hashmap(dict)?;
         }
+        log::info!("PyRestAdapter::new() properties={:?}", props);
 
         // Use ConnectBuilder to build namespace from impl and properties
         let mut builder = ConnectBuilder::new(namespace_impl);
@@ -388,9 +395,11 @@ impl PyRestAdapter {
             builder = builder.session(sess.borrow().inner.clone());
         }
 
+        log::info!("PyRestAdapter::new() calling builder.connect()");
         let backend = crate::rt()
             .block_on(None, builder.connect())?
             .infer_error()?;
+        log::info!("PyRestAdapter::new() backend created successfully");
 
         let config = RestAdapterConfig { host, port };
 
@@ -399,16 +408,25 @@ impl PyRestAdapter {
 
     /// Start the REST server in the background
     fn serve(&mut self, py: Python) -> PyResult<()> {
+        log::info!(
+            "PyRestAdapter::serve() starting server on {}:{}",
+            self.config.host,
+            self.config.port
+        );
         let adapter = RestAdapter::new(self.backend.clone(), self.config.clone());
 
         crate::rt().spawn_background(Some(py), async move {
-            let _ = adapter.serve().await;
+            log::info!("PyRestAdapter::serve() background task started, calling adapter.serve()");
+            let result = adapter.serve().await;
+            log::info!("PyRestAdapter::serve() adapter.serve() returned: {:?}", result.is_ok());
         });
 
         // Give server time to start
+        log::info!("PyRestAdapter::serve() sleeping 500ms to wait for server startup");
         py.allow_threads(|| {
             std::thread::sleep(std::time::Duration::from_millis(500));
         });
+        log::info!("PyRestAdapter::serve() done sleeping, returning");
 
         Ok(())
     }

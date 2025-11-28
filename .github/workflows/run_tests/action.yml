@@ -28,3 +28,6 @@ runs:
       shell: bash
       working-directory: python
       run: make test
+      env:
+        LANCE_LOG: debug
+        RUST_LOG: lance_namespace_impls=info,lance=debug

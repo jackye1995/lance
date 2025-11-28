@@ -11,12 +11,22 @@ These tests mirror test_namespace_dir.py to ensure parity between
 DirectoryNamespace and RestNamespace implementations.
 """
 
+import logging
+import os
 import tempfile
 import uuid
 
 import lance.namespace
 import pyarrow as pa
 import pytest
+
+# Enable debug logging for lance if LANCE_LOG env var is set
+if os.environ.get("LANCE_LOG"):
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+    logging.getLogger("lance").setLevel(logging.DEBUG)
 from lance_namespace import (
     CreateEmptyTableRequest,
     CreateNamespaceRequest,
@@ -64,10 +74,14 @@ def rest_namespace():
         backend_config = {"root": tmpdir}
         port = 4000 + hash(unique_id) % 10000
 
+        print(f"\n[FIXTURE] Creating RestAdapter with tmpdir={tmpdir}, port={port}")
         with lance.namespace.RestAdapter("dir", backend_config, port=port):
+            print(f"[FIXTURE] RestAdapter context entered, creating client")
             # Use lance.namespace.connect() for consistency
             client = connect("rest", {"uri": f"http://127.0.0.1:{port}"})
+            print(f"[FIXTURE] Client created, yielding")
             yield client
+            print(f"[FIXTURE] Test completed, cleaning up")
 
 
 class TestCreateTable:

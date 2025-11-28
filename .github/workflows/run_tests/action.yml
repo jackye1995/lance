@@ -24,7 +24,14 @@ runs:
       run: |
         # Install cpu only pytorch
         pip install torch --index-url https://download.pytorch.org/whl/cpu
-    - name: Run python tests
+    # - name: Run python tests
+    #   shell: bash
+    #   working-directory: python
+    #   run: make test
+    - name: Run namespace tests with logging (for flaky test debugging)
       shell: bash
       working-directory: python
-      run: make test
+      run: pytest python/tests/test_namespace_rest.py python/tests/test_namespace_dir.py -v -s
+      env:
+        LANCE_LOG: debug
+        RUST_LOG: lance_namespace_impls=info

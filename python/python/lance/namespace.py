@@ -11,7 +11,6 @@ This module provides:
 The LanceNamespace ABC interface is provided by the lance_namespace package.
 """
 
-import importlib
 from typing import Dict, List
 
 from lance_namespace import (
@@ -56,11 +55,6 @@ except ImportError:
     PyRestAdapter = None
 
 __all__ = [
-    # Interface and factory (LanceNamespace from lance_namespace package)
-    "LanceNamespace",
-    "connect",
-    "register_namespace_impl",
-    # Implementations
     "DirectoryNamespace",
     "RestNamespace",
     "RestAdapter",
@@ -513,76 +507,3 @@ class LanceNamespaceStorageOptionsProvider(StorageOptionsProvider):
             f"LanceNamespaceStorageOptionsProvider {{ "
             f"namespace: {namespace_id}, table_id: {self._table_id!r} }}"
         )
-
-
-# Native implementations (Rust-backed)
-NATIVE_IMPLS = {
-    "rest": "lance.namespace.RestNamespace",
-    "dir": "lance.namespace.DirectoryNamespace",
-}
-
-# Plugin registry for external implementations
-_REGISTERED_IMPLS: Dict[str, str] = {}
-
-
-def register_namespace_impl(name: str, class_path: str) -> None:
-    """Register a namespace implementation with a short name.
-
-    External libraries can use this to register their implementations,
-    allowing users to use short names like "glue" instead of full class paths.
-
-    Parameters
-    ----------
-    name : str
-        Short name for the implementation (e.g., "glue", "hive2", "unity")
-    class_path : str
-        Full class path (e.g., "lance_glue.GlueNamespace")
-    """
-    _REGISTERED_IMPLS[name] = class_path
-
-
-def connect(impl: str, properties: Dict[str, str]) -> LanceNamespace:
-    """Connect to a Lance namespace implementation.
-
-    This factory function creates namespace instances based on implementation
-    aliases or full class paths. It provides a unified way to instantiate
-    different namespace backends.
-
-    Parameters
-    ----------
-    impl : str
-        Implementation alias or full class path. Built-in aliases:
-        - "rest": RestNamespace (REST API client)
-        - "dir": DirectoryNamespace (local/cloud filesystem)
-        You can also use full class paths like "my.custom.Namespace"
-        External libraries can register additional aliases using
-        `register_namespace_impl()`.
-    properties : Dict[str, str]
-        Configuration properties passed to the namespace constructor
-
-    Returns
-    -------
-    LanceNamespace
-        The connected namespace instance
-
-    Raises
-    ------
-    ValueError
-        If the implementation class cannot be loaded or does not
-        implement LanceNamespace interface
-    """
-    # Check native impls first, then registered plugins, then treat as full class path
-    impl_class = NATIVE_IMPLS.get(impl) or _REGISTERED_IMPLS.get(impl) or impl
-    try:
-        module_name, class_name = impl_class.rsplit(".", 1)
-        module = importlib.import_module(module_name)
-        namespace_class = getattr(module, class_name)
-
-        if not issubclass(namespace_class, LanceNamespace):
-            raise ValueError(
-                f"Class {impl_class} does not implement LanceNamespace interface"
-            )
-
-        return namespace_class(**properties)
-    except Exception as e:
-        raise ValueError(f"Failed to construct namespace impl {impl_class}: {e}")

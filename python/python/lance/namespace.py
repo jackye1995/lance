@@ -92,16 +92,9 @@ class DirectoryNamespace(LanceNamespace):
     >>> # Create with properties dict
     >>> ns = lance.namespace.DirectoryNamespace(root="memory://test")
     >>>
-    >>> # With storage options
-    >>> ns = lance.namespace.DirectoryNamespace(
-    ...     root="/path/to/data",
-    ...     manifest_enabled="true",
-    ...     **{"storage.region": "us-west-2"}
-    ... )
-    >>>
-    >>> # Using the connect() factory function
-    >>> import lance.namespace
-    >>> ns = lance.namespace.connect("dir", {"root": "memory://test"})
+    >>> # Using the connect() factory function from lance_namespace
+    >>> import lance_namespace
+    >>> ns = lance_namespace.connect("dir", {"root": "memory://test"})
     """
 
     def __init__(self, session=None, **properties):
@@ -209,16 +202,9 @@ class RestNamespace(LanceNamespace):
     >>> # Create with properties dict
     >>> ns = lance.namespace.RestNamespace(uri="http://localhost:4099")
     >>>
-    >>> # With custom delimiter and headers
-    >>> ns = lance.namespace.RestNamespace(
-    ...     uri="http://localhost:4099",
-    ...     delimiter=".",
-    ...     **{"header.Authorization": "Bearer token"}
-    ... )
-    >>>
-    >>> # Using the connect() factory function
-    >>> import lance.namespace
-    >>> ns = lance.namespace.connect("rest", {"uri": "http://localhost:4099"})
+    >>> # Using the connect() factory function from lance_namespace
+    >>> import lance_namespace
+    >>> ns = lance_namespace.connect("rest", {"uri": "http://localhost:4099"})
     """
 
     def __init__(self, **properties):

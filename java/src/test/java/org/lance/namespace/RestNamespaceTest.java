@@ -57,8 +57,7 @@ public class RestNamespaceTest {
   void setUp() {
     allocator = new RootAllocator(Long.MAX_VALUE);
 
-    // Use a random port to avoid conflicts
-    port = 4000 + new Random().nextInt(10000);
+    port = 10000 + new Random().nextInt(10000);
 
     // Create backend configuration for DirectoryNamespace
     Map<String, String> backendConfig = new HashMap<>();

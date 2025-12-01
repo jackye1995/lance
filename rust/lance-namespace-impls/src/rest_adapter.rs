@@ -86,22 +86,14 @@ impl RestAdapter {
     /// Returns an error immediately if the server fails to bind to the address.
     pub async fn start(self) -> Result<RestAdapterHandle> {
         let addr = format!("{}:{}", self.config.host, self.config.port);
-        log::info!("RestAdapter::start() binding to {}", addr);
 
-        let listener = tokio::net::TcpListener::bind(&addr)
-            .await
-            .map_err(|e| {
-                log::error!("RestAdapter::start() failed to bind to {}: {}", addr, e);
-                Error::IO {
-                    source: Box::new(e),
-                    location: snafu::location!(),
-                }
-            })?;
-
-        log::info!(
-            "RestAdapter::start() successfully bound to {}, starting server",
-            addr
-        );
+        let listener = tokio::net::TcpListener::bind(&addr).await.map_err(|e| {
+            log::error!("RestAdapter::start() failed to bind to {}: {}", addr, e);
+            Error::IO {
+                source: Box::new(e),
+                location: snafu::location!(),
+            }
+        })?;
 
         let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
         let router = self.router();
@@ -110,14 +102,11 @@ impl RestAdapter {
             let result = axum::serve(listener, router)
                 .with_graceful_shutdown(async move {
                     let _ = shutdown_rx.changed().await;
-                    log::info!("RestAdapter: received shutdown signal");
                 })
                 .await;
 
             if let Err(e) = result {
                 log::error!("RestAdapter: server error: {}", e);
-            } else {
-                log::info!("RestAdapter: shut down gracefully");
             }
         });
 
@@ -138,7 +127,6 @@ impl RestAdapterHandle {
     /// This signals the server to stop accepting new connections and wait for
     /// existing connections to complete.
     pub fn shutdown(&self) {
-        log::info!("RestAdapterHandle::shutdown() sending shutdown signal");
         let _ = self.shutdown_tx.send(true);
     }
 }
@@ -237,16 +225,9 @@ async fn create_namespace(
     Json(mut request): Json<CreateNamespaceRequest>,
 ) -> Response {
     request.id = Some(parse_id(&id, params.delimiter.as_deref()));
-    log::info!(
-        "REST create_namespace: received request for id={:?}",
-        request.id
-    );
 
     match backend.create_namespace(request).await {
-        Ok(response) => {
-            log::info!("REST create_namespace: success");
-            (StatusCode::CREATED, Json(response)).into_response()
-        }
+        Ok(response) => (StatusCode::CREATED, Json(response)).into_response(),
         Err(e) => {
             log::error!("REST create_namespace: error={:?}", e);
             error_to_response(e)

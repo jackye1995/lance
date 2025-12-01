@@ -372,35 +372,24 @@ impl PyRestAdapter {
         host: String,
         port: u16,
     ) -> PyResult<Self> {
-        log::info!(
-            "PyRestAdapter::new() creating backend with impl={}, host={}, port={}",
-            namespace_impl,
-            host,
-            port
-        );
         let mut props = HashMap::new();
 
         if let Some(dict) = namespace_properties {
             props = dict_to_hashmap(dict)?;
         }
-        log::info!("PyRestAdapter::new() properties={:?}", props);
 
-        // Use ConnectBuilder to build namespace from impl and properties
         let mut builder = ConnectBuilder::new(namespace_impl);
         for (k, v) in props {
             builder = builder.property(k, v);
         }
 
-        // Add session if provided
         if let Some(sess) = session {
             builder = builder.session(sess.borrow().inner.clone());
         }
 
-        log::info!("PyRestAdapter::new() calling builder.connect()");
         let backend = crate::rt()
             .block_on(None, builder.connect())?
             .infer_error()?;
-        log::info!("PyRestAdapter::new() backend created successfully");
 
         let config = RestAdapterConfig { host, port };
 
@@ -413,33 +402,20 @@ impl PyRestAdapter {
 
     /// Start the REST server in the background
     fn serve(&mut self, py: Python) -> PyResult<()> {
-        log::info!(
-            "PyRestAdapter::serve() starting server on {}:{}",
-            self.config.host,
-            self.config.port
-        );
-
         let adapter = RestAdapter::new(self.backend.clone(), self.config.clone());
-
-        // Start the server - this binds the port and returns immediately
-        // If binding fails, an error is returned immediately
         let handle = crate::rt()
             .block_on(Some(py), adapter.start())?
             .infer_error()?;
 
         self.handle = Some(handle);
-        log::info!("PyRestAdapter::serve() server started successfully");
         Ok(())
     }
 
     /// Stop the REST server
     fn stop(&mut self) {
         if let Some(handle) = self.handle.take() {
-            log::info!("PyRestAdapter::stop() shutting down server");
             handle.shutdown();
-            // Give server time to shutdown gracefully
             std::thread::sleep(std::time::Duration::from_millis(100));
-            log::info!("PyRestAdapter::stop() server shutdown complete");
         }
     }
 

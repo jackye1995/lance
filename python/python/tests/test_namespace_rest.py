@@ -72,16 +72,11 @@ def rest_namespace():
     unique_id = uuid.uuid4().hex[:8]
     with tempfile.TemporaryDirectory() as tmpdir:
         backend_config = {"root": tmpdir}
-        port = 4000 + hash(unique_id) % 10000
+        port = 10000 + hash(unique_id) % 10000
 
-        print(f"\n[FIXTURE] Creating RestAdapter with tmpdir={tmpdir}, port={port}")
         with lance.namespace.RestAdapter("dir", backend_config, port=port):
-            print(f"[FIXTURE] RestAdapter context entered, creating client")
-            # Use lance.namespace.connect() for consistency
             client = connect("rest", {"uri": f"http://127.0.0.1:{port}"})
-            print(f"[FIXTURE] Client created, yielding")
             yield client
-            print(f"[FIXTURE] Test completed, cleaning up")
 
 
 class TestCreateTable:
@@ -662,7 +657,8 @@ class TestLanceNamespaceConnect:
         unique_id = uuid.uuid4().hex[:8]
         with tempfile.TemporaryDirectory() as tmpdir:
             backend_config = {"root": tmpdir}
-            port = 4000 + hash(unique_id) % 10000
+            # Use port above 10000 to avoid conflicts with LocalStack (4566)
+            port = 10000 + hash(unique_id) % 10000
 
             with lance.namespace.RestAdapter("dir", backend_config, port=port):
                 # Connect via lance.namespace.connect
@@ -690,7 +686,8 @@ class TestLanceNamespaceConnect:
         unique_id = uuid.uuid4().hex[:8]
         with tempfile.TemporaryDirectory() as tmpdir:
             backend_config = {"root": tmpdir}
-            port = 4000 + hash(unique_id) % 10000
+            # Use port above 10000 to avoid conflicts with LocalStack (4566)
+            port = 10000 + hash(unique_id) % 10000
 
             with lance.namespace.RestAdapter("dir", backend_config, port=port):
                 # Connect with custom delimiter

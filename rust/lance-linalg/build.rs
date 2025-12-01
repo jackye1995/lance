@@ -55,7 +55,7 @@ fn main() -> Result<(), String> {
             // generated the AVX512 version of the f16 kernels.
             println!("cargo:rustc-cfg=kernel_support=\"avx512\"");
         };
-        if let Err(err) = build_dist_table_with_flags("avx512", &["-march=native"]) {
+        if let Err(err) = build_dist_table_with_flags("avx512", &["-march=sapphirerapids"]) {
             println!(
                 "cargo:warning=Skipping build of AVX-512 dist_table. Error: {}",
                 err

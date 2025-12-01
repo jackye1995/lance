@@ -378,11 +378,13 @@ impl PyRestAdapter {
             props = dict_to_hashmap(dict)?;
         }
 
+        // Use ConnectBuilder to build namespace from impl and properties
         let mut builder = ConnectBuilder::new(namespace_impl);
         for (k, v) in props {
             builder = builder.property(k, v);
         }
 
+        // Add session if provided
         if let Some(sess) = session {
             builder = builder.session(sess.borrow().inner.clone());
         }

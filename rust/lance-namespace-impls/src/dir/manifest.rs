@@ -147,30 +147,22 @@ impl DatasetConsistencyWrapper {
         let dataset_uri = read_guard.uri().to_string();
         let current_version = read_guard.version().version;
         log::debug!(
-            "DatasetConsistencyWrapper::reload() starting for uri={}, current_version={}",
+            "Reload starting for uri={}, current_version={}",
             dataset_uri,
             current_version
         );
         let latest_version = read_guard
             .latest_version_id()
             .await
-            .map_err(|e| {
-                log::error!(
-                    "DatasetConsistencyWrapper::reload() failed to get latest version for uri={}, current_version={}, error={}",
-                    dataset_uri,
-                    current_version,
+            .map_err(|e| Error::IO {
+                source: box_error(std::io::Error::other(format!(
+                    "Failed to get latest version: {}",
                     e
-                );
-                Error::IO {
-                    source: box_error(std::io::Error::other(format!(
-                        "Failed to get latest version: {}",
-                        e
-                    ))),
-                    location: location!(),
-                }
+                ))),
+                location: location!(),
             })?;
         log::debug!(
-            "DatasetConsistencyWrapper::reload() got latest_version={} for uri={}, current_version={}",
+            "Reload got latest_version={} for uri={}, current_version={}",
             latest_version,
             dataset_uri,
             current_version
@@ -179,10 +171,7 @@ impl DatasetConsistencyWrapper {
 
         // If already up-to-date, return early
         if latest_version == current_version {
-            log::debug!(
-                "DatasetConsistencyWrapper::reload() already up-to-date for uri={}",
-                dataset_uri
-            );
+            log::debug!("Already up-to-date for uri={}", dataset_uri);
             return Ok(());
         }
 
@@ -960,10 +949,7 @@ impl ManifestNamespace {
         session: Option<Arc<Session>>,
     ) -> Result<DatasetConsistencyWrapper> {
         let manifest_path = format!("{}/{}", root, MANIFEST_TABLE_NAME);
-        log::info!(
-            "create_or_get_manifest: attempting to load manifest from {}",
-            manifest_path
-        );
+        log::debug!("Attempting to load manifest from {}", manifest_path);
         let mut builder = DatasetBuilder::from_uri(&manifest_path);
 
         if let Some(sess) = session.clone() {
@@ -975,12 +961,6 @@ impl ManifestNamespace {
         }
 
         let dataset_result = builder.load().await;
-        log::info!(
-            "create_or_get_manifest: load result for {} is {}",
-            manifest_path,
-            if dataset_result.is_ok() { "Ok" } else { "Err" }
-        );
-
         if let Ok(dataset) = dataset_result {
             Ok(DatasetConsistencyWrapper::new(dataset))
         } else {

@@ -1297,15 +1297,9 @@ pub extern "system" fn Java_org_lance_namespace_RestAdapter_serve(
 
 fn serve_internal(handle: jlong) -> Result<()> {
     let adapter = unsafe { &mut *(handle as *mut BlockingRestAdapter) };
-
     let rest_adapter = RestAdapter::new(adapter.backend.clone(), adapter.config.clone());
-
-    // Start server - this binds the port and returns immediately
-    // If binding fails, an error is returned immediately
     let server_handle = RT.block_on(rest_adapter.start())?;
-
     adapter.server_handle = Some(server_handle);
-
     Ok(())
 }
 
@@ -1319,7 +1313,6 @@ pub extern "system" fn Java_org_lance_namespace_RestAdapter_stop(
 
     if let Some(server_handle) = adapter.server_handle.take() {
         server_handle.shutdown();
-        // Give server time to shutdown gracefully
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }

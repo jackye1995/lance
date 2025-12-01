@@ -11,8 +11,6 @@ These tests mirror test_namespace_dir.py to ensure parity between
 DirectoryNamespace and RestNamespace implementations.
 """
 
-import logging
-import os
 import tempfile
 import uuid
 
@@ -20,13 +18,6 @@ import lance.namespace
 import pyarrow as pa
 import pytest
 
-# Enable debug logging for lance if LANCE_LOG env var is set
-if os.environ.get("LANCE_LOG"):
-    logging.basicConfig(
-        level=logging.DEBUG,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
-    logging.getLogger("lance").setLevel(logging.DEBUG)
 from lance_namespace import (
     CreateEmptyTableRequest,
     CreateNamespaceRequest,

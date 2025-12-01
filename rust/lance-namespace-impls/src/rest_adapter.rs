@@ -228,10 +228,7 @@ async fn create_namespace(
 
     match backend.create_namespace(request).await {
         Ok(response) => (StatusCode::CREATED, Json(response)).into_response(),
-        Err(e) => {
-            log::error!("REST create_namespace: error={:?}", e);
-            error_to_response(e)
-        }
+        Err(e) => error_to_response(e),
     }
 }
 

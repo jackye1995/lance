@@ -11,7 +11,7 @@ use lance_namespace_impls::DirectoryNamespaceBuilder;
 #[cfg(feature = "rest")]
 use lance_namespace_impls::RestNamespaceBuilder;
 #[cfg(feature = "rest-adapter")]
-use lance_namespace_impls::{ConnectBuilder, RestAdapter, RestAdapterConfig};
+use lance_namespace_impls::{ConnectBuilder, RestAdapter, RestAdapterConfig, RestAdapterHandle};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 use pythonize::{depythonize, pythonize};
@@ -356,6 +356,7 @@ impl PyRestNamespace {
 pub struct PyRestAdapter {
     backend: Arc<dyn lance_namespace::LanceNamespace>,
     config: RestAdapterConfig,
+    handle: Option<RestAdapterHandle>,
 }
 
 #[cfg(feature = "rest-adapter")]
@@ -403,7 +404,11 @@ impl PyRestAdapter {
 
         let config = RestAdapterConfig { host, port };
 
-        Ok(Self { backend, config })
+        Ok(Self {
+            backend,
+            config,
+            handle: None,
+        })
     }
 
     /// Start the REST server in the background
@@ -413,27 +418,29 @@ impl PyRestAdapter {
             self.config.host,
             self.config.port
         );
+
         let adapter = RestAdapter::new(self.backend.clone(), self.config.clone());
 
-        crate::rt().spawn_background(Some(py), async move {
-            log::info!("PyRestAdapter::serve() background task started, calling adapter.serve()");
-            let result = adapter.serve().await;
-            log::info!("PyRestAdapter::serve() adapter.serve() returned: {:?}", result.is_ok());
-        });
+        // Start the server - this binds the port and returns immediately
+        // If binding fails, an error is returned immediately
+        let handle = crate::rt()
+            .block_on(Some(py), adapter.start())?
+            .infer_error()?;
 
-        // Give server time to start
-        log::info!("PyRestAdapter::serve() sleeping 500ms to wait for server startup");
-        py.allow_threads(|| {
-            std::thread::sleep(std::time::Duration::from_millis(500));
-        });
-        log::info!("PyRestAdapter::serve() done sleeping, returning");
-
+        self.handle = Some(handle);
+        log::info!("PyRestAdapter::serve() server started successfully");
         Ok(())
     }
 
     /// Stop the REST server
     fn stop(&mut self) {
-        // Server will be stopped when dropped
+        if let Some(handle) = self.handle.take() {
+            log::info!("PyRestAdapter::stop() shutting down server");
+            handle.shutdown();
+            // Give server time to shutdown gracefully
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            log::info!("PyRestAdapter::stop() server shutdown complete");
+        }
     }
 
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {

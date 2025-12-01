@@ -18,6 +18,7 @@ use axum::{
     Json, Router,
 };
 use serde::Deserialize;
+use tokio::sync::watch;
 use tower_http::trace::TraceLayer;
 
 use lance_core::{Error, Result};
@@ -76,29 +77,69 @@ impl RestAdapter {
             .with_state(self.backend.clone())
     }
 
-    /// Start the REST server (blocking)
-    pub async fn serve(self) -> Result<()> {
+    /// Start the REST server in the background and return a handle for shutdown.
+    ///
+    /// This method binds to the configured address and spawns a background task
+    /// to handle requests. The returned handle can be used to gracefully shut down
+    /// the server.
+    ///
+    /// Returns an error immediately if the server fails to bind to the address.
+    pub async fn start(self) -> Result<RestAdapterHandle> {
         let addr = format!("{}:{}", self.config.host, self.config.port);
-        log::info!("RestAdapter::serve() binding to {}", addr);
+        log::info!("RestAdapter::start() binding to {}", addr);
+
         let listener = tokio::net::TcpListener::bind(&addr)
             .await
-            .map_err(|e| Error::IO {
-                source: Box::new(e),
-                location: snafu::location!(),
+            .map_err(|e| {
+                log::error!("RestAdapter::start() failed to bind to {}: {}", addr, e);
+                Error::IO {
+                    source: Box::new(e),
+                    location: snafu::location!(),
+                }
             })?;
 
         log::info!(
-            "RestAdapter::serve() successfully bound to {}, starting to accept connections",
+            "RestAdapter::start() successfully bound to {}, starting server",
             addr
         );
-        axum::serve(listener, self.router())
-            .await
-            .map_err(|e| Error::IO {
-                source: Box::new(e),
-                location: snafu::location!(),
-            })?;
 
-        Ok(())
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let router = self.router();
+
+        tokio::spawn(async move {
+            let result = axum::serve(listener, router)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.changed().await;
+                    log::info!("RestAdapter: received shutdown signal");
+                })
+                .await;
+
+            if let Err(e) = result {
+                log::error!("RestAdapter: server error: {}", e);
+            } else {
+                log::info!("RestAdapter: shut down gracefully");
+            }
+        });
+
+        Ok(RestAdapterHandle { shutdown_tx })
+    }
+}
+
+/// Handle for controlling a running REST adapter server.
+///
+/// Use this handle to gracefully shut down the server when it's no longer needed.
+pub struct RestAdapterHandle {
+    shutdown_tx: watch::Sender<bool>,
+}
+
+impl RestAdapterHandle {
+    /// Gracefully shut down the server.
+    ///
+    /// This signals the server to stop accepting new connections and wait for
+    /// existing connections to complete.
+    pub fn shutdown(&self) {
+        log::info!("RestAdapterHandle::shutdown() sending shutdown signal");
+        let _ = self.shutdown_tx.send(true);
     }
 }
 
@@ -491,13 +532,12 @@ mod tests {
         use crate::{DirectoryNamespaceBuilder, RestNamespaceBuilder};
         use std::sync::Arc;
         use tempfile::TempDir;
-        use tokio::task::JoinHandle;
 
         /// Test fixture that manages server lifecycle
         struct RestServerFixture {
             _temp_dir: TempDir,
             namespace: crate::RestNamespace,
-            server_handle: JoinHandle<()>,
+            server_handle: RestAdapterHandle,
         }
 
         impl RestServerFixture {
@@ -520,12 +560,7 @@ mod tests {
                 };
 
                 let server = RestAdapter::new(backend.clone(), config);
-                let server_handle = tokio::spawn(async move {
-                    server.serve().await.unwrap();
-                });
-
-                // Give server time to start
-                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                let server_handle = server.start().await.unwrap();
 
                 // Create RestNamespace client
                 let server_url = format!("http://127.0.0.1:{}", port);
@@ -543,7 +578,7 @@ mod tests {
 
         impl Drop for RestServerFixture {
             fn drop(&mut self) {
-                self.server_handle.abort();
+                self.server_handle.shutdown();
             }
         }
 

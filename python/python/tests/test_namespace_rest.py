@@ -17,7 +17,6 @@ import uuid
 import lance.namespace
 import pyarrow as pa
 import pytest
-
 from lance_namespace import (
     CreateEmptyTableRequest,
     CreateNamespaceRequest,

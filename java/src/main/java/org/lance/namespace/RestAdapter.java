@@ -30,12 +30,16 @@ import java.util.Map;
  * Map<String, String> backendConfig = new HashMap<>();
  * backendConfig.put("root", "/tmp/test-data");
  *
- * try (RestAdapter adapter = new RestAdapter("dir", backendConfig, "127.0.0.1", 8080)) {
+ * // Use port 0 to let OS assign an available port
+ * try (RestAdapter adapter = new RestAdapter("dir", backendConfig)) {
  *     adapter.serve();
+ *
+ *     // Get the actual port assigned by the OS
+ *     int port = adapter.getPort();
  *
  *     // Now you can connect with RestNamespace
  *     Map<String, String> clientConfig = new HashMap<>();
- *     clientConfig.put("uri", "http://127.0.0.1:8080");
+ *     clientConfig.put("uri", "http://127.0.0.1:" + port);
  *     RestNamespace client = new RestNamespace();
  *     client.initialize(clientConfig, allocator);
  *
@@ -57,7 +61,7 @@ public class RestAdapter implements Closeable, AutoCloseable {
    * @param namespaceImpl The namespace implementation type (e.g., "dir" for DirectoryNamespace)
    * @param backendConfig Configuration properties for the backend namespace
    * @param host Host to bind the server to
-   * @param port Port to bind the server to
+   * @param port Port to bind the server to. Use 0 to let the OS assign an available port.
    */
   public RestAdapter(
       String namespaceImpl, Map<String, String> backendConfig, String host, int port) {
@@ -70,21 +74,21 @@ public class RestAdapter implements Closeable, AutoCloseable {
     if (host == null || host.isEmpty()) {
       throw new IllegalArgumentException("host cannot be null or empty");
     }
-    if (port <= 0 || port > 65535) {
-      throw new IllegalArgumentException("port must be between 1 and 65535");
+    if (port < 0 || port > 65535) {
+      throw new IllegalArgumentException("port must be between 0 and 65535");
     }
 
     this.nativeRestAdapterHandle = createNative(namespaceImpl, backendConfig, host, port);
   }
 
   /**
-   * Creates a new REST adapter with default host (127.0.0.1) and port (2333).
+   * Creates a new REST adapter with default host (127.0.0.1) and port 0 (OS-assigned).
    *
    * @param namespaceImpl The namespace implementation type
    * @param backendConfig Configuration properties for the backend namespace
    */
   public RestAdapter(String namespaceImpl, Map<String, String> backendConfig) {
-    this(namespaceImpl, backendConfig, "127.0.0.1", 2333);
+    this(namespaceImpl, backendConfig, "127.0.0.1", 0);
   }
 
   /**
@@ -103,6 +107,20 @@ public class RestAdapter implements Closeable, AutoCloseable {
 
     serve(nativeRestAdapterHandle);
     serverStarted = true;
+  }
+
+  /**
+   * Get the actual port the server is listening on.
+   *
+   * <p>This is useful when port 0 was specified to get an OS-assigned port.
+   *
+   * @return The actual port, or 0 if the server hasn't been started
+   */
+  public int getPort() {
+    if (nativeRestAdapterHandle == 0) {
+      return 0;
+    }
+    return getPort(nativeRestAdapterHandle);
   }
 
   /**
@@ -131,6 +149,8 @@ public class RestAdapter implements Closeable, AutoCloseable {
       String namespaceImpl, Map<String, String> backendConfig, String host, int port);
 
   private native void serve(long handle);
+
+  private native int getPort(long handle);
 
   private native void stop(long handle);
 

@@ -35,7 +35,6 @@ import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -57,15 +56,14 @@ public class RestNamespaceTest {
   void setUp() {
     allocator = new RootAllocator(Long.MAX_VALUE);
 
-    port = 10000 + new Random().nextInt(10000);
-
     // Create backend configuration for DirectoryNamespace
     Map<String, String> backendConfig = new HashMap<>();
     backendConfig.put("root", tempDir.toString());
 
-    // Create and start REST adapter
-    adapter = new RestAdapter("dir", backendConfig, "127.0.0.1", port);
+    // Create and start REST adapter (port 0 lets OS assign available port)
+    adapter = new RestAdapter("dir", backendConfig);
     adapter.serve();
+    port = adapter.getPort();
 
     // Create REST namespace client
     namespace = new RestNamespace();

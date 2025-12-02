@@ -362,9 +362,11 @@ pub struct PyRestAdapter {
 #[cfg(feature = "rest-adapter")]
 #[pymethods]
 impl PyRestAdapter {
-    /// Create a new REST adapter server with namespace configuration
+    /// Create a new REST adapter server with namespace configuration.
+    /// If port is 0 (default), the OS will assign an available ephemeral port.
+    /// Use `port` property after `serve()` to get the actual port.
     #[new]
-    #[pyo3(signature = (namespace_impl, namespace_properties, session = None, host = "127.0.0.1".to_string(), port = 2333))]
+    #[pyo3(signature = (namespace_impl, namespace_properties, session = None, host = "127.0.0.1".to_string(), port = 0))]
     fn new(
         namespace_impl: String,
         namespace_properties: Option<&Bound<'_, PyDict>>,
@@ -378,13 +380,11 @@ impl PyRestAdapter {
             props = dict_to_hashmap(dict)?;
         }
 
-        // Use ConnectBuilder to build namespace from impl and properties
         let mut builder = ConnectBuilder::new(namespace_impl);
         for (k, v) in props {
             builder = builder.property(k, v);
         }
 
-        // Add session if provided
         if let Some(sess) = session {
             builder = builder.session(sess.borrow().inner.clone());
         }
@@ -402,6 +402,13 @@ impl PyRestAdapter {
         })
     }
 
+    /// Get the actual port the server is listening on.
+    /// Returns 0 if server is not started yet.
+    #[getter]
+    fn port(&self) -> u16 {
+        self.handle.as_ref().map(|h| h.port()).unwrap_or(0)
+    }
+
     /// Start the REST server in the background
     fn serve(&mut self, py: Python) -> PyResult<()> {
         let adapter = RestAdapter::new(self.backend.clone(), self.config.clone());
@@ -417,7 +424,6 @@ impl PyRestAdapter {
     fn stop(&mut self) {
         if let Some(handle) = self.handle.take() {
             handle.shutdown();
-            std::thread::sleep(std::time::Duration::from_millis(100));
         }
     }
 

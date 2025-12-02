@@ -316,17 +316,18 @@ class RestAdapter:
     host : str, optional
         Host address to bind to, default "127.0.0.1"
     port : int, optional
-        Port to listen on, default 2333
+        Port to listen on. Default 0 lets the OS assign an available port.
+        Use the `port` property after `serve()` to get the actual port.
 
     Examples
     --------
     >>> import lance.namespace
     >>>
-    >>> # Start REST adapter with DirectoryNamespace backend
+    >>> # Start REST adapter with DirectoryNamespace backend (auto port)
     >>> namespace_config = {"root": "memory://test"}
-    >>> with lance.namespace.RestAdapter("dir", namespace_config, port=4001) as adapter:
-    ...     # Create REST client
-    ...     client = lance.namespace.RestNamespace(uri="http://127.0.0.1:4001")
+    >>> with lance.namespace.RestAdapter("dir", namespace_config) as adapter:
+    ...     # Create REST client using the assigned port
+    ...     client = lance.namespace.RestNamespace(uri=f"http://127.0.0.1:{adapter.port}")
     ...     # Use the client...
     """
 
@@ -336,7 +337,7 @@ class RestAdapter:
         namespace_properties: Dict[str, str] = None,
         session=None,
         host: str = "127.0.0.1",
-        port: int = 2333,
+        port: int = 0,
     ):
         if PyRestAdapter is None:
             raise RuntimeError(
@@ -353,8 +354,15 @@ class RestAdapter:
         # Create the underlying Rust adapter
         self._inner = PyRestAdapter(namespace_impl, str_properties, session, host, port)
         self.host = host
-        self.port = port
         self.namespace_impl = namespace_impl
+
+    @property
+    def port(self) -> int:
+        """Get the actual port the server is listening on.
+
+        Returns 0 if the server hasn't been started yet.
+        """
+        return self._inner.port
 
     def serve(self):
         """Start the REST server in the background."""

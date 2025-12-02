@@ -61,8 +61,8 @@ public class RestNamespaceTest {
     backendConfig.put("root", tempDir.toString());
 
     // Create and start REST adapter (port 0 lets OS assign available port)
-    adapter = new RestAdapter("dir", backendConfig);
-    adapter.serve();
+    adapter = new RestAdapter("dir", backendConfig, "127.0.0.1", 0);
+    adapter.start();
     port = adapter.getPort();
 
     // Create REST namespace client

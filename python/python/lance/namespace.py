@@ -314,10 +314,11 @@ class RestAdapter:
     session : Session, optional
         Lance session for sharing object store connections with the backend namespace.
     host : str, optional
-        Host address to bind to, default "127.0.0.1"
+        Host address to bind to. Default "127.0.0.1".
     port : int, optional
-        Port to listen on. Default 0 lets the OS assign an available port.
-        Use the `port` property after `serve()` to get the actual port.
+        Port to listen on. Default 2333 per REST spec.
+        Use 0 to let the OS assign an available ephemeral port.
+        Use the `port` property after `start()` to get the actual port.
 
     Examples
     --------
@@ -336,8 +337,8 @@ class RestAdapter:
         namespace_impl: str,
         namespace_properties: Dict[str, str] = None,
         session=None,
-        host: str = "127.0.0.1",
-        port: int = 0,
+        host: str = None,
+        port: int = None,
     ):
         if PyRestAdapter is None:
             raise RuntimeError(
@@ -364,9 +365,9 @@ class RestAdapter:
         """
         return self._inner.port
 
-    def serve(self):
+    def start(self):
         """Start the REST server in the background."""
-        self._inner.serve()
+        self._inner.start()
 
     def stop(self):
         """Stop the REST server."""
@@ -374,7 +375,7 @@ class RestAdapter:
 
     def __enter__(self):
         """Start server when entering context."""
-        self.serve()
+        self.start()
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):

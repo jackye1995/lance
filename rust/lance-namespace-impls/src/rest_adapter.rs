@@ -38,7 +38,7 @@ impl Default for RestAdapterConfig {
     fn default() -> Self {
         Self {
             host: "127.0.0.1".to_string(),
-            port: 0,
+            port: 2333,
         }
     }
 }
@@ -569,7 +569,10 @@ mod tests {
                 let backend = Arc::new(backend);
 
                 // Start REST server with port 0 (OS assigns available port)
-                let config = RestAdapterConfig::default();
+                let config = RestAdapterConfig {
+                    port: 0,
+                    ..Default::default()
+                };
 
                 let server = RestAdapter::new(backend.clone(), config);
                 let server_handle = server.start().await.unwrap();

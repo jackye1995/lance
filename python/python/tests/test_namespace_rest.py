@@ -61,7 +61,7 @@ def rest_namespace():
     with tempfile.TemporaryDirectory() as tmpdir:
         backend_config = {"root": tmpdir}
 
-        with lance.namespace.RestAdapter("dir", backend_config) as adapter:
+        with lance.namespace.RestAdapter("dir", backend_config, port=0) as adapter:
             client = connect("rest", {"uri": f"http://127.0.0.1:{adapter.port}"})
             yield client
 
@@ -644,7 +644,7 @@ class TestLanceNamespaceConnect:
         with tempfile.TemporaryDirectory() as tmpdir:
             backend_config = {"root": tmpdir}
 
-            with lance.namespace.RestAdapter("dir", backend_config) as adapter:
+            with lance.namespace.RestAdapter("dir", backend_config, port=0) as adapter:
                 properties = {"uri": f"http://127.0.0.1:{adapter.port}"}
                 ns = connect("rest", properties)
 
@@ -666,7 +666,7 @@ class TestLanceNamespaceConnect:
         with tempfile.TemporaryDirectory() as tmpdir:
             backend_config = {"root": tmpdir}
 
-            with lance.namespace.RestAdapter("dir", backend_config) as adapter:
+            with lance.namespace.RestAdapter("dir", backend_config, port=0) as adapter:
                 properties = {
                     "uri": f"http://127.0.0.1:{adapter.port}",
                     "delimiter": "@",

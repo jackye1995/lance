@@ -32,7 +32,7 @@ import java.util.Map;
  *
  * // Use port 0 to let OS assign an available port
  * try (RestAdapter adapter = new RestAdapter("dir", backendConfig)) {
- *     adapter.serve();
+ *     adapter.start();
  *
  *     // Get the actual port assigned by the OS
  *     int port = adapter.getPort();
@@ -60,21 +60,19 @@ public class RestAdapter implements Closeable, AutoCloseable {
    *
    * @param namespaceImpl The namespace implementation type (e.g., "dir" for DirectoryNamespace)
    * @param backendConfig Configuration properties for the backend namespace
-   * @param host Host to bind the server to
-   * @param port Port to bind the server to. Use 0 to let the OS assign an available port.
+   * @param host Host to bind the server to, or null for default (127.0.0.1)
+   * @param port Port to bind the server to. Use 0 to let the OS assign an available port, or null
+   *     for default (2333).
    */
   public RestAdapter(
-      String namespaceImpl, Map<String, String> backendConfig, String host, int port) {
+      String namespaceImpl, Map<String, String> backendConfig, String host, Integer port) {
     if (namespaceImpl == null || namespaceImpl.isEmpty()) {
       throw new IllegalArgumentException("namespace implementation cannot be null or empty");
     }
     if (backendConfig == null) {
       throw new IllegalArgumentException("backend config cannot be null");
     }
-    if (host == null || host.isEmpty()) {
-      throw new IllegalArgumentException("host cannot be null or empty");
-    }
-    if (port < 0 || port > 65535) {
+    if (port != null && (port < 0 || port > 65535)) {
       throw new IllegalArgumentException("port must be between 0 and 65535");
     }
 
@@ -82,13 +80,13 @@ public class RestAdapter implements Closeable, AutoCloseable {
   }
 
   /**
-   * Creates a new REST adapter with default host (127.0.0.1) and port 0 (OS-assigned).
+   * Creates a new REST adapter with default host and port.
    *
    * @param namespaceImpl The namespace implementation type
    * @param backendConfig Configuration properties for the backend namespace
    */
   public RestAdapter(String namespaceImpl, Map<String, String> backendConfig) {
-    this(namespaceImpl, backendConfig, "127.0.0.1", 0);
+    this(namespaceImpl, backendConfig, null, null);
   }
 
   /**
@@ -97,7 +95,7 @@ public class RestAdapter implements Closeable, AutoCloseable {
    * <p>This method returns immediately after starting the server. The server runs in a background
    * thread until {@link #stop()} is called or the adapter is closed.
    */
-  public void serve() {
+  public void start() {
     if (nativeRestAdapterHandle == 0) {
       throw new IllegalStateException("RestAdapter not initialized");
     }
@@ -105,7 +103,7 @@ public class RestAdapter implements Closeable, AutoCloseable {
       throw new IllegalStateException("Server already started");
     }
 
-    serve(nativeRestAdapterHandle);
+    start(nativeRestAdapterHandle);
     serverStarted = true;
   }
 
@@ -146,9 +144,9 @@ public class RestAdapter implements Closeable, AutoCloseable {
 
   // Native methods
   private native long createNative(
-      String namespaceImpl, Map<String, String> backendConfig, String host, int port);
+      String namespaceImpl, Map<String, String> backendConfig, String host, Integer port);
 
-  private native void serve(long handle);
+  private native void start(long handle);
 
   private native int getPort(long handle);
 

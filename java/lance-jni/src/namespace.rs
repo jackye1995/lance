@@ -1235,7 +1235,7 @@ pub extern "system" fn Java_org_lance_namespace_RestAdapter_createNative(
     namespace_impl: JString,
     properties_map: JObject,
     host: JString,
-    port: jni::sys::jint,
+    port: JObject,
 ) -> jlong {
     ok_or_throw_with_return!(
         env,
@@ -1249,7 +1249,7 @@ fn create_rest_adapter_internal(
     namespace_impl: JString,
     properties_map: JObject,
     host: JString,
-    port: jni::sys::jint,
+    port: JObject,
 ) -> Result<jlong> {
     // Get namespace implementation type
     let impl_str: String = env.get_string(&namespace_impl)?.into();
@@ -1268,13 +1268,22 @@ fn create_rest_adapter_internal(
         .block_on(builder.connect())
         .map_err(|e| Error::runtime_error(format!("Failed to build backend namespace: {}", e)))?;
 
-    // Get host string
-    let host_str: String = env.get_string(&host)?.into();
+    // Build config with defaults, overriding if values provided
+    let mut config = RestAdapterConfig::default();
 
-    let config = RestAdapterConfig {
-        host: host_str,
-        port: port as u16,
-    };
+    // Get host string if not null
+    if !host.is_null() {
+        config.host = env.get_string(&host)?.into();
+    }
+
+    // Get port if not null (Integer object)
+    if !port.is_null() {
+        let port_value = env
+            .call_method(&port, "intValue", "()I", &[])?
+            .i()
+            .map_err(|e| Error::runtime_error(format!("Failed to get port value: {}", e)))?;
+        config.port = port_value as u16;
+    }
 
     let adapter = BlockingRestAdapter {
         backend,
@@ -1287,15 +1296,15 @@ fn create_rest_adapter_internal(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_org_lance_namespace_RestAdapter_serve(
+pub extern "system" fn Java_org_lance_namespace_RestAdapter_start(
     mut env: JNIEnv,
     _obj: JObject,
     handle: jlong,
 ) {
-    ok_or_throw_without_return!(env, serve_internal(handle))
+    ok_or_throw_without_return!(env, start_internal(handle))
 }
 
-fn serve_internal(handle: jlong) -> Result<()> {
+fn start_internal(handle: jlong) -> Result<()> {
     let adapter = unsafe { &mut *(handle as *mut BlockingRestAdapter) };
     let rest_adapter = RestAdapter::new(adapter.backend.clone(), adapter.config.clone());
     let server_handle = RT.block_on(rest_adapter.start())?;

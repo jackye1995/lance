@@ -363,16 +363,16 @@ pub struct PyRestAdapter {
 #[pymethods]
 impl PyRestAdapter {
     /// Create a new REST adapter server with namespace configuration.
-    /// If port is 0 (default), the OS will assign an available ephemeral port.
-    /// Use `port` property after `serve()` to get the actual port.
+    /// Default port is 2333 per REST spec. Use port 0 to let OS assign an ephemeral port.
+    /// Use `port` property after `start()` to get the actual port.
     #[new]
-    #[pyo3(signature = (namespace_impl, namespace_properties, session = None, host = "127.0.0.1".to_string(), port = 0))]
+    #[pyo3(signature = (namespace_impl, namespace_properties, session = None, host = None, port = None))]
     fn new(
         namespace_impl: String,
         namespace_properties: Option<&Bound<'_, PyDict>>,
         session: Option<&Bound<'_, Session>>,
-        host: String,
-        port: u16,
+        host: Option<String>,
+        port: Option<u16>,
     ) -> PyResult<Self> {
         let mut props = HashMap::new();
 
@@ -393,7 +393,13 @@ impl PyRestAdapter {
             .block_on(None, builder.connect())?
             .infer_error()?;
 
-        let config = RestAdapterConfig { host, port };
+        let mut config = RestAdapterConfig::default();
+        if let Some(h) = host {
+            config.host = h;
+        }
+        if let Some(p) = port {
+            config.port = p;
+        }
 
         Ok(Self {
             backend,
@@ -410,7 +416,7 @@ impl PyRestAdapter {
     }
 
     /// Start the REST server in the background
-    fn serve(&mut self, py: Python) -> PyResult<()> {
+    fn start(&mut self, py: Python) -> PyResult<()> {
         let adapter = RestAdapter::new(self.backend.clone(), self.config.clone());
         let handle = crate::rt()
             .block_on(Some(py), adapter.start())?

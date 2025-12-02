@@ -91,14 +91,14 @@ jobs:
           fury_token: ${{ secrets.FURY_TOKEN }}
           repo: ${{ steps.handle_tag.outputs.repo }}
   mac:
-    timeout-minutes: 60
+    timeout-minutes: ${{ matrix.config.target == 'x86_64-apple-darwin' && 90 || 60 }}
     runs-on: ${{ matrix.config.runner }}
     strategy:
       matrix:
         python-minor-version: ["9"]
         config:
           - target: x86_64-apple-darwin
-            runner: macos-14
+            runner: macos-13
           - target: aarch64-apple-darwin
             runner: warp-macos-14-arm64-6x
     env:

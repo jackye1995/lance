@@ -70,7 +70,7 @@ Lance uses semantic versioning with prerelease identifiers:
 | **RC (Major/Minor)**      | Pre-Release         | `release-root/X.Y.0-beta.N` | `vX.Y.0-rc.N`          | All changes for the release                                          |
 | **RC (Patch)**            | Pre-Release         | `vX.Y.(Z-1)`                | `vX.Y.Z-rc.N`          | Only changes in this patch release                                   |
 | **RC (Iterations)**       | Pre-Release         | `vX.Y.(Z-1)`                | `vX.Y.Z-rc.N`          | Only changes in this patch release (not changes against previous RC) |
-| **Beta (Main branch)**    | Pre-Release         | `release-root/X.Y.Z-beta.N` | `vX.Y.Z-beta.N`        | Changes since last stable release RC cut in main branch              |
+| **Beta (Main branch)**    | Pre-Release         | `vX.Y.Z-beta.(N-1)` or `release-root` for first beta | `vX.Y.Z-beta.N`        | Changes since previous beta release              |
 | **Beta (Release branch)** | Pre-Release         | `vX.Y.(Z-1)`                | `vX.Y.Z-beta.N`        | Changes since last stable release                                    |
 
 ## Branching Strategy
@@ -315,7 +315,7 @@ Workflow: Publish Beta
     - Bumped to 2.0.0-beta.1 (beta resets on major bump)
     - Created release-root/2.0.0-beta.N → same commit, message "Base: 1.3.0-rc.1"
     - Tagged v2.0.0-beta.1
-    - Created GitHub Pre-Release with release notes from release-root/2.0.0-beta.N to v2.0.0-beta.1
+    - Created GitHub Pre-Release with release notes from v1.4.0-beta.1 to v2.0.0-beta.1
     - Published artifacts to fury.io
 
 # 4. More changes, publish again (still has breaking changes)
@@ -328,7 +328,7 @@ Workflow: Publish Beta
     - No major bump needed (already bumped)
     - Bumped to 2.0.0-beta.2
     - Tagged v2.0.0-beta.2
-    - Created GitHub Pre-Release with release notes from release-root/2.0.0-beta.N to v2.0.0-beta.2
+    - Created GitHub Pre-Release with release notes from v2.0.0-beta.1 to v2.0.0-beta.2
     - Published artifacts to fury.io
 ```
 
@@ -387,7 +387,7 @@ Workflow: Publish Beta
     - Bumped from 1.4.0-beta.1 to 2.0.0-beta.1 (beta resets on major bump)
     - Created release-root/2.0.0-beta.N → same commit, message "Base: 1.3.0-rc.1"
     - Tagged v2.0.0-beta.1
-    - Created GitHub Pre-Release with release notes from release-root/2.0.0-beta.N to v2.0.0-beta.1
+    - Created GitHub Pre-Release with release notes from v1.4.0-beta.1 to v2.0.0-beta.1
     - Published artifacts to fury.io
 
 # 7. More changes, publish third beta (still has breaking changes)

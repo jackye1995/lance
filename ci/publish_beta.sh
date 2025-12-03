@@ -20,6 +20,9 @@ git checkout "${BRANCH}"
 CURRENT_VERSION=$(grep '^version = ' Cargo.toml | head -n1 | cut -d'"' -f2)
 echo "Current version: ${CURRENT_VERSION}"
 
+# Save original version for release notes comparison (before any version bumps)
+ORIGINAL_VERSION="${CURRENT_VERSION}"
+
 # Validate current version is a beta version
 if [[ ! "${CURRENT_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]; then
     echo "ERROR: Current version ${CURRENT_VERSION} is not a beta version"
@@ -119,7 +122,13 @@ Release root for ${NEXT_MAJOR}.0.0-beta.N series (same base as ${CURR_MAJOR}.${C
                 echo "BETA_TAG=${BETA_TAG}" >> $GITHUB_OUTPUT 2>/dev/null || true
                 echo "BETA_VERSION=${CURRENT_VERSION}" >> $GITHUB_OUTPUT 2>/dev/null || true
                 echo "RELEASE_ROOT_TAG=${NEW_RELEASE_ROOT_TAG}" >> $GITHUB_OUTPUT 2>/dev/null || true
-                echo "RELEASE_NOTES_FROM=${NEW_RELEASE_ROOT_TAG}" >> $GITHUB_OUTPUT 2>/dev/null || true
+                # Use previous beta tag for release notes (incremental, not cumulative)
+                PREV_BETA_TAG="${TAG_PREFIX}${ORIGINAL_VERSION}"
+                if git rev-parse "${PREV_BETA_TAG}" >/dev/null 2>&1; then
+                    echo "RELEASE_NOTES_FROM=${PREV_BETA_TAG}" >> $GITHUB_OUTPUT 2>/dev/null || true
+                else
+                    echo "RELEASE_NOTES_FROM=${NEW_RELEASE_ROOT_TAG}" >> $GITHUB_OUTPUT 2>/dev/null || true
+                fi
                 exit 0
             fi
         fi
@@ -166,22 +175,32 @@ Release root for ${BETA_MAJOR}.${BETA_MINOR}.${BETA_PATCH}-beta.N series (initia
 fi
 
 # Determine release notes comparison base
-BETA_MAJOR=$(echo "${NEW_VERSION}" | cut -d. -f1)
-BETA_MINOR=$(echo "${NEW_VERSION}" | cut -d. -f2)
-BETA_PATCH=$(echo "${NEW_VERSION}" | cut -d. -f3 | cut -d- -f1)
-
 if [[ "${BRANCH}" == "main" ]]; then
-    # For main branch: compare against release-root tag
-    BETA_RELEASE_ROOT_TAG="release-root/${BETA_MAJOR}.${BETA_MINOR}.${BETA_PATCH}-beta.N"
+    # For main branch: compare against the previous beta tag (incremental release notes)
+    PREV_BETA_TAG="${TAG_PREFIX}${ORIGINAL_VERSION}"
 
-    if git rev-parse "${BETA_RELEASE_ROOT_TAG}" >/dev/null 2>&1; then
-        echo "Release notes will compare from ${BETA_RELEASE_ROOT_TAG} to ${BETA_TAG}"
-        RELEASE_NOTES_FROM="${BETA_RELEASE_ROOT_TAG}"
+    if git rev-parse "${PREV_BETA_TAG}" >/dev/null 2>&1; then
+        echo "Release notes will compare from ${PREV_BETA_TAG} to ${BETA_TAG}"
+        RELEASE_NOTES_FROM="${PREV_BETA_TAG}"
     else
-        echo "Warning: Release root tag ${BETA_RELEASE_ROOT_TAG} not found"
-        RELEASE_NOTES_FROM=""
+        # Previous beta tag doesn't exist (first beta), fall back to release root
+        BETA_MAJOR=$(echo "${NEW_VERSION}" | cut -d. -f1)
+        BETA_MINOR=$(echo "${NEW_VERSION}" | cut -d. -f2)
+        BETA_PATCH=$(echo "${NEW_VERSION}" | cut -d. -f3 | cut -d- -f1)
+        BETA_RELEASE_ROOT_TAG="release-root/${BETA_MAJOR}.${BETA_MINOR}.${BETA_PATCH}-beta.N"
+
+        if git rev-parse "${BETA_RELEASE_ROOT_TAG}" >/dev/null 2>&1; then
+            echo "First beta in series, release notes will compare from ${BETA_RELEASE_ROOT_TAG} to ${BETA_TAG}"
+            RELEASE_NOTES_FROM="${BETA_RELEASE_ROOT_TAG}"
+        else
+            echo "Warning: No comparison tag found for release notes"
+            RELEASE_NOTES_FROM=""
+        fi
     fi
 elif [[ "${BRANCH}" =~ ^release/ ]]; then
+    BETA_MAJOR=$(echo "${NEW_VERSION}" | cut -d. -f1)
+    BETA_MINOR=$(echo "${NEW_VERSION}" | cut -d. -f2)
+    BETA_PATCH=$(echo "${NEW_VERSION}" | cut -d. -f3 | cut -d- -f1)
     # For release branch: compare against last stable tag
     PREV_PATCH=$((BETA_PATCH - 1))
     if [ "${PREV_PATCH}" -ge 0 ]; then

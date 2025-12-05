@@ -2339,13 +2339,13 @@ dependencies = [
 
 [[package]]
 name = "flate2"
-version = "1.1.5"
+version = "1.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bfe33edd8e85a12a67454e37f8c75e730830d83e313556ab9ebf9ee7fbeb3bfb"
+checksum = "a2152dbcb980c05735e2a651d96011320a949eb31a0c8b38b72645ce97dec676"
 dependencies = [
  "crc32fast",
- "libz-rs-sys",
  "miniz_oxide",
+ "zlib-rs",
 ]
 
 [[package]]
@@ -2399,7 +2399,7 @@ checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 
 [[package]]
 name = "fsst"
-version = "1.0.0-rc.2"
+version = "1.0.0-rc.3"
 dependencies = [
  "arrow-array",
  "rand 0.9.2",
@@ -3347,7 +3347,7 @@ dependencies = [
 
 [[package]]
 name = "lance"
-version = "1.0.0-rc.2"
+version = "1.0.0-rc.3"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -3411,7 +3411,7 @@ dependencies = [
 
 [[package]]
 name = "lance-arrow"
-version = "1.0.0-rc.2"
+version = "1.0.0-rc.3"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -3429,7 +3429,7 @@ dependencies = [
 
 [[package]]
 name = "lance-bitpacking"
-version = "1.0.0-rc.2"
+version = "1.0.0-rc.3"
 dependencies = [
  "arrayref",
  "paste",
@@ -3438,7 +3438,7 @@ dependencies = [
 
 [[package]]
 name = "lance-core"
-version = "1.0.0-rc.2"
+version = "1.0.0-rc.3"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -3474,7 +3474,7 @@ dependencies = [
 
 [[package]]
 name = "lance-datafusion"
-version = "1.0.0-rc.2"
+version = "1.0.0-rc.3"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -3505,7 +3505,7 @@ dependencies = [
 
 [[package]]
 name = "lance-datagen"
-version = "1.0.0-rc.2"
+version = "1.0.0-rc.3"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -3522,7 +3522,7 @@ dependencies = [
 
 [[package]]
 name = "lance-encoding"
-version = "1.0.0-rc.2"
+version = "1.0.0-rc.3"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -3559,7 +3559,7 @@ dependencies = [
 
 [[package]]
 name = "lance-file"
-version = "1.0.0-rc.2"
+version = "1.0.0-rc.3"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -3591,7 +3591,7 @@ dependencies = [
 
 [[package]]
 name = "lance-geo"
-version = "1.0.0-rc.2"
+version = "1.0.0-rc.3"
 dependencies = [
  "datafusion",
  "geo-types",
@@ -3602,7 +3602,7 @@ dependencies = [
 
 [[package]]
 name = "lance-index"
-version = "1.0.0-rc.2"
+version = "1.0.0-rc.3"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -3663,7 +3663,7 @@ dependencies = [
 
 [[package]]
 name = "lance-io"
-version = "1.0.0-rc.2"
+version = "1.0.0-rc.3"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -3703,7 +3703,7 @@ dependencies = [
 
 [[package]]
 name = "lance-jni"
-version = "1.0.0-rc.2"
+version = "1.0.0-rc.3"
 dependencies = [
  "arrow",
  "arrow-schema",
@@ -3736,7 +3736,7 @@ dependencies = [
 
 [[package]]
 name = "lance-linalg"
-version = "1.0.0-rc.2"
+version = "1.0.0-rc.3"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -3752,7 +3752,7 @@ dependencies = [
 
 [[package]]
 name = "lance-namespace"
-version = "1.0.0-rc.2"
+version = "1.0.0-rc.3"
 dependencies = [
  "arrow",
  "async-trait",
@@ -3764,7 +3764,7 @@ dependencies = [
 
 [[package]]
 name = "lance-namespace-impls"
-version = "1.0.0-rc.2"
+version = "1.0.0-rc.3"
 dependencies = [
  "arrow",
  "arrow-ipc",
@@ -3806,7 +3806,7 @@ dependencies = [
 
 [[package]]
 name = "lance-table"
-version = "1.0.0-rc.2"
+version = "1.0.0-rc.3"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -3939,15 +3939,6 @@ checksum = "416f7e718bdb06000964960ffa43b4335ad4012ae8b99060261aa4a8088d5ccb"
 dependencies = [
  "bitflags",
  "libc",
-]
-
-[[package]]
-name = "libz-rs-sys"
-version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b484ba8d4f775eeca644c452a56650e544bf7e617f1d170fe7298122ead5222"
-dependencies = [
- "zlib-rs",
 ]
 
 [[package]]
@@ -4146,9 +4137,9 @@ dependencies = [
 
 [[package]]
 name = "mio"
-version = "1.1.0"
+version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69d83b0086dc8ecf3ce9ae2874b2d1290252e2a30720bea58a5c6639b0092873"
+checksum = "a69bcab0ad47271a0234d9422b131806bf3968021e5dc9328caf2d4cd58557fc"
 dependencies = [
  "libc",
  "wasi",
@@ -6463,9 +6454,9 @@ dependencies = [
 
 [[package]]
 name = "toml_edit"
-version = "0.23.7"
+version = "0.23.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6485ef6d0d9b5d0ec17244ff7eb05310113c3f316f2d14200d4de56b3cb98f8d"
+checksum = "5a9b7ac41d92f2d2803f233e297127bac397df7b337e0460a1cc39d6c006dee4"
 dependencies = [
  "indexmap",
  "toml_datetime",

@@ -2489,23 +2489,32 @@ fn create_java_index<'local>(
 ) -> Result<JObject<'local>> {
     // Create UUID
     let uuid_str = index_meta.uuid.to_string();
-    let uuid_obj = env.call_static_method(
-        "java/util/UUID",
-        "fromString",
-        "(Ljava/lang/String;)Ljava/util/UUID;",
-        &[JValue::Object(&env.new_string(&uuid_str)?.into())],
-    )?.l()?;
+    let uuid_obj = env
+        .call_static_method(
+            "java/util/UUID",
+            "fromString",
+            "(Ljava/lang/String;)Ljava/util/UUID;",
+            &[JValue::Object(&env.new_string(&uuid_str)?.into())],
+        )?
+        .l()?;
 
     // Create fields list (List<Integer>)
     let fields_list = env.new_object("java/util/ArrayList", "()V", &[])?;
     for field in &index_meta.fields {
-        let int_obj = env.call_static_method(
-            "java/lang/Integer",
-            "valueOf",
-            "(I)Ljava/lang/Integer;",
-            &[JValue::Int(*field)],
-        )?.l()?;
-        env.call_method(&fields_list, "add", "(Ljava/lang/Object;)Z", &[JValue::Object(&int_obj)])?;
+        let int_obj = env
+            .call_static_method(
+                "java/lang/Integer",
+                "valueOf",
+                "(I)Ljava/lang/Integer;",
+                &[JValue::Int(*field)],
+            )?
+            .l()?;
+        env.call_method(
+            &fields_list,
+            "add",
+            "(Ljava/lang/Object;)Z",
+            &[JValue::Object(&int_obj)],
+        )?;
     }
 
     // Create name
@@ -2515,13 +2524,20 @@ fn create_java_index<'local>(
     let fragments_list = if let Some(bitmap) = &index_meta.fragment_bitmap {
         let list = env.new_object("java/util/ArrayList", "()V", &[])?;
         for frag_id in bitmap.iter() {
-            let int_obj = env.call_static_method(
-                "java/lang/Integer",
-                "valueOf",
-                "(I)Ljava/lang/Integer;",
-                &[JValue::Int(frag_id as i32)],
-            )?.l()?;
-            env.call_method(&list, "add", "(Ljava/lang/Object;)Z", &[JValue::Object(&int_obj)])?;
+            let int_obj = env
+                .call_static_method(
+                    "java/lang/Integer",
+                    "valueOf",
+                    "(I)Ljava/lang/Integer;",
+                    &[JValue::Int(frag_id as i32)],
+                )?
+                .l()?;
+            env.call_method(
+                &list,
+                "add",
+                "(Ljava/lang/Object;)Z",
+                &[JValue::Object(&int_obj)],
+            )?;
         }
         list
     } else {
@@ -2545,7 +2561,8 @@ fn create_java_index<'local>(
             "ofEpochMilli",
             "(J)Ljava/time/Instant;",
             &[JValue::Long(millis)],
-        )?.l()?
+        )?
+        .l()?
     } else {
         JObject::null()
     };
@@ -2557,7 +2574,8 @@ fn create_java_index<'local>(
             "valueOf",
             "(I)Ljava/lang/Integer;",
             &[JValue::Int(id as i32)],
-        )?.l()?
+        )?
+        .l()?
     } else {
         JObject::null()
     };
@@ -2638,11 +2656,13 @@ fn determine_index_type<'local>(
 
     match type_name {
         Some(name) => {
-            let index_type = env.get_static_field(
-                "org/lance/index/IndexType",
-                name,
-                "Lorg/lance/index/IndexType;",
-            )?.l()?;
+            let index_type = env
+                .get_static_field(
+                    "org/lance/index/IndexType",
+                    name,
+                    "Lorg/lance/index/IndexType;",
+                )?
+                .l()?;
             Ok(index_type)
         }
         None => Ok(JObject::null()),
@@ -2674,8 +2694,13 @@ fn inner_count_indexed_rows(
     let filter: String = jfilter.extract(env)?;
 
     // Extract optional fragment IDs
-    let fragment_ids: Option<Vec<u32>> = if env.call_method(&jfragment_ids, "isPresent", "()Z", &[])?.z()? {
-        let list_obj = env.call_method(&jfragment_ids, "get", "()Ljava/lang/Object;", &[])?.l()?;
+    let fragment_ids: Option<Vec<u32>> = if env
+        .call_method(&jfragment_ids, "isPresent", "()Z", &[])?
+        .z()?
+    {
+        let list_obj = env
+            .call_method(&jfragment_ids, "get", "()Ljava/lang/Object;", &[])?
+            .l()?;
         let list = env.get_list(&list_obj)?;
         let mut ids = Vec::new();
         let mut iter = list.iter(env)?;
@@ -2712,7 +2737,9 @@ fn inner_count_indexed_rows(
             // Apply fragment filter if specified
             if let Some(frag_ids) = fragment_ids {
                 // Convert FileFragment to Fragment by extracting metadata
-                let filtered_fragments: Vec<_> = inner.get_fragments().into_iter()
+                let filtered_fragments: Vec<_> = inner
+                    .get_fragments()
+                    .into_iter()
                     .filter(|f| frag_ids.contains(&(f.id() as u32)))
                     .map(|f| f.metadata().clone())
                     .collect();

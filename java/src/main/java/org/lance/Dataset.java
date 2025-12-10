@@ -16,6 +16,7 @@ package org.lance;
 import org.lance.cleanup.CleanupPolicy;
 import org.lance.cleanup.RemovalStats;
 import org.lance.compaction.CompactionOptions;
+import org.lance.index.Index;
 import org.lance.index.IndexOptions;
 import org.lance.index.IndexParams;
 import org.lance.index.IndexType;
@@ -958,14 +959,14 @@ public class Dataset implements Closeable {
    *
    * @return list of Index objects with complete metadata including index type and fragment coverage
    */
-  public List<org.lance.index.Index> getIndexes() {
+  public List<Index> getIndexes() {
     try (LockManager.ReadLock readLock = lockManager.acquireReadLock()) {
       Preconditions.checkArgument(nativeDatasetHandle != 0, "Dataset is closed");
       return nativeGetIndexes();
     }
   }
 
-  private native List<org.lance.index.Index> nativeGetIndexes();
+  private native List<Index> nativeGetIndexes();
 
   /**
    * Get the table config of the dataset.

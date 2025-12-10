@@ -188,35 +188,6 @@ public class Index {
     return new Builder();
   }
 
-  /**
-   * Create an Index instance directly. This is primarily for JNI use.
-   *
-   * @return a new Index instance
-   */
-  public static Index create(
-      UUID uuid,
-      List<Integer> fields,
-      String name,
-      long datasetVersion,
-      List<Integer> fragments,
-      byte[] indexDetails,
-      int indexVersion,
-      Instant createdAt,
-      Integer baseId,
-      IndexType indexType) {
-    return new Index(
-        uuid,
-        fields,
-        name,
-        datasetVersion,
-        fragments,
-        indexDetails,
-        indexVersion,
-        createdAt,
-        baseId,
-        indexType);
-  }
-
   public static class Builder {
 
     private UUID uuid;

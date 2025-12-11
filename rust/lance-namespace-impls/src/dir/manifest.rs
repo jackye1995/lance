@@ -1361,7 +1361,6 @@ impl LanceNamespace for ManifestNamespace {
         // Root namespace always exists
         if namespace_id.is_empty() {
             return Ok(DescribeNamespaceResponse {
-                id: namespace_id.clone(),
                 properties: Some(HashMap::new()),
             });
         }
@@ -1372,7 +1371,6 @@ impl LanceNamespace for ManifestNamespace {
 
         match namespace_info {
             Some(info) => Ok(DescribeNamespaceResponse {
-                id: namespace_id.clone(),
                 properties: info.metadata,
             }),
             None => Err(Error::Namespace {
@@ -1692,7 +1690,7 @@ impl LanceNamespace for ManifestNamespace {
 
         Ok(RegisterTableResponse {
             transaction_id: None,
-            location,
+            location: Some(location),
             properties: None,
         })
     }

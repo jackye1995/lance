@@ -602,7 +602,6 @@ impl LanceNamespace for DirectoryNamespace {
 
         Self::validate_root_namespace_id(&request.id)?;
         Ok(DescribeNamespaceResponse {
-            id: request.id.unwrap_or_default(),
             properties: Some(HashMap::new()),
         })
     }
@@ -2343,7 +2342,7 @@ mod tests {
         register_req.id = Some(vec!["registered_table".to_string()]);
 
         let response = namespace.register_table(register_req).await.unwrap();
-        assert_eq!(response.location, "external_table.lance");
+        assert_eq!(response.location, Some("external_table.lance".to_string()));
 
         // Verify table exists in namespace
         let mut exists_req = TableExistsRequest::new();

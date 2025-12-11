@@ -73,60 +73,57 @@ impl RestAdapter {
             .route("/v1/table/:id/deregister", post(deregister_table))
             .route("/v1/table/:id/rename", post(rename_table))
             .route("/v1/table/:id/restore", post(restore_table))
-            .route("/v1/table/:id/versions", get(list_table_versions))
+            .route("/v1/table/:id/version/list", get(list_table_versions))
             .route("/v1/table/:id/stats", get(get_table_stats))
             // Table data operations
             .route("/v1/table/:id/create", post(create_table))
             .route("/v1/table/:id/create-empty", post(create_empty_table))
             .route("/v1/table/:id/insert", post(insert_into_table))
-            .route("/v1/table/:id/merge-insert", post(merge_insert_into_table))
+            .route("/v1/table/:id/merge_insert", post(merge_insert_into_table))
             .route("/v1/table/:id/update", post(update_table))
             .route("/v1/table/:id/delete", post(delete_from_table))
             .route("/v1/table/:id/query", post(query_table))
-            .route("/v1/table/:id/count", get(count_table_rows))
+            .route("/v1/table/:id/count_rows", get(count_table_rows))
             // Index operations
-            .route("/v1/table/:id/index/create", post(create_table_index))
+            .route("/v1/table/:id/create_index", post(create_table_index))
             .route(
-                "/v1/table/:id/index/create-scalar",
+                "/v1/table/:id/create_scalar_index",
                 post(create_table_scalar_index),
             )
             .route("/v1/table/:id/index/list", get(list_table_indices))
-            .route("/v1/table/:id/index/:index_name/stats", get(describe_table_index_stats))
-            .route("/v1/table/:id/index/:index_name/drop", post(drop_table_index))
-            // Schema operations
-            .route("/v1/table/:id/columns/add", post(alter_table_add_columns))
             .route(
-                "/v1/table/:id/columns/alter",
+                "/v1/table/:id/index/:index_name/stats",
+                get(describe_table_index_stats),
+            )
+            .route(
+                "/v1/table/:id/index/:index_name/drop",
+                post(drop_table_index),
+            )
+            // Schema operations
+            .route("/v1/table/:id/add_columns", post(alter_table_add_columns))
+            .route(
+                "/v1/table/:id/alter_columns",
                 post(alter_table_alter_columns),
             )
+            .route("/v1/table/:id/drop_columns", post(alter_table_drop_columns))
             .route(
-                "/v1/table/:id/columns/drop",
-                post(alter_table_drop_columns),
-            )
-            .route(
-                "/v1/table/:id/schema-metadata",
+                "/v1/table/:id/schema_metadata/update",
                 post(update_table_schema_metadata),
             )
             // Tag operations
-            .route("/v1/table/:id/tags", get(list_table_tags))
-            .route("/v1/table/:id/tag/:tag_name", get(get_table_tag_version))
-            .route("/v1/table/:id/tag/create", post(create_table_tag))
-            .route("/v1/table/:id/tag/:tag_name/delete", post(delete_table_tag))
-            .route("/v1/table/:id/tag/:tag_name/update", post(update_table_tag))
+            .route("/v1/table/:id/tags/list", get(list_table_tags))
+            .route("/v1/table/:id/tags/version", post(get_table_tag_version))
+            .route("/v1/table/:id/tags/create", post(create_table_tag))
+            .route("/v1/table/:id/tags/delete", post(delete_table_tag))
+            .route("/v1/table/:id/tags/update", post(update_table_tag))
             // Query plan operations
-            .route("/v1/table/:id/query/explain", post(explain_table_query_plan))
-            .route("/v1/table/:id/query/analyze", post(analyze_table_query_plan))
+            .route("/v1/table/:id/explain_plan", post(explain_table_query_plan))
+            .route("/v1/table/:id/analyze_plan", post(analyze_table_query_plan))
             // Transaction operations
-            .route(
-                "/v1/table/:id/transaction/:txn_id/describe",
-                get(describe_transaction),
-            )
-            .route(
-                "/v1/table/:id/transaction/:txn_id/alter",
-                post(alter_transaction),
-            )
+            .route("/v1/transaction/:id/describe", post(describe_transaction))
+            .route("/v1/transaction/:id/alter", post(alter_transaction))
             // Global table operations
-            .route("/v1/tables", get(list_all_tables))
+            .route("/v1/table", get(list_all_tables))
             .layer(TraceLayer::new_for_http())
             .with_state(self.backend.clone())
     }
@@ -489,18 +486,9 @@ async fn create_table(
     Query(params): Query<CreateTableQuery>,
     body: Bytes,
 ) -> Response {
-    use lance_namespace::models::create_table_request::Mode;
-
-    let mode = params.mode.as_deref().and_then(|m| match m {
-        "Create" => Some(Mode::Create),
-        "ExistOk" => Some(Mode::ExistOk),
-        "Overwrite" => Some(Mode::Overwrite),
-        _ => None,
-    });
-
     let request = CreateTableRequest {
         id: Some(parse_id(&id, params.delimiter.as_deref())),
-        mode,
+        mode: params.mode.clone(),
     };
 
     match backend.create_table(request, body).await {
@@ -535,18 +523,9 @@ async fn insert_into_table(
     Query(params): Query<InsertQuery>,
     body: Bytes,
 ) -> Response {
-    use lance_namespace::models::insert_into_table_request::Mode;
-
-    let mode = params.mode.as_deref().and_then(|m| match m {
-        "append" => Some(Mode::Append),
-        "overwrite" => Some(Mode::Overwrite),
-        "create" => Some(Mode::Create),
-        _ => None,
-    });
-
     let request = InsertIntoTableRequest {
         id: Some(parse_id(&id, params.delimiter.as_deref())),
-        mode,
+        mode: params.mode.clone(),
     };
 
     match backend.insert_into_table(request, body).await {
@@ -896,21 +875,13 @@ async fn list_table_tags(
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct TagPathParams {
-    id: String,
-    tag_name: String,
-}
-
 async fn get_table_tag_version(
     State(backend): State<Arc<dyn LanceNamespace>>,
-    Path(params): Path<TagPathParams>,
-    Query(query): Query<DelimiterQuery>,
+    Path(id): Path<String>,
+    Query(params): Query<DelimiterQuery>,
+    Json(mut request): Json<GetTableTagVersionRequest>,
 ) -> Response {
-    let request = GetTableTagVersionRequest {
-        id: Some(parse_id(&params.id, query.delimiter.as_deref())),
-        tag: Some(params.tag_name),
-    };
+    request.id = Some(parse_id(&id, params.delimiter.as_deref()));
 
     match backend.get_table_tag_version(request).await {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
@@ -934,13 +905,11 @@ async fn create_table_tag(
 
 async fn delete_table_tag(
     State(backend): State<Arc<dyn LanceNamespace>>,
-    Path(params): Path<TagPathParams>,
-    Query(query): Query<DelimiterQuery>,
+    Path(id): Path<String>,
+    Query(params): Query<DelimiterQuery>,
+    Json(mut request): Json<DeleteTableTagRequest>,
 ) -> Response {
-    let request = DeleteTableTagRequest {
-        id: Some(parse_id(&params.id, query.delimiter.as_deref())),
-        tag: Some(params.tag_name),
-    };
+    request.id = Some(parse_id(&id, params.delimiter.as_deref()));
 
     match backend.delete_table_tag(request).await {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
@@ -950,12 +919,11 @@ async fn delete_table_tag(
 
 async fn update_table_tag(
     State(backend): State<Arc<dyn LanceNamespace>>,
-    Path(params): Path<TagPathParams>,
-    Query(query): Query<DelimiterQuery>,
+    Path(id): Path<String>,
+    Query(params): Query<DelimiterQuery>,
     Json(mut request): Json<UpdateTableTagRequest>,
 ) -> Response {
-    request.id = Some(parse_id(&params.id, query.delimiter.as_deref()));
-    request.tag = Some(params.tag_name);
+    request.id = Some(parse_id(&id, params.delimiter.as_deref()));
 
     match backend.update_table_tag(request).await {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
@@ -999,21 +967,21 @@ async fn analyze_table_query_plan(
 // Transaction Operation Handlers
 // ============================================================================
 
-#[derive(Debug, Deserialize)]
-struct TransactionPathParams {
-    id: String,
-    txn_id: String,
-}
-
 async fn describe_transaction(
     State(backend): State<Arc<dyn LanceNamespace>>,
-    Path(params): Path<TransactionPathParams>,
-    Query(query): Query<DelimiterQuery>,
+    Path(id): Path<String>,
+    Query(params): Query<DelimiterQuery>,
+    Json(mut request): Json<DescribeTransactionRequest>,
 ) -> Response {
-    let request = DescribeTransactionRequest {
-        id: Some(parse_id(&params.id, query.delimiter.as_deref())),
-        transaction_id: Some(params.txn_id),
-    };
+    // The path id is the transaction identifier
+    // The request.id in body is the table ID (namespace path)
+    // For the trait, we set request.id to include both table ID and transaction ID
+    // by appending the transaction ID to the table ID path
+    if let Some(ref mut table_id) = request.id {
+        table_id.push(id);
+    } else {
+        request.id = Some(vec![id]);
+    }
 
     match backend.describe_transaction(request).await {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
@@ -1023,12 +991,17 @@ async fn describe_transaction(
 
 async fn alter_transaction(
     State(backend): State<Arc<dyn LanceNamespace>>,
-    Path(params): Path<TransactionPathParams>,
-    Query(query): Query<DelimiterQuery>,
+    Path(id): Path<String>,
+    Query(params): Query<DelimiterQuery>,
     Json(mut request): Json<AlterTransactionRequest>,
 ) -> Response {
-    request.id = Some(parse_id(&params.id, query.delimiter.as_deref()));
-    request.transaction_id = Some(params.txn_id);
+    // The path id is the transaction identifier
+    // Append it to the table ID path in the request
+    if let Some(ref mut table_id) = request.id {
+        table_id.push(id);
+    } else {
+        request.id = Some(vec![id]);
+    }
 
     match backend.alter_transaction(request).await {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
@@ -1292,9 +1265,7 @@ mod tests {
             // Create table in child namespace
             let create_table_req = CreateTableRequest {
                 id: Some(vec!["test_namespace".to_string(), "test_table".to_string()]),
-                location: None,
-                mode: Some(create_table_request::Mode::Create),
-                properties: None,
+                mode: Some("Create".to_string()),
             };
 
             let result = fixture
@@ -1346,9 +1317,7 @@ mod tests {
             for i in 1..=3 {
                 let create_table_req = CreateTableRequest {
                     id: Some(vec!["test_namespace".to_string(), format!("table{}", i)]),
-                    location: None,
-                    mode: Some(create_table_request::Mode::Create),
-                    properties: None,
+                    mode: Some("Create".to_string()),
                 };
                 fixture
                     .namespace
@@ -1392,9 +1361,7 @@ mod tests {
             // Create table
             let create_table_req = CreateTableRequest {
                 id: Some(vec!["test_namespace".to_string(), "test_table".to_string()]),
-                location: None,
-                mode: Some(create_table_request::Mode::Create),
-                properties: None,
+                mode: Some("Create".to_string()),
             };
             fixture
                 .namespace
@@ -1464,9 +1431,7 @@ mod tests {
             // Create table
             let create_table_req = CreateTableRequest {
                 id: Some(vec!["test_namespace".to_string(), "test_table".to_string()]),
-                location: None,
-                mode: Some(create_table_request::Mode::Create),
-                properties: None,
+                mode: Some("Create".to_string()),
             };
             fixture
                 .namespace
@@ -1554,9 +1519,7 @@ mod tests {
             // Create table
             let create_table_req = CreateTableRequest {
                 id: Some(vec!["test_namespace".to_string(), "test_table".to_string()]),
-                location: None,
-                mode: Some(create_table_request::Mode::Create),
-                properties: None,
+                mode: Some("Create".to_string()),
             };
             fixture
                 .namespace
@@ -1862,9 +1825,7 @@ mod tests {
                     "level3".to_string(),
                     "deep_table".to_string(),
                 ]),
-                location: None,
-                mode: Some(create_table_request::Mode::Create),
-                properties: None,
+                mode: Some("Create".to_string()),
             };
 
             let result = fixture
@@ -1923,9 +1884,7 @@ mod tests {
             // Create table with same name in both namespaces
             let create_table_req = CreateTableRequest {
                 id: Some(vec!["namespace1".to_string(), "shared_table".to_string()]),
-                location: None,
-                mode: Some(create_table_request::Mode::Create),
-                properties: None,
+                mode: Some("Create".to_string()),
             };
             fixture
                 .namespace
@@ -1935,9 +1894,7 @@ mod tests {
 
             let create_table_req = CreateTableRequest {
                 id: Some(vec!["namespace2".to_string(), "shared_table".to_string()]),
-                location: None,
-                mode: Some(create_table_request::Mode::Create),
-                properties: None,
+                mode: Some("Create".to_string()),
             };
             fixture
                 .namespace
@@ -1987,9 +1944,7 @@ mod tests {
             // Create table in namespace
             let create_table_req = CreateTableRequest {
                 id: Some(vec!["test_namespace".to_string(), "test_table".to_string()]),
-                location: None,
-                mode: Some(create_table_request::Mode::Create),
-                properties: None,
+                mode: Some("Create".to_string()),
             };
             fixture
                 .namespace
@@ -2141,9 +2096,7 @@ mod tests {
                     "test_namespace".to_string(),
                     "physical_table".to_string(),
                 ]),
-                location: None,
-                mode: Some(create_table_request::Mode::Create),
-                properties: None,
+                mode: Some("Create".to_string()),
             };
             fixture
                 .namespace
@@ -2270,9 +2223,7 @@ mod tests {
             // Create a table
             let create_table_req = CreateTableRequest {
                 id: Some(vec!["test_namespace".to_string(), "test_table".to_string()]),
-                location: None,
-                mode: Some(create_table_request::Mode::Create),
-                properties: None,
+                mode: Some("Create".to_string()),
             };
             fixture
                 .namespace
@@ -2350,9 +2301,7 @@ mod tests {
                     "test_namespace".to_string(),
                     "original_table".to_string(),
                 ]),
-                location: None,
-                mode: Some(create_table_request::Mode::Create),
-                properties: None,
+                mode: Some("Create".to_string()),
             };
             let create_response = fixture
                 .namespace

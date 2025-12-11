@@ -2361,7 +2361,7 @@ mod tests {
                 .expect("Failed to re-register table with new name");
 
             // Should return the exact location we registered
-            assert_eq!(register_response.location, Some(relative_location));
+            assert_eq!(register_response.location, Some(relative_location.clone()));
 
             // Verify new table exists
             let mut exists_req = TableExistsRequest::new();

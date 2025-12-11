@@ -602,6 +602,7 @@ impl LanceNamespace for DirectoryNamespace {
 
         Self::validate_root_namespace_id(&request.id)?;
         Ok(DescribeNamespaceResponse {
+            id: request.id.unwrap_or_default(),
             properties: Some(HashMap::new()),
         })
     }
@@ -777,11 +778,20 @@ impl LanceNamespace for DirectoryNamespace {
                 let arrow_schema: arrow_schema::Schema = lance_schema.into();
                 let json_schema = arrow_schema_to_json(&arrow_schema)?;
                 Ok(DescribeTableResponse {
+                    table: Some(table_name),
+                    namespace: request.id.as_ref().map(|id| {
+                        if id.len() > 1 {
+                            id[..id.len() - 1].to_vec()
+                        } else {
+                            vec![]
+                        }
+                    }),
                     version: Some(version as i64),
-                    location: Some(table_uri),
+                    location: Some(table_uri.clone()),
+                    table_uri: Some(table_uri),
                     schema: Some(Box::new(json_schema)),
-                    properties: None,
                     storage_options: self.storage_options.clone(),
+                    stats: None,
                 })
             }
             Err(err) => {
@@ -793,11 +803,20 @@ impl LanceNamespace for DirectoryNamespace {
                     .unwrap_or(false)
                 {
                     Ok(DescribeTableResponse {
+                        table: Some(table_name),
+                        namespace: request.id.as_ref().map(|id| {
+                            if id.len() > 1 {
+                                id[..id.len() - 1].to_vec()
+                            } else {
+                                vec![]
+                            }
+                        }),
                         version: None,
-                        location: Some(table_uri),
+                        location: Some(table_uri.clone()),
+                        table_uri: Some(table_uri),
                         schema: None,
-                        properties: None,
                         storage_options: self.storage_options.clone(),
+                        stats: None,
                     })
                 } else {
                     Err(Error::Namespace {
@@ -886,21 +905,6 @@ impl LanceNamespace for DirectoryNamespace {
             });
         }
 
-        // Validate location if provided
-        if let Some(location) = &request.location {
-            let location = location.trim_end_matches('/');
-            if location != table_uri {
-                return Err(Error::Namespace {
-                    source: format!(
-                        "Cannot create table {} at location {}, must be at location {}",
-                        table_name, location, table_uri
-                    )
-                    .into(),
-                    location: snafu::location!(),
-                });
-            }
-        }
-
         // Parse the Arrow IPC stream from request_data
         let cursor = Cursor::new(request_data.to_vec());
         let stream_reader = StreamReader::try_new(cursor, None).map_err(|e| Error::Namespace {
@@ -948,9 +952,9 @@ impl LanceNamespace for DirectoryNamespace {
             })?;
 
         Ok(CreateTableResponse {
+            transaction_id: None,
             version: Some(1),
             location: Some(table_uri),
-            properties: None,
             storage_options: self.storage_options.clone(),
         })
     }
@@ -1007,6 +1011,7 @@ impl LanceNamespace for DirectoryNamespace {
             })?;
 
         Ok(CreateEmptyTableResponse {
+            transaction_id: None,
             location: Some(table_uri),
             properties: None,
             storage_options: self.storage_options.clone(),
@@ -1186,28 +1191,6 @@ mod tests {
             result.is_ok(),
             "Multi-level table IDs should work with manifest enabled"
         );
-    }
-
-    #[tokio::test]
-    async fn test_create_table_with_wrong_location() {
-        let (namespace, _temp_dir) = create_test_namespace().await;
-
-        // Create test IPC data
-        let schema = create_test_schema();
-        let ipc_data = create_test_ipc_data(&schema);
-
-        let mut request = CreateTableRequest::new();
-        request.id = Some(vec!["test_table".to_string()]);
-        request.location = Some("/wrong/path/table.lance".to_string());
-
-        let result = namespace
-            .create_table(request, bytes::Bytes::from(ipc_data))
-            .await;
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("must be at location"));
     }
 
     #[tokio::test]

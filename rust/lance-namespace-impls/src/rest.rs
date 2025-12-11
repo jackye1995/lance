@@ -968,7 +968,6 @@ impl LanceNamespace for RestNamespace {
 mod tests {
     use super::*;
     use bytes::Bytes;
-    use lance_namespace::models::{create_table_request, insert_into_table_request};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1289,7 +1288,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path(path_str.as_str()))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "version": 2
+                "transaction_id": "txn-123"
             })))
             .mount(&mock_server)
             .await;
@@ -1315,6 +1314,6 @@ mod tests {
         // Should succeed with mock server
         assert!(result.is_ok());
         let response = result.unwrap();
-        assert_eq!(response.version, Some(2));
+        assert_eq!(response.transaction_id, Some("txn-123".to_string()));
     }
 }

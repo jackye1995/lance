@@ -2128,7 +2128,10 @@ mod tests {
             );
 
             let response = result.unwrap();
-            assert_eq!(response.location, "test_namespace$physical_table.lance");
+            assert_eq!(
+                response.location,
+                Some("test_namespace$physical_table.lance".to_string())
+            );
 
             // Verify registered table exists
             let mut exists_req = TableExistsRequest::new();
@@ -2358,7 +2361,7 @@ mod tests {
                 .expect("Failed to re-register table with new name");
 
             // Should return the exact location we registered
-            assert_eq!(register_response.location, relative_location);
+            assert_eq!(register_response.location, Some(relative_location));
 
             // Verify new table exists
             let mut exists_req = TableExistsRequest::new();

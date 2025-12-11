@@ -620,7 +620,8 @@ async fn count_table_rows(
 ) -> Response {
     let request = CountTableRowsRequest {
         id: Some(parse_id(&id, params.delimiter.as_deref())),
-        filter: None,
+        version: None,
+        predicate: None,
     };
 
     match backend.count_table_rows(request).await {
@@ -748,6 +749,9 @@ async fn list_table_indices(
 ) -> Response {
     let request = ListTableIndicesRequest {
         id: Some(parse_id(&id, params.delimiter.as_deref())),
+        version: None,
+        page_token: None,
+        limit: None,
     };
 
     match backend.list_table_indices(request).await {
@@ -769,6 +773,7 @@ async fn describe_table_index_stats(
 ) -> Response {
     let request = DescribeTableIndexStatsRequest {
         id: Some(parse_id(&params.id, query.delimiter.as_deref())),
+        version: None,
         index_name: Some(params.index_name),
     };
 
@@ -970,7 +975,7 @@ async fn analyze_table_query_plan(
 async fn describe_transaction(
     State(backend): State<Arc<dyn LanceNamespace>>,
     Path(id): Path<String>,
-    Query(params): Query<DelimiterQuery>,
+    Query(_params): Query<DelimiterQuery>,
     Json(mut request): Json<DescribeTransactionRequest>,
 ) -> Response {
     // The path id is the transaction identifier
@@ -992,7 +997,7 @@ async fn describe_transaction(
 async fn alter_transaction(
     State(backend): State<Arc<dyn LanceNamespace>>,
     Path(id): Path<String>,
-    Query(params): Query<DelimiterQuery>,
+    Query(_params): Query<DelimiterQuery>,
     Json(mut request): Json<AlterTransactionRequest>,
 ) -> Response {
     // The path id is the transaction identifier

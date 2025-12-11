@@ -318,10 +318,7 @@ pub trait LanceNamespace: Send + Sync + std::fmt::Debug {
     }
 
     /// Restore a table to a specific version.
-    async fn restore_table(
-        &self,
-        _request: RestoreTableRequest,
-    ) -> Result<RestoreTableResponse> {
+    async fn restore_table(&self, _request: RestoreTableRequest) -> Result<RestoreTableResponse> {
         Err(Error::NotSupported {
             source: "restore_table not implemented".into(),
             location: Location::new(file!(), line!(), column!()),
@@ -329,10 +326,7 @@ pub trait LanceNamespace: Send + Sync + std::fmt::Debug {
     }
 
     /// Rename a table.
-    async fn rename_table(
-        &self,
-        _request: RenameTableRequest,
-    ) -> Result<RenameTableResponse> {
+    async fn rename_table(&self, _request: RenameTableRequest) -> Result<RenameTableResponse> {
         Err(Error::NotSupported {
             source: "rename_table not implemented".into(),
             location: Location::new(file!(), line!(), column!()),

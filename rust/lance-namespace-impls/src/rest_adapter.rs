@@ -446,9 +446,10 @@ async fn drop_table(
     State(backend): State<Arc<dyn LanceNamespace>>,
     Path(id): Path<String>,
     Query(params): Query<DelimiterQuery>,
-    Json(mut request): Json<DropTableRequest>,
 ) -> Response {
-    request.id = Some(parse_id(&id, params.delimiter.as_deref()));
+    let request = DropTableRequest {
+        id: Some(parse_id(&id, params.delimiter.as_deref())),
+    };
 
     match backend.drop_table(request).await {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),

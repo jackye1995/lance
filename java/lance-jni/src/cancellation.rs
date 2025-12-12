@@ -7,9 +7,11 @@
 //! for cancellation before each batch is read. This allows Java code to cancel long-running
 //! native operations by setting the cancellation flag.
 
-use arrow::array::{RecordBatch, RecordBatchReader};
+use arrow::array::RecordBatch;
+use arrow::array::RecordBatchReader;
+use arrow::error::ArrowError;
 use arrow::ffi_stream::ArrowArrayStreamReader;
-use arrow_schema::{ArrowError, SchemaRef};
+use arrow_schema::SchemaRef;
 use jni::objects::GlobalRef;
 use jni::JavaVM;
 use std::sync::Arc;

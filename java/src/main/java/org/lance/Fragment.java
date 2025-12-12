@@ -330,7 +330,8 @@ public class Fragment {
         params.getDataStorageVersion(),
         params.getStorageOptions(),
         Optional.ofNullable(storageOptionsProvider),
-        params.getS3CredentialsRefreshOffsetSeconds());
+        params.getS3CredentialsRefreshOffsetSeconds(),
+        null);
   }
 
   /**
@@ -357,7 +358,7 @@ public class Fragment {
     Preconditions.checkNotNull(stream);
     Preconditions.checkNotNull(params);
     Preconditions.checkNotNull(cancellationFlag);
-    return createWithFfiStreamCancellable(
+    return createWithFfiStream(
         datasetUri,
         stream.memoryAddress(),
         params.getMaxRowsPerFile(),
@@ -394,27 +395,10 @@ public class Fragment {
   /**
    * Create a fragment from the given arrow stream.
    *
+   * @param cancellationFlag optional AtomicBoolean for cancellation support (can be null)
    * @return the fragment metadata
    */
   private static native List<FragmentMetadata> createWithFfiStream(
-      String datasetUri,
-      long arrowStreamMemoryAddress,
-      Optional<Integer> maxRowsPerFile,
-      Optional<Integer> maxRowsPerGroup,
-      Optional<Long> maxBytesPerFile,
-      Optional<String> mode,
-      Optional<Boolean> enableStableRowIds,
-      Optional<String> dataStorageVersion,
-      Map<String, String> storageOptions,
-      Optional<StorageOptionsProvider> storageOptionsProvider,
-      Optional<Long> s3CredentialsRefreshOffsetSeconds);
-
-  /**
-   * Create a fragment from the given arrow stream with cancellation support.
-   *
-   * @return the fragment metadata
-   */
-  private static native List<FragmentMetadata> createWithFfiStreamCancellable(
       String datasetUri,
       long arrowStreamMemoryAddress,
       Optional<Integer> maxRowsPerFile,

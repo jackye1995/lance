@@ -31,6 +31,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Fragment operations. */
 public class Fragment {
@@ -333,6 +334,45 @@ public class Fragment {
   }
 
   /**
+   * Create a fragment from the given arrow stream with cancellation support.
+   *
+   * <p>This method allows the caller to cancel the operation by setting the cancellationFlag to
+   * true. The cancellation is checked before reading each batch from the stream, allowing the
+   * operation to be interrupted even when the native code is running.
+   *
+   * @param datasetUri the dataset uri
+   * @param stream the arrow stream
+   * @param params the write params
+   * @param storageOptionsProvider optional provider for dynamic storage options
+   * @param cancellationFlag an AtomicBoolean that can be set to true to cancel the operation
+   * @return the fragment metadata
+   */
+  public static List<FragmentMetadata> create(
+      String datasetUri,
+      ArrowArrayStream stream,
+      WriteParams params,
+      StorageOptionsProvider storageOptionsProvider,
+      AtomicBoolean cancellationFlag) {
+    Preconditions.checkNotNull(datasetUri);
+    Preconditions.checkNotNull(stream);
+    Preconditions.checkNotNull(params);
+    Preconditions.checkNotNull(cancellationFlag);
+    return createWithFfiStreamCancellable(
+        datasetUri,
+        stream.memoryAddress(),
+        params.getMaxRowsPerFile(),
+        params.getMaxRowsPerGroup(),
+        params.getMaxBytesPerFile(),
+        params.getMode(),
+        params.getEnableStableRowIds(),
+        params.getDataStorageVersion(),
+        params.getStorageOptions(),
+        Optional.ofNullable(storageOptionsProvider),
+        params.getS3CredentialsRefreshOffsetSeconds(),
+        cancellationFlag);
+  }
+
+  /**
    * Create a fragment from the given arrow array and schema.
    *
    * @return the fragment metadata
@@ -368,4 +408,23 @@ public class Fragment {
       Map<String, String> storageOptions,
       Optional<StorageOptionsProvider> storageOptionsProvider,
       Optional<Long> s3CredentialsRefreshOffsetSeconds);
+
+  /**
+   * Create a fragment from the given arrow stream with cancellation support.
+   *
+   * @return the fragment metadata
+   */
+  private static native List<FragmentMetadata> createWithFfiStreamCancellable(
+      String datasetUri,
+      long arrowStreamMemoryAddress,
+      Optional<Integer> maxRowsPerFile,
+      Optional<Integer> maxRowsPerGroup,
+      Optional<Long> maxBytesPerFile,
+      Optional<String> mode,
+      Optional<Boolean> enableStableRowIds,
+      Optional<String> dataStorageVersion,
+      Map<String, String> storageOptions,
+      Optional<StorageOptionsProvider> storageOptionsProvider,
+      Optional<Long> s3CredentialsRefreshOffsetSeconds,
+      AtomicBoolean cancellationFlag);
 }

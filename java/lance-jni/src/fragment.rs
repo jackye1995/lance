@@ -11,6 +11,7 @@ use jni::{
     sys::{jint, jlong},
     JNIEnv,
 };
+use std::sync::Arc;
 use lance::datatypes::Schema;
 use lance::table::format::{DataFile, DeletionFile, DeletionFileType, Fragment, RowIdMeta};
 use lance_io::utils::CachedFileSize;
@@ -19,6 +20,7 @@ use std::iter::once;
 use lance::dataset::fragment::FileFragment;
 use lance_datafusion::utils::StreamingWriteSource;
 
+use crate::cancellation::CancellableStreamReader;
 use crate::error::{Error, Result};
 use crate::ffi::JNIEnvExt;
 use crate::traits::{export_vec, import_vec, FromJObjectWithEnv, IntoJava, JLance};
@@ -265,6 +267,90 @@ fn create_fragment<'a>(
         Some(write_params),
     ))?;
     export_vec(env, &fragments)
+}
+
+/// Create fragments from an FFI stream with cancellation support.
+///
+/// This method accepts a Java AtomicBoolean that can be set to true to cancel the operation.
+/// The cancellation is checked before reading each batch from the stream.
+#[no_mangle]
+pub extern "system" fn Java_org_lance_Fragment_createWithFfiStreamCancellable<'a>(
+    mut env: JNIEnv<'a>,
+    _obj: JObject,
+    dataset_uri: JString,
+    arrow_array_stream_addr: jlong,
+    max_rows_per_file: JObject,            // Optional<Integer>
+    max_rows_per_group: JObject,           // Optional<Integer>
+    max_bytes_per_file: JObject,           // Optional<Long>
+    mode: JObject,                         // Optional<String>
+    enable_stable_row_ids: JObject,        // Optional<Boolean>
+    data_storage_version: JObject,         // Optional<String>
+    storage_options_obj: JObject,          // Map<String, String>
+    storage_options_provider_obj: JObject, // Optional<StorageOptionsProvider>
+    s3_credentials_refresh_offset_seconds_obj: JObject, // Optional<Long>
+    cancellation_flag: JObject,            // AtomicBoolean
+) -> JObject<'a> {
+    ok_or_throw_with_return!(
+        env,
+        inner_create_with_ffi_stream_cancellable(
+            &mut env,
+            dataset_uri,
+            arrow_array_stream_addr,
+            max_rows_per_file,
+            max_rows_per_group,
+            max_bytes_per_file,
+            mode,
+            enable_stable_row_ids,
+            data_storage_version,
+            storage_options_obj,
+            storage_options_provider_obj,
+            s3_credentials_refresh_offset_seconds_obj,
+            cancellation_flag
+        ),
+        JObject::null()
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn inner_create_with_ffi_stream_cancellable<'local>(
+    env: &mut JNIEnv<'local>,
+    dataset_uri: JString,
+    arrow_array_stream_addr: jlong,
+    max_rows_per_file: JObject,            // Optional<Integer>
+    max_rows_per_group: JObject,           // Optional<Integer>
+    max_bytes_per_file: JObject,           // Optional<Long>
+    mode: JObject,                         // Optional<String>
+    enable_stable_row_ids: JObject,        // Optional<Boolean>
+    data_storage_version: JObject,         // Optional<String>
+    storage_options_obj: JObject,          // Map<String, String>
+    storage_options_provider_obj: JObject, // Optional<StorageOptionsProvider>
+    s3_credentials_refresh_offset_seconds_obj: JObject, // Optional<Long>
+    cancellation_flag: JObject,            // AtomicBoolean
+) -> Result<JObject<'local>> {
+    let stream_ptr = arrow_array_stream_addr as *mut FFI_ArrowArrayStream;
+    let reader = unsafe { ArrowArrayStreamReader::from_raw(stream_ptr) }?;
+
+    // Create a global reference to the cancellation flag so it can be accessed from the background thread
+    let cancellation_global_ref = env.new_global_ref(cancellation_flag)?;
+    let jvm = Arc::new(env.get_java_vm()?);
+
+    // Wrap the reader with cancellation support
+    let cancellable_reader = CancellableStreamReader::new(reader, jvm, cancellation_global_ref);
+
+    create_fragment(
+        env,
+        dataset_uri,
+        max_rows_per_file,
+        max_rows_per_group,
+        max_bytes_per_file,
+        mode,
+        enable_stable_row_ids,
+        data_storage_version,
+        storage_options_obj,
+        storage_options_provider_obj,
+        s3_credentials_refresh_offset_seconds_obj,
+        Box::new(cancellable_reader) as Box<dyn arrow::array::RecordBatchReader + Send>,
+    )
 }
 
 #[no_mangle]

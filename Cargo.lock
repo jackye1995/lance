@@ -3215,7 +3215,7 @@ checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 
 [[package]]
 name = "fsst"
-version = "1.0.0"
+version = "1.0.1-beta.0"
 dependencies = [
  "arrow-array",
  "lance-datagen",
@@ -4397,7 +4397,7 @@ dependencies = [
 
 [[package]]
 name = "lance"
-version = "1.0.0"
+version = "1.0.1-beta.0"
 dependencies = [
  "all_asserts",
  "approx",
@@ -4487,7 +4487,7 @@ dependencies = [
 
 [[package]]
 name = "lance-arrow"
-version = "1.0.0"
+version = "1.0.1-beta.0"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4505,7 +4505,7 @@ dependencies = [
 
 [[package]]
 name = "lance-bitpacking"
-version = "1.0.0"
+version = "1.0.1-beta.0"
 dependencies = [
  "arrayref",
  "paste",
@@ -4514,7 +4514,7 @@ dependencies = [
 
 [[package]]
 name = "lance-core"
-version = "1.0.0"
+version = "1.0.1-beta.0"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4552,7 +4552,7 @@ dependencies = [
 
 [[package]]
 name = "lance-datafusion"
-version = "1.0.0"
+version = "1.0.1-beta.0"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4583,7 +4583,7 @@ dependencies = [
 
 [[package]]
 name = "lance-datagen"
-version = "1.0.0"
+version = "1.0.1-beta.0"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4602,7 +4602,7 @@ dependencies = [
 
 [[package]]
 name = "lance-encoding"
-version = "1.0.0"
+version = "1.0.1-beta.0"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -4649,7 +4649,7 @@ dependencies = [
 
 [[package]]
 name = "lance-examples"
-version = "1.0.0"
+version = "1.0.1-beta.0"
 dependencies = [
  "all_asserts",
  "arrow",
@@ -4675,7 +4675,7 @@ dependencies = [
 
 [[package]]
 name = "lance-file"
-version = "1.0.0"
+version = "1.0.1-beta.0"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -4717,7 +4717,7 @@ dependencies = [
 
 [[package]]
 name = "lance-geo"
-version = "1.0.0"
+version = "1.0.1-beta.0"
 dependencies = [
  "datafusion",
  "geo-types",
@@ -4728,7 +4728,7 @@ dependencies = [
 
 [[package]]
 name = "lance-index"
-version = "1.0.0"
+version = "1.0.1-beta.0"
 dependencies = [
  "approx",
  "arrow",
@@ -4801,7 +4801,7 @@ dependencies = [
 
 [[package]]
 name = "lance-io"
-version = "1.0.0"
+version = "1.0.1-beta.0"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -4847,7 +4847,7 @@ dependencies = [
 
 [[package]]
 name = "lance-linalg"
-version = "1.0.0"
+version = "1.0.1-beta.0"
 dependencies = [
  "approx",
  "arrow-array",
@@ -4868,7 +4868,7 @@ dependencies = [
 
 [[package]]
 name = "lance-namespace"
-version = "1.0.0"
+version = "1.0.1-beta.0"
 dependencies = [
  "arrow",
  "async-trait",
@@ -4882,7 +4882,7 @@ dependencies = [
 
 [[package]]
 name = "lance-namespace-impls"
-version = "1.0.0"
+version = "1.0.1-beta.0"
 dependencies = [
  "arrow",
  "arrow-ipc",
@@ -4927,7 +4927,7 @@ dependencies = [
 
 [[package]]
 name = "lance-table"
-version = "1.0.0"
+version = "1.0.1-beta.0"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4973,7 +4973,7 @@ dependencies = [
 
 [[package]]
 name = "lance-test-macros"
-version = "1.0.0"
+version = "1.0.1-beta.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4982,7 +4982,7 @@ dependencies = [
 
 [[package]]
 name = "lance-testing"
-version = "1.0.0"
+version = "1.0.1-beta.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -4993,7 +4993,7 @@ dependencies = [
 
 [[package]]
 name = "lance-tools"
-version = "1.0.0"
+version = "1.0.1-beta.0"
 dependencies = [
  "clap",
  "lance-core",

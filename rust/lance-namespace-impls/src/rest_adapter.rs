@@ -156,10 +156,6 @@ impl RestAdapter {
         let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
         let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
         let router = self.router();
-
-        // Wrap the router with NormalizePathLayer to handle trailing slashes.
-        // This must be applied outside the router (not via Router::layer) so that
-        // the path normalization happens BEFORE routing.
         let app = NormalizePathLayer::trim_trailing_slash().layer(router);
 
         tokio::spawn(async move {

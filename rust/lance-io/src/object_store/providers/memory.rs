@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The Lance Authors
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use crate::object_store::{
-    ObjectStore, ObjectStoreParams, ObjectStoreProvider, DEFAULT_CLOUD_IO_PARALLELISM,
-    DEFAULT_LOCAL_BLOCK_SIZE, DEFAULT_MAX_IOP_SIZE,
+    ObjectStore, ObjectStoreParams, ObjectStoreProvider, StorageOptionsAccessor,
+    DEFAULT_CLOUD_IO_PARALLELISM, DEFAULT_LOCAL_BLOCK_SIZE, DEFAULT_MAX_IOP_SIZE,
 };
 use lance_core::error::Result;
 use object_store::{memory::InMemory, path::Path};
@@ -46,7 +46,7 @@ impl ObjectStoreProvider for MemoryStoreProvider {
     fn calculate_object_store_prefix(
         &self,
         _url: &Url,
-        _storage_options: Option<&HashMap<String, String>>,
+        _accessor: &StorageOptionsAccessor,
     ) -> Result<String> {
         Ok("memory".to_string())
     }
@@ -55,6 +55,7 @@ impl ObjectStoreProvider for MemoryStoreProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn test_memory_store_path() {
@@ -69,10 +70,11 @@ mod tests {
     #[test]
     fn test_calculate_object_store_prefix() {
         let provider = MemoryStoreProvider;
+        let accessor = StorageOptionsAccessor::new_with_options(HashMap::new());
         assert_eq!(
             "memory",
             provider
-                .calculate_object_store_prefix(&Url::parse("memory://etc").unwrap(), None)
+                .calculate_object_store_prefix(&Url::parse("memory://etc").unwrap(), &accessor)
                 .unwrap()
         );
     }

@@ -951,7 +951,7 @@ class LanceDataset(pa.dataset.Dataset):
         """
         return self._ds.max_field_id
 
-    def current_storage_options(self) -> Dict[str, str]:
+    def storage_options(self) -> Dict[str, str]:
         """Get the current storage options.
 
         Returns a dictionary combining the initial storage_options with any
@@ -964,7 +964,7 @@ class LanceDataset(pa.dataset.Dataset):
         If neither storage_options nor storage_options_provider were specified
         when opening the dataset, an empty dictionary is returned.
         """
-        return self._ds.current_storage_options()
+        return self._ds.storage_options()
 
     def to_table(
         self,

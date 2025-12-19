@@ -42,10 +42,11 @@ impl AwsStoreProvider {
         &self,
         base_path: &mut Url,
         params: &ObjectStoreParams,
-        accessor: &Arc<StorageOptionsAccessor>,
-        storage_options: &HashMap<String, String>,
         is_s3_express: bool,
     ) -> Result<Arc<dyn OSObjectStore>> {
+        let accessor = params.accessor();
+        let storage_options = accessor.get_s3_storage_options().await?;
+
         let max_retries = accessor.client_max_retries().await?;
         let retry_timeout = accessor.client_retry_timeout().await?;
         let retry_config = RetryConfig {
@@ -54,7 +55,7 @@ impl AwsStoreProvider {
             retry_timeout: Duration::from_secs(retry_timeout),
         };
 
-        let mut s3_storage_options = StorageOptionsAccessor::as_s3_options(storage_options);
+        let mut s3_storage_options = StorageOptionsAccessor::as_s3_options(&storage_options);
         let region = resolve_s3_region(base_path, &s3_storage_options).await?;
         let storage_options_provider = accessor.provider();
         let expires_at_millis = storage_options
@@ -139,8 +140,10 @@ impl ObjectStoreProvider for AwsStoreProvider {
         let block_size = params.block_size.unwrap_or(DEFAULT_CLOUD_BLOCK_SIZE);
         let accessor = params.accessor();
 
-        // Get merged storage options with env vars applied
-        let storage_options = accessor.get_options_with_s3_env().await?;
+        // Apply S3 environment variables to the accessor once
+        accessor.apply_s3_env().await;
+
+        // Get configuration from merged options
         let download_retry_count = accessor.download_retry_count().await?;
         let use_opendal = accessor.s3_use_opendal().await?;
         let is_s3_express_opt = accessor.s3_express().await?;
@@ -151,18 +154,13 @@ impl ObjectStoreProvider for AwsStoreProvider {
 
         let inner = if use_opendal {
             // Use OpenDAL implementation
+            let storage_options = accessor.get_s3_storage_options().await?;
             self.build_opendal_s3_store(&base_path, &storage_options)
                 .await?
         } else {
             // Use default Amazon S3 implementation
-            self.build_amazon_s3_store(
-                &mut base_path,
-                params,
-                &accessor,
-                &storage_options,
-                is_s3_express,
-            )
-            .await?
+            self.build_amazon_s3_store(&mut base_path, params, is_s3_express)
+                .await?
         };
 
         Ok(ObjectStore {

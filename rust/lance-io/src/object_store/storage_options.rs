@@ -191,7 +191,8 @@ struct CachedProviderOptions {
 /// Thread-safe with double-check locking pattern to prevent concurrent refreshes.
 pub struct StorageOptionsAccessor {
     /// Initial/static storage options (always available immediately)
-    initial_options: Option<HashMap<String, String>>,
+    /// Wrapped in RwLock to allow applying environment variables
+    initial_options: RwLock<Option<HashMap<String, String>>>,
     /// Optional dynamic provider for refreshable options
     provider: Option<Arc<dyn StorageOptionsProvider>>,
     /// Cache for provider options (only used when provider is present)
@@ -204,8 +205,14 @@ pub struct StorageOptionsAccessor {
 
 impl fmt::Debug for StorageOptionsAccessor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Use try_read to avoid blocking in Debug
+        let has_options = self
+            .initial_options
+            .try_read()
+            .map(|guard| guard.is_some())
+            .unwrap_or(false);
         f.debug_struct("StorageOptionsAccessor")
-            .field("initial_options", &self.initial_options.is_some())
+            .field("initial_options", &has_options)
             .field("provider", &self.provider)
             .field("refresh_offset", &self.refresh_offset)
             .finish()
@@ -213,10 +220,12 @@ impl fmt::Debug for StorageOptionsAccessor {
 }
 
 // Hash is based on initial_options and provider's provider_id
+// Note: This uses blocking read, so should only be called from sync context
 impl std::hash::Hash for StorageOptionsAccessor {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         // Hash initial options in a deterministic order
-        if let Some(opts) = &self.initial_options {
+        // Use blocking_read since Hash trait is sync
+        if let Some(opts) = self.initial_options.blocking_read().as_ref() {
             let mut sorted_keys: Vec<_> = opts.keys().collect();
             sorted_keys.sort();
             for key in sorted_keys {
@@ -233,7 +242,10 @@ impl std::hash::Hash for StorageOptionsAccessor {
 
 impl PartialEq for StorageOptionsAccessor {
     fn eq(&self, other: &Self) -> bool {
-        self.initial_options == other.initial_options
+        // Use blocking_read since PartialEq trait is sync
+        let self_opts = self.initial_options.blocking_read();
+        let other_opts = other.initial_options.blocking_read();
+        *self_opts == *other_opts
             && self.provider.as_ref().map(|p| p.provider_id())
                 == other.provider.as_ref().map(|p| p.provider_id())
     }
@@ -248,7 +260,7 @@ impl StorageOptionsAccessor {
     /// * `options` - Static storage options
     pub fn new_with_options(options: HashMap<String, String>) -> Self {
         Self {
-            initial_options: Some(options),
+            initial_options: RwLock::new(Some(options)),
             provider: None,
             provider_cache: Arc::new(RwLock::new(None)),
             refresh_offset: Duration::from_secs(60),
@@ -266,7 +278,7 @@ impl StorageOptionsAccessor {
         refresh_offset: Duration,
     ) -> Self {
         Self {
-            initial_options: None,
+            initial_options: RwLock::new(None),
             provider: Some(provider),
             provider_cache: Arc::new(RwLock::new(None)),
             refresh_offset,
@@ -288,7 +300,7 @@ impl StorageOptionsAccessor {
         refresh_offset: Duration,
     ) -> Self {
         Self {
-            initial_options: Some(initial_options),
+            initial_options: RwLock::new(Some(initial_options)),
             provider: Some(provider),
             provider_cache: Arc::new(RwLock::new(None)),
             refresh_offset,
@@ -314,7 +326,7 @@ impl StorageOptionsAccessor {
             .get(EXPIRES_AT_MILLIS_KEY)
             .and_then(|v| v.parse().ok());
         Self {
-            initial_options,
+            initial_options: RwLock::new(initial_options),
             provider: Some(provider),
             provider_cache: Arc::new(RwLock::new(Some(CachedProviderOptions {
                 options: initial_provider_options,
@@ -336,23 +348,24 @@ impl StorageOptionsAccessor {
     /// Get current storage options with version number.
     /// The version number increments on each provider refresh, allowing callers to detect changes.
     pub async fn get_options_with_version(&self) -> Result<(Option<HashMap<String, String>>, u64)> {
+        let initial_opts = self.initial_options.read().await.clone();
+
         // If no provider, just return initial options with version 0
         if self.provider.is_none() {
-            return Ok((self.initial_options.clone(), 0));
+            return Ok((initial_opts, 0));
         }
 
         // Get provider options (with caching)
         let (provider_opts, version) = self.get_provider_options_with_version().await?;
 
         // Merge: start with initial, extend with provider (provider takes precedence)
-        let merged = match (&self.initial_options, provider_opts) {
+        let merged = match (initial_opts, provider_opts) {
             (None, None) => None,
-            (Some(initial), None) => Some(initial.clone()),
+            (Some(initial), None) => Some(initial),
             (None, Some(provider)) => Some(provider),
-            (Some(initial), Some(provider)) => {
-                let mut merged = initial.clone();
-                merged.extend(provider);
-                Some(merged)
+            (Some(mut initial), Some(provider)) => {
+                initial.extend(provider);
+                Some(initial)
             }
         };
 
@@ -465,9 +478,16 @@ impl StorageOptionsAccessor {
         self.provider.is_some()
     }
 
-    /// Get the initial options (without provider options)
-    pub fn initial_options(&self) -> Option<&HashMap<String, String>> {
-        self.initial_options.as_ref()
+    /// Find the configured Azure storage account name from initial options (sync)
+    ///
+    /// This checks the initial_options for Azure account name configuration.
+    /// Falls back to environment variables if not found in options.
+    #[cfg(feature = "azure")]
+    pub fn find_azure_storage_account(&self) -> Option<String> {
+        self.initial_options
+            .blocking_read()
+            .as_ref()
+            .and_then(Self::find_configured_storage_account)
     }
 
     /// Get the provider, if present
@@ -489,7 +509,7 @@ impl StorageOptionsAccessor {
         refresh_offset: Duration,
     ) -> Self {
         Self {
-            initial_options: Some(new_initial_options),
+            initial_options: RwLock::new(Some(new_initial_options)),
             provider: self.provider.clone(),
             // Create new cache - we don't copy the old cache since credentials
             // should be fresh from the provider
@@ -514,15 +534,56 @@ impl StorageOptionsAccessor {
         provider: Arc<dyn StorageOptionsProvider>,
         refresh_offset: Duration,
     ) -> Self {
-        let mut merged = self.initial_options.clone().unwrap_or_default();
+        let mut merged = self
+            .initial_options
+            .blocking_read()
+            .clone()
+            .unwrap_or_default();
         merged.extend(additional_options);
         Self {
-            initial_options: Some(merged),
+            initial_options: RwLock::new(Some(merged)),
             provider: Some(provider),
             provider_cache: Arc::new(RwLock::new(None)),
             refresh_offset,
             next_version: Arc::new(std::sync::atomic::AtomicU64::new(1)),
         }
+    }
+
+    /// Apply S3 environment variables to initial options
+    ///
+    /// This mutates the accessor's internal state to include S3-specific environment variables.
+    /// Should be called once when the accessor is first used for S3 operations.
+    #[cfg(feature = "aws")]
+    pub async fn apply_s3_env(&self) {
+        let mut opts = self.initial_options.write().await;
+        let options = opts.get_or_insert_with(HashMap::new);
+        Self::apply_env_overrides(options);
+        Self::apply_env_s3(options);
+    }
+
+    /// Apply Azure environment variables to initial options
+    ///
+    /// This mutates the accessor's internal state to include Azure-specific environment variables.
+    /// Should be called once when the accessor is first used for Azure operations.
+    #[cfg(feature = "azure")]
+    pub async fn apply_azure_env(&self) {
+        let mut opts = self.initial_options.write().await;
+        let options = opts.get_or_insert_with(HashMap::new);
+        Self::apply_env_overrides(options);
+        let env_options = Self::from_env_azure();
+        Self::apply_env_azure(options, &env_options);
+    }
+
+    /// Apply GCS environment variables to initial options
+    ///
+    /// This mutates the accessor's internal state to include GCS-specific environment variables.
+    /// Should be called once when the accessor is first used for GCS operations.
+    #[cfg(feature = "gcp")]
+    pub async fn apply_gcs_env(&self) {
+        let mut opts = self.initial_options.write().await;
+        let options = opts.get_or_insert_with(HashMap::new);
+        Self::apply_env_overrides(options);
+        Self::apply_env_gcs(options);
     }
 
     // =========================================================================
@@ -559,11 +620,6 @@ impl StorageOptionsAccessor {
     pub async fn get(&self, key: &str) -> Result<Option<String>> {
         let opts = self.get_options().await?;
         Ok(opts.and_then(|o| o.get(key).cloned()))
-    }
-
-    /// Get a value from initial options by key (synchronous, no provider refresh)
-    pub fn get_initial(&self, key: &str) -> Option<&String> {
-        self.initial_options.as_ref().and_then(|opts| opts.get(key))
     }
 
     /// Denotes if unsecure connections via http are allowed (async, uses merged options)
@@ -702,31 +758,29 @@ impl StorageOptionsAccessor {
         Ok(Self::as_s3_options(&opts))
     }
 
-    /// Get merged storage options with S3 env vars applied (async, refreshes if needed)
+    /// Get merged storage options for S3 (async, refreshes if needed)
     ///
-    /// This method:
-    /// 1. Gets merged options from initial + provider
-    /// 2. Applies common env overrides
-    /// 3. Applies S3-specific env vars
+    /// Note: Call `apply_s3_env()` once before using this method to ensure
+    /// environment variables are applied to the accessor.
     #[cfg(feature = "aws")]
-    pub async fn get_options_with_s3_env(&self) -> Result<HashMap<String, String>> {
-        let mut opts = self.get_options().await?.unwrap_or_default();
-        Self::apply_env_overrides(&mut opts);
-        Self::apply_env_s3(&mut opts);
-        Ok(opts)
+    pub async fn get_s3_storage_options(&self) -> Result<HashMap<String, String>> {
+        Ok(self.get_options().await?.unwrap_or_default())
     }
 
-    /// Get merged storage options as S3-specific options map with env vars applied
+    /// Get merged storage options as S3-specific options map
+    ///
+    /// Note: Call `apply_s3_env()` once before using this method to ensure
+    /// environment variables are applied to the accessor.
     #[cfg(feature = "aws")]
     pub async fn get_s3_options_with_env(&self) -> Result<HashMap<AmazonS3ConfigKey, String>> {
-        let opts = self.get_options_with_s3_env().await?;
+        let opts = self.get_options().await?.unwrap_or_default();
         Ok(Self::as_s3_options(&opts))
     }
 
     /// Check if use_opendal flag is set for S3
     #[cfg(feature = "aws")]
     pub async fn s3_use_opendal(&self) -> Result<bool> {
-        let opts = self.get_options_with_s3_env().await?;
+        let opts = self.get_options().await?.unwrap_or_default();
         Ok(opts
             .get("use_opendal")
             .map(|v| v == "true")
@@ -736,14 +790,14 @@ impl StorageOptionsAccessor {
     /// Check if S3 Express mode is enabled
     #[cfg(feature = "aws")]
     pub async fn s3_express(&self) -> Result<bool> {
-        let opts = self.get_options_with_s3_env().await?;
+        let opts = self.get_options().await?.unwrap_or_default();
         Ok(opts.get("s3_express").map(|v| v == "true").unwrap_or(false))
     }
 
     /// Check if this is Cloudflare R2 (requires constant size upload parts)
     #[cfg(feature = "aws")]
     pub async fn is_cloudflare_r2(&self) -> Result<bool> {
-        let opts = self.get_options_with_s3_env().await?;
+        let opts = self.get_options().await?.unwrap_or_default();
         Ok(opts
             .get("aws_endpoint")
             .map(|endpoint| endpoint.contains("r2.cloudflarestorage.com"))
@@ -800,27 +854,29 @@ impl StorageOptionsAccessor {
         Ok(Self::as_azure_options(&opts))
     }
 
-    /// Get merged storage options with Azure env vars applied (async, refreshes if needed)
+    /// Get merged storage options for Azure (async, refreshes if needed)
+    ///
+    /// Note: Call `apply_azure_env()` once before using this method to ensure
+    /// environment variables are applied to the accessor.
     #[cfg(feature = "azure")]
-    pub async fn get_options_with_azure_env(&self) -> Result<HashMap<String, String>> {
-        let env_options = Self::from_env_azure();
-        let mut opts = self.get_options().await?.unwrap_or_default();
-        Self::apply_env_overrides(&mut opts);
-        Self::apply_env_azure(&mut opts, &env_options);
-        Ok(opts)
+    pub async fn get_azure_storage_options(&self) -> Result<HashMap<String, String>> {
+        Ok(self.get_options().await?.unwrap_or_default())
     }
 
-    /// Get merged storage options as Azure-specific options map with env vars applied
+    /// Get merged storage options as Azure-specific options map
+    ///
+    /// Note: Call `apply_azure_env()` once before using this method to ensure
+    /// environment variables are applied to the accessor.
     #[cfg(feature = "azure")]
     pub async fn get_azure_options_with_env(&self) -> Result<HashMap<AzureConfigKey, String>> {
-        let opts = self.get_options_with_azure_env().await?;
+        let opts = self.get_options().await?.unwrap_or_default();
         Ok(Self::as_azure_options(&opts))
     }
 
     /// Check if use_opendal flag is set for Azure
     #[cfg(feature = "azure")]
     pub async fn azure_use_opendal(&self) -> Result<bool> {
-        let opts = self.get_options_with_azure_env().await?;
+        let opts = self.get_options().await?.unwrap_or_default();
         Ok(opts
             .get("use_opendal")
             .map(|v| v == "true")
@@ -840,10 +896,10 @@ impl StorageOptionsAccessor {
         }
     }
 
-    /// Get the configured Azure storage account name (async, uses merged options with env)
+    /// Get the configured Azure storage account name (async, uses merged options)
     #[cfg(feature = "azure")]
     pub async fn get_azure_storage_account(&self) -> Result<Option<String>> {
-        let opts = self.get_options_with_azure_env().await?;
+        let opts = self.get_options().await?.unwrap_or_default();
         Ok(Self::find_configured_storage_account(&opts))
     }
 
@@ -891,36 +947,39 @@ impl StorageOptionsAccessor {
         Ok(Self::as_gcs_options(&opts))
     }
 
-    /// Get merged storage options with GCS env vars applied (async, refreshes if needed)
+    /// Get merged storage options for GCS (async, refreshes if needed)
+    ///
+    /// Note: Call `apply_gcs_env()` once before using this method to ensure
+    /// environment variables are applied to the accessor.
     #[cfg(feature = "gcp")]
-    pub async fn get_options_with_gcs_env(&self) -> Result<HashMap<String, String>> {
-        let mut opts = self.get_options().await?.unwrap_or_default();
-        Self::apply_env_overrides(&mut opts);
-        Self::apply_env_gcs(&mut opts);
-        Ok(opts)
+    pub async fn get_gcs_storage_options(&self) -> Result<HashMap<String, String>> {
+        Ok(self.get_options().await?.unwrap_or_default())
     }
 
-    /// Get merged storage options as GCS-specific options map with env vars applied
+    /// Get merged storage options as GCS-specific options map
+    ///
+    /// Note: Call `apply_gcs_env()` once before using this method to ensure
+    /// environment variables are applied to the accessor.
     #[cfg(feature = "gcp")]
     pub async fn get_gcs_options_with_env(&self) -> Result<HashMap<GoogleConfigKey, String>> {
-        let opts = self.get_options_with_gcs_env().await?;
+        let opts = self.get_options().await?.unwrap_or_default();
         Ok(Self::as_gcs_options(&opts))
     }
 
     /// Check if use_opendal flag is set for GCS
     #[cfg(feature = "gcp")]
     pub async fn gcs_use_opendal(&self) -> Result<bool> {
-        let opts = self.get_options_with_gcs_env().await?;
+        let opts = self.get_options().await?.unwrap_or_default();
         Ok(opts
             .get("use_opendal")
             .map(|v| v == "true")
             .unwrap_or(false))
     }
 
-    /// Get Google storage token (async, uses merged options with env)
+    /// Get Google storage token (async, uses merged options)
     #[cfg(feature = "gcp")]
     pub async fn google_storage_token(&self) -> Result<Option<String>> {
-        let opts = self.get_options_with_gcs_env().await?;
+        let opts = self.get_options().await?.unwrap_or_default();
         Ok(opts.get("google_storage_token").cloned())
     }
 

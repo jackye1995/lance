@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The Lance Authors
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use crate::object_store::{
-    ObjectStore, ObjectStoreParams, ObjectStoreProvider, DEFAULT_LOCAL_BLOCK_SIZE,
-    DEFAULT_LOCAL_IO_PARALLELISM, DEFAULT_MAX_IOP_SIZE,
+    ObjectStore, ObjectStoreParams, ObjectStoreProvider, StorageOptionsAccessor,
+    DEFAULT_LOCAL_BLOCK_SIZE, DEFAULT_LOCAL_IO_PARALLELISM, DEFAULT_MAX_IOP_SIZE,
 };
 use lance_core::error::Result;
 use lance_core::Error;
@@ -53,7 +53,7 @@ impl ObjectStoreProvider for FileStoreProvider {
     fn calculate_object_store_prefix(
         &self,
         url: &Url,
-        _storage_options: Option<&HashMap<String, String>>,
+        _accessor: &StorageOptionsAccessor,
     ) -> Result<String> {
         Ok(url.scheme().to_string())
     }
@@ -86,10 +86,11 @@ mod tests {
     #[test]
     fn test_calculate_object_store_prefix() {
         let provider = FileStoreProvider;
+        let accessor = StorageOptionsAccessor::new_with_options(std::collections::HashMap::new());
         assert_eq!(
             "file",
             provider
-                .calculate_object_store_prefix(&Url::parse("file:///etc").unwrap(), None)
+                .calculate_object_store_prefix(&Url::parse("file:///etc").unwrap(), &accessor)
                 .unwrap()
         );
     }
@@ -97,12 +98,13 @@ mod tests {
     #[test]
     fn test_calculate_object_store_prefix_for_file_object_store() {
         let provider = FileStoreProvider;
+        let accessor = StorageOptionsAccessor::new_with_options(std::collections::HashMap::new());
         assert_eq!(
             "file-object-store",
             provider
                 .calculate_object_store_prefix(
                     &Url::parse("file-object-store:///etc").unwrap(),
-                    None
+                    &accessor
                 )
                 .unwrap()
         );

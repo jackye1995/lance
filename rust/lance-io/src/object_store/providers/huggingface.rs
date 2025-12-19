@@ -13,8 +13,8 @@ use url::Url;
 
 use crate::object_store::parse_hf_repo_id;
 use crate::object_store::{
-    ObjectStore, ObjectStoreParams, ObjectStoreProvider, DEFAULT_CLOUD_BLOCK_SIZE,
-    DEFAULT_CLOUD_IO_PARALLELISM, DEFAULT_MAX_IOP_SIZE,
+    ObjectStore, ObjectStoreParams, ObjectStoreProvider, StorageOptionsAccessor,
+    DEFAULT_CLOUD_BLOCK_SIZE, DEFAULT_CLOUD_IO_PARALLELISM, DEFAULT_MAX_IOP_SIZE,
 };
 use lance_core::error::{Error, Result};
 
@@ -125,7 +125,7 @@ impl ObjectStoreProvider for HuggingfaceStoreProvider {
     fn calculate_object_store_prefix(
         &self,
         url: &Url,
-        _storage_options: Option<&HashMap<String, String>>,
+        _accessor: &StorageOptionsAccessor,
     ) -> Result<String> {
         let repo_id = parse_hf_repo_id(url)?;
         Ok(format!("{}${}@{}", url.scheme(), url.authority(), repo_id))
@@ -135,7 +135,6 @@ impl ObjectStoreProvider for HuggingfaceStoreProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::object_store::StorageOptionsAccessor;
 
     #[test]
     fn parse_basic_url() {
@@ -220,7 +219,10 @@ mod tests {
     fn calculate_prefix_uses_repo_id() {
         let provider = HuggingfaceStoreProvider;
         let url = Url::parse("hf://datasets/acme/repo/path").unwrap();
-        let prefix = provider.calculate_object_store_prefix(&url, None).unwrap();
+        let accessor = StorageOptionsAccessor::new_with_options(HashMap::new());
+        let prefix = provider
+            .calculate_object_store_prefix(&url, &accessor)
+            .unwrap();
         assert_eq!(prefix, "hf$datasets@acme/repo");
     }
 

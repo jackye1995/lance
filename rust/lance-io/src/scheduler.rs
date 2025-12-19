@@ -964,7 +964,10 @@ impl FileScheduler {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::VecDeque, time::Duration};
+    use std::{
+        collections::{HashMap, VecDeque},
+        time::Duration,
+    };
 
     use futures::poll;
     use lance_core::utils::tempfile::TempObjFile;
@@ -975,7 +978,9 @@ mod tests {
     use url::Url;
 
     use crate::{
-        object_store::{DEFAULT_DOWNLOAD_RETRY_COUNT, DEFAULT_MAX_IOP_SIZE},
+        object_store::{
+            StorageOptionsAccessor, DEFAULT_DOWNLOAD_RETRY_COUNT, DEFAULT_MAX_IOP_SIZE,
+        },
         testing::MockObjectStore,
     };
 
@@ -1136,6 +1141,7 @@ mod tests {
                 }
                 .boxed()
             });
+        let accessor = StorageOptionsAccessor::new_with_options(HashMap::new());
         let obj_store = Arc::new(ObjectStore::new(
             Arc::new(obj_store),
             Url::parse("mem://").unwrap(),
@@ -1145,7 +1151,7 @@ mod tests {
             false,
             1,
             DEFAULT_DOWNLOAD_RETRY_COUNT,
-            None,
+            &accessor,
         ));
 
         let config = SchedulerConfig {
@@ -1226,6 +1232,7 @@ mod tests {
                 let base_store = base_store.clone();
                 async move { base_store.get_opts(&location, options).await }.boxed()
             });
+        let accessor = StorageOptionsAccessor::new_with_options(HashMap::new());
         let obj_store = Arc::new(ObjectStore::new(
             Arc::new(obj_store),
             Url::parse("mem://").unwrap(),
@@ -1235,7 +1242,7 @@ mod tests {
             false,
             1,
             DEFAULT_DOWNLOAD_RETRY_COUNT,
-            None,
+            &accessor,
         ));
 
         let config = SchedulerConfig {

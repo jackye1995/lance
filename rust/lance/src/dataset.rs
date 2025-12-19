@@ -937,19 +937,7 @@ impl Dataset {
                 // assumes no dataset exists and converts the mode to CREATE.
                 let mut builder = DatasetBuilder::from_uri(uri.as_str());
                 if let Some(ref store_params) = write_params.store_params {
-                    // Copy storage_options_accessor from store_params if present
-                    // The accessor already contains both the initial options and provider
-                    if let Some(ref accessor) = store_params.storage_options_accessor {
-                        // Get initial storage options from the accessor
-                        let initial_options = accessor.initial_options();
-                        if let Some(opts) = initial_options {
-                            builder = builder.with_storage_options(opts.clone());
-                        }
-                        // If the accessor has a provider, set that too
-                        if let Some(provider) = accessor.provider() {
-                            builder = builder.with_storage_options_provider(provider);
-                        }
-                    }
+                    builder = builder.with_store_params(store_params.clone());
                 }
                 let dataset = Arc::new(builder.load().await?);
 
@@ -1609,24 +1597,6 @@ impl Dataset {
         &self.object_store
     }
 
-    /// Returns the storage options used when opening this dataset, if any.
-    /// Returns the initial storage options (without provider options).
-    pub fn storage_options(&self) -> Option<&HashMap<String, String>> {
-        self.store_params
-            .as_ref()
-            .and_then(|p| p.storage_options_accessor.as_ref())
-            .and_then(|a| a.initial_options())
-    }
-
-    /// Returns the storage options accessor used when opening this dataset, if any.
-    pub fn storage_options_accessor(
-        &self,
-    ) -> Option<Arc<lance_io::object_store::StorageOptionsAccessor>> {
-        self.store_params
-            .as_ref()
-            .and_then(|p| p.storage_options_accessor.clone())
-    }
-
     /// Returns the current storage options, combining the initial storage_options
     /// with any overrides from the storage_options_provider (cached until expiration).
     ///
@@ -1636,12 +1606,21 @@ impl Dataset {
     ///
     /// If neither storage_options nor storage_options_provider were specified when
     /// opening the dataset, an empty HashMap is returned.
-    pub async fn current_storage_options(&self) -> Result<HashMap<String, String>> {
+    pub async fn storage_options(&self) -> Result<HashMap<String, String>> {
         if let Some(accessor) = self.storage_options_accessor() {
             Ok(accessor.get_options().await?.unwrap_or_default())
         } else {
             Ok(HashMap::new())
         }
+    }
+
+    /// Returns the storage options accessor used when opening this dataset, if any.
+    pub fn storage_options_accessor(
+        &self,
+    ) -> Option<Arc<lance_io::object_store::StorageOptionsAccessor>> {
+        self.store_params
+            .as_ref()
+            .and_then(|p| p.storage_options_accessor.clone())
     }
 
     pub fn data_dir(&self) -> Path {

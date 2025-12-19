@@ -13,7 +13,9 @@ use url::Url;
 use crate::object_store::uri_to_url;
 use crate::object_store::WrappingObjectStore;
 
-use super::{tracing::ObjectStoreTracingExt, ObjectStore, ObjectStoreParams};
+use super::{
+    tracing::ObjectStoreTracingExt, ObjectStore, ObjectStoreParams, StorageOptionsAccessor,
+};
 use lance_core::error::{Error, LanceOptionExt, Result};
 
 #[cfg(feature = "aws")]
@@ -61,7 +63,7 @@ pub trait ObjectStoreProvider: std::fmt::Debug + Sync + Send {
     fn calculate_object_store_prefix(
         &self,
         url: &Url,
-        _storage_options: Option<&HashMap<String, String>>,
+        _accessor: &StorageOptionsAccessor,
     ) -> Result<String> {
         Ok(format!("{}${}", url.scheme(), url.authority()))
     }
@@ -171,8 +173,8 @@ impl ObjectStoreRegistry {
             return Err(self.scheme_not_found_error(scheme));
         };
 
-        let cache_path =
-            provider.calculate_object_store_prefix(&base_path, params.storage_options_ref())?;
+        let accessor = params.accessor();
+        let cache_path = provider.calculate_object_store_prefix(&base_path, &accessor)?;
         let cache_key = (cache_path.clone(), params.clone());
 
         // Check if we have a cached store for this base path and params
@@ -225,12 +227,12 @@ impl ObjectStoreRegistry {
         Ok(store)
     }
 
-    /// Calculate the datastore prefix based on the URI and the storage options.
+    /// Calculate the datastore prefix based on the URI and the accessor.
     /// The data store prefix should uniquely identify the datastore.
     pub fn calculate_object_store_prefix(
         &self,
         uri: &str,
-        storage_options: Option<&HashMap<String, String>>,
+        accessor: &StorageOptionsAccessor,
     ) -> Result<String> {
         let url = uri_to_url(uri)?;
         match self.get_provider(url.scheme()) {
@@ -241,7 +243,7 @@ impl ObjectStoreRegistry {
                     Err(self.scheme_not_found_error(url.scheme()))
                 }
             }
-            Some(provider) => provider.calculate_object_store_prefix(&url, storage_options),
+            Some(provider) => provider.calculate_object_store_prefix(&url, accessor),
         }
     }
 }
@@ -298,6 +300,8 @@ impl ObjectStoreRegistry {
 mod tests {
     use super::*;
 
+    use crate::object_store::StorageOptionsAccessor;
+
     #[derive(Debug)]
     struct DummyProvider;
 
@@ -316,9 +320,12 @@ mod tests {
     fn test_calculate_object_store_prefix() {
         let provider = DummyProvider;
         let url = Url::parse("dummy://blah/path").unwrap();
+        let accessor = StorageOptionsAccessor::new_with_options(HashMap::new());
         assert_eq!(
             "dummy$blah",
-            provider.calculate_object_store_prefix(&url, None).unwrap()
+            provider
+                .calculate_object_store_prefix(&url, &accessor)
+                .unwrap()
         );
     }
 
@@ -326,9 +333,10 @@ mod tests {
     fn test_calculate_object_store_scheme_not_found() {
         let registry = ObjectStoreRegistry::empty();
         registry.insert("dummy", Arc::new(DummyProvider));
+        let accessor = StorageOptionsAccessor::new_with_options(HashMap::new());
         let s = "Invalid user input: No object store provider found for scheme: 'dummy2'\nValid schemes: dummy";
         let result = registry
-            .calculate_object_store_prefix("dummy2://mybucket/my/long/path", None)
+            .calculate_object_store_prefix("dummy2://mybucket/my/long/path", &accessor)
             .expect_err("expected error")
             .to_string();
         assert_eq!(s, &result[..s.len()]);
@@ -338,10 +346,11 @@ mod tests {
     #[test]
     fn test_calculate_object_store_prefix_for_local() {
         let registry = ObjectStoreRegistry::empty();
+        let accessor = StorageOptionsAccessor::new_with_options(HashMap::new());
         assert_eq!(
             "file",
             registry
-                .calculate_object_store_prefix("/tmp/foobar", None)
+                .calculate_object_store_prefix("/tmp/foobar", &accessor)
                 .unwrap()
         );
     }
@@ -350,10 +359,11 @@ mod tests {
     #[test]
     fn test_calculate_object_store_prefix_for_local_windows_path() {
         let registry = ObjectStoreRegistry::empty();
+        let accessor = StorageOptionsAccessor::new_with_options(HashMap::new());
         assert_eq!(
             "file",
             registry
-                .calculate_object_store_prefix("c://dos/path", None)
+                .calculate_object_store_prefix("c://dos/path", &accessor)
                 .unwrap()
         );
     }
@@ -363,10 +373,11 @@ mod tests {
     fn test_calculate_object_store_prefix_for_dummy_path() {
         let registry = ObjectStoreRegistry::empty();
         registry.insert("dummy", Arc::new(DummyProvider));
+        let accessor = StorageOptionsAccessor::new_with_options(HashMap::new());
         assert_eq!(
             "dummy$mybucket",
             registry
-                .calculate_object_store_prefix("dummy://mybucket/my/long/path", None)
+                .calculate_object_store_prefix("dummy://mybucket/my/long/path", &accessor)
                 .unwrap()
         );
     }

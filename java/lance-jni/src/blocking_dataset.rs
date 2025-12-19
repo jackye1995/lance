@@ -1567,24 +1567,21 @@ fn inner_get_config<'local>(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_org_lance_Dataset_nativeGetCurrentStorageOptions<'local>(
+pub extern "system" fn Java_org_lance_Dataset_nativeGetStorageOptions<'local>(
     mut env: JNIEnv<'local>,
     java_dataset: JObject,
 ) -> JObject<'local> {
-    ok_or_throw!(
-        env,
-        inner_get_current_storage_options(&mut env, java_dataset)
-    )
+    ok_or_throw!(env, inner_get_storage_options(&mut env, java_dataset))
 }
 
-fn inner_get_current_storage_options<'local>(
+fn inner_get_storage_options<'local>(
     env: &mut JNIEnv<'local>,
     java_dataset: JObject,
 ) -> Result<JObject<'local>> {
     let options = {
         let dataset_guard =
             unsafe { env.get_rust_field::<_, _, BlockingDataset>(java_dataset, NATIVE_DATASET) }?;
-        RT.block_on(dataset_guard.inner.current_storage_options())
+        RT.block_on(dataset_guard.inner.storage_options())
             .map_err(|e| Error::io_error(e.to_string()))?
     };
 

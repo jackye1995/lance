@@ -650,8 +650,8 @@ impl Dataset {
     /// Returns a dictionary combining the initial storage_options with any
     /// overrides from the storage_options_provider. Provider options take
     /// precedence when keys conflict. Options are cached until they expire.
-    fn current_storage_options(&self) -> PyResult<std::collections::HashMap<String, String>> {
-        rt().block_on(None, self.ds.current_storage_options())?
+    fn storage_options(&self) -> PyResult<std::collections::HashMap<String, String>> {
+        rt().block_on(None, self.ds.storage_options())?
             .map_err(|err| PyIOError::new_err(err.to_string()))
     }
 

@@ -96,8 +96,11 @@ impl ObjectStoreProvider for GcsStoreProvider {
         let block_size = params.block_size.unwrap_or(DEFAULT_CLOUD_BLOCK_SIZE);
         let accessor = params.accessor();
 
-        // Get merged storage options with GCS env vars applied
-        let storage_options = accessor.get_options_with_gcs_env().await?;
+        // Apply GCS environment variables to the accessor once
+        accessor.apply_gcs_env().await;
+
+        // Get configuration from merged options
+        let storage_options = accessor.get_gcs_storage_options().await?;
         let download_retry_count = accessor.download_retry_count().await?;
         let use_opendal = accessor.gcs_use_opendal().await?;
 

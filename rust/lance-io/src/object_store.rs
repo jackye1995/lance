@@ -289,16 +289,6 @@ impl ObjectStoreParams {
             .clone()
             .unwrap_or_else(|| Arc::new(StorageOptionsAccessor::new_with_options(HashMap::new())))
     }
-
-    /// Get a reference to the initial storage options (synchronous, no provider refresh).
-    ///
-    /// This is primarily used for synchronous operations that need to access
-    /// storage options without going through the async provider refresh mechanism.
-    pub fn storage_options_ref(&self) -> Option<&HashMap<String, String>> {
-        self.storage_options_accessor
-            .as_ref()
-            .and_then(|a| a.initial_options())
-    }
 }
 
 /// Convert a URI string or local path to a URL
@@ -424,8 +414,8 @@ impl ObjectStore {
         #[allow(deprecated)]
         if let Some((store, path)) = params.object_store.as_ref() {
             let mut inner = store.clone();
-            let store_prefix =
-                registry.calculate_object_store_prefix(uri, params.storage_options_ref())?;
+            let accessor = params.accessor();
+            let store_prefix = registry.calculate_object_store_prefix(uri, &accessor)?;
             if let Some(wrapper) = params.object_store_wrapper.as_ref() {
                 inner = wrapper.wrap(&store_prefix, inner);
             }
@@ -792,7 +782,7 @@ impl ObjectStore {
         list_is_lexically_ordered: bool,
         io_parallelism: usize,
         download_retry_count: usize,
-        storage_options: Option<&HashMap<String, String>>,
+        accessor: &StorageOptionsAccessor,
     ) -> Self {
         let scheme = location.scheme();
         let block_size = block_size.unwrap_or_else(|| infer_block_size(scheme));
@@ -800,7 +790,7 @@ impl ObjectStore {
         let store = match wrapper {
             Some(wrapper) => {
                 let store_prefix = DEFAULT_OBJECT_STORE_REGISTRY
-                    .calculate_object_store_prefix(location.as_ref(), storage_options)
+                    .calculate_object_store_prefix(location.as_ref(), accessor)
                     .unwrap();
                 wrapper.wrap(&store_prefix, store)
             }

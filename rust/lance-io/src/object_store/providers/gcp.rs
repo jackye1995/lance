@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The Lance Authors
 
-use std::{collections::HashMap, str::FromStr, sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use object_store::ObjectStore as OSObjectStore;
 use object_store_opendal::OpendalStore;
@@ -9,14 +9,14 @@ use opendal::{services::Gcs, Operator};
 use snafu::location;
 
 use object_store::{
-    gcp::{GcpCredential, GoogleCloudStorageBuilder, GoogleConfigKey},
+    gcp::{GcpCredential, GoogleCloudStorageBuilder},
     RetryConfig, StaticCredentialProvider,
 };
 use url::Url;
 
 use crate::object_store::{
-    ObjectStore, ObjectStoreParams, ObjectStoreProvider, StorageOptions, DEFAULT_CLOUD_BLOCK_SIZE,
-    DEFAULT_CLOUD_IO_PARALLELISM, DEFAULT_MAX_IOP_SIZE,
+    ObjectStore, ObjectStoreParams, ObjectStoreProvider, StorageOptionsAccessor,
+    DEFAULT_CLOUD_BLOCK_SIZE, DEFAULT_CLOUD_IO_PARALLELISM, DEFAULT_MAX_IOP_SIZE,
 };
 use lance_core::error::{Error, Result};
 
@@ -27,7 +27,7 @@ impl GcsStoreProvider {
     async fn build_opendal_gcs_store(
         &self,
         base_path: &Url,
-        storage_options: &StorageOptions,
+        storage_options: &HashMap<String, String>,
     ) -> Result<Arc<dyn OSObjectStore>> {
         let bucket = base_path
             .host_str()
@@ -38,7 +38,7 @@ impl GcsStoreProvider {
 
         // Start with all storage options as the config map
         // OpenDAL will handle environment variables through its default credentials chain
-        let mut config_map: HashMap<String, String> = storage_options.0.clone();
+        let mut config_map: HashMap<String, String> = storage_options.clone();
 
         // Set required OpenDAL configuration
         config_map.insert("bucket".to_string(), bucket);
@@ -62,10 +62,11 @@ impl GcsStoreProvider {
     async fn build_google_cloud_store(
         &self,
         base_path: &Url,
-        storage_options: &StorageOptions,
+        accessor: &Arc<StorageOptionsAccessor>,
+        storage_options: &HashMap<String, String>,
     ) -> Result<Arc<dyn OSObjectStore>> {
-        let max_retries = storage_options.client_max_retries();
-        let retry_timeout = storage_options.client_retry_timeout();
+        let max_retries = accessor.client_max_retries().await?;
+        let retry_timeout = accessor.client_retry_timeout().await?;
         let retry_config = RetryConfig {
             backoff: Default::default(),
             max_retries,
@@ -75,14 +76,12 @@ impl GcsStoreProvider {
         let mut builder = GoogleCloudStorageBuilder::new()
             .with_url(base_path.as_ref())
             .with_retry(retry_config);
-        for (key, value) in storage_options.as_gcs_options() {
+        for (key, value) in StorageOptionsAccessor::as_gcs_options(storage_options) {
             builder = builder.with_config(key, value);
         }
-        let token_key = "google_storage_token";
-        if let Some(storage_token) = storage_options.get(token_key) {
-            let credential = GcpCredential {
-                bearer: storage_token.clone(),
-            };
+        let storage_token = accessor.google_storage_token().await?;
+        if let Some(token) = storage_token {
+            let credential = GcpCredential { bearer: token };
             let credential_provider = Arc::new(StaticCredentialProvider::new(credential)) as _;
             builder = builder.with_credentials(credential_provider);
         }
@@ -95,22 +94,18 @@ impl GcsStoreProvider {
 impl ObjectStoreProvider for GcsStoreProvider {
     async fn new_store(&self, base_path: Url, params: &ObjectStoreParams) -> Result<ObjectStore> {
         let block_size = params.block_size.unwrap_or(DEFAULT_CLOUD_BLOCK_SIZE);
-        let mut storage_options =
-            StorageOptions(params.storage_options.clone().unwrap_or_default());
-        storage_options.with_env_gcs();
-        let download_retry_count = storage_options.download_retry_count();
+        let accessor = params.accessor();
 
-        let use_opendal = storage_options
-            .0
-            .get("use_opendal")
-            .map(|v| v.as_str() == "true")
-            .unwrap_or(false);
+        // Get merged storage options with GCS env vars applied
+        let storage_options = accessor.get_options_with_gcs_env().await?;
+        let download_retry_count = accessor.download_retry_count().await?;
+        let use_opendal = accessor.gcs_use_opendal().await?;
 
         let inner = if use_opendal {
             self.build_opendal_gcs_store(&base_path, &storage_options)
                 .await?
         } else {
-            self.build_google_cloud_store(&base_path, &storage_options)
+            self.build_google_cloud_store(&base_path, &accessor, &storage_options)
                 .await?
         };
 
@@ -128,45 +123,12 @@ impl ObjectStoreProvider for GcsStoreProvider {
     }
 }
 
-impl StorageOptions {
-    /// Add values from the environment to storage options
-    pub fn with_env_gcs(&mut self) {
-        for (os_key, os_value) in std::env::vars_os() {
-            if let (Some(key), Some(value)) = (os_key.to_str(), os_value.to_str()) {
-                let lowercase_key = key.to_ascii_lowercase();
-                let token_key = "google_storage_token";
-
-                if let Ok(config_key) = GoogleConfigKey::from_str(&lowercase_key) {
-                    if !self.0.contains_key(config_key.as_ref()) {
-                        self.0
-                            .insert(config_key.as_ref().to_string(), value.to_string());
-                    }
-                }
-                // Check for GOOGLE_STORAGE_TOKEN until GoogleConfigKey supports storage token
-                else if lowercase_key == token_key && !self.0.contains_key(token_key) {
-                    self.0.insert(token_key.to_string(), value.to_string());
-                }
-            }
-        }
-    }
-
-    /// Subset of options relevant for gcs storage
-    pub fn as_gcs_options(&self) -> HashMap<GoogleConfigKey, String> {
-        self.0
-            .iter()
-            .filter_map(|(key, value)| {
-                let gcs_key = GoogleConfigKey::from_str(&key.to_ascii_lowercase()).ok()?;
-                Some((gcs_key, value.clone()))
-            })
-            .collect()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::object_store::ObjectStoreParams;
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     #[test]
     fn test_gcs_store_path() {
@@ -183,13 +145,15 @@ mod tests {
         let provider = GcsStoreProvider;
         let url = Url::parse("gs://test-bucket/path").unwrap();
         let params_with_flag = ObjectStoreParams {
-            storage_options: Some(HashMap::from([
-                ("use_opendal".to_string(), "true".to_string()),
-                (
-                    "service_account".to_string(),
-                    "test@example.iam.gserviceaccount.com".to_string(),
-                ),
-            ])),
+            storage_options_accessor: Some(Arc::new(StorageOptionsAccessor::new_with_options(
+                HashMap::from([
+                    ("use_opendal".to_string(), "true".to_string()),
+                    (
+                        "service_account".to_string(),
+                        "test@example.iam.gserviceaccount.com".to_string(),
+                    ),
+                ]),
+            ))),
             ..Default::default()
         };
 

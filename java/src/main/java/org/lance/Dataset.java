@@ -996,6 +996,24 @@ public class Dataset implements Closeable {
   private native Map<String, String> nativeGetConfig();
 
   /**
+   * Get the current storage options.
+   *
+   * <p>Returns a map combining the initial storage_options with any overrides from the
+   * storage_options_provider. Options from the provider are cached until they expire (based on
+   * expires_at_millis).
+   *
+   * @return the current storage options
+   */
+  public Map<String, String> getCurrentStorageOptions() {
+    try (LockManager.ReadLock readLock = lockManager.acquireReadLock()) {
+      Preconditions.checkArgument(nativeDatasetHandle != 0, "Dataset is closed");
+      return nativeGetCurrentStorageOptions();
+    }
+  }
+
+  private native Map<String, String> nativeGetCurrentStorageOptions();
+
+  /**
    * Compact the dataset to improve performance.
    *
    * <p>This operation performs several optimizations:

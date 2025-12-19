@@ -4,7 +4,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::object_store::{
-    ObjectStore, ObjectStoreParams, ObjectStoreProvider, StorageOptions, DEFAULT_LOCAL_BLOCK_SIZE,
+    ObjectStore, ObjectStoreParams, ObjectStoreProvider, DEFAULT_LOCAL_BLOCK_SIZE,
     DEFAULT_LOCAL_IO_PARALLELISM, DEFAULT_MAX_IOP_SIZE,
 };
 use lance_core::error::Result;
@@ -20,8 +20,8 @@ pub struct FileStoreProvider;
 impl ObjectStoreProvider for FileStoreProvider {
     async fn new_store(&self, base_path: Url, params: &ObjectStoreParams) -> Result<ObjectStore> {
         let block_size = params.block_size.unwrap_or(DEFAULT_LOCAL_BLOCK_SIZE);
-        let storage_options = StorageOptions(params.storage_options.clone().unwrap_or_default());
-        let download_retry_count = storage_options.download_retry_count();
+        let accessor = params.accessor();
+        let download_retry_count = accessor.download_retry_count().await?;
         Ok(ObjectStore {
             inner: Arc::new(LocalFileSystem::new()),
             scheme: base_path.scheme().to_owned(),

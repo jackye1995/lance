@@ -207,12 +207,9 @@ impl<'a> CommitBuilder<'a> {
                         ObjectStore::extract_path_from_uri(session.store_registry(), uri)?,
                     )
                 } else {
-                    ObjectStore::from_uri_and_params(
-                        session.store_registry(),
-                        uri,
-                        &self.store_params.clone().unwrap_or_default(),
-                    )
-                    .await?
+                    let store_params = self.store_params.clone().unwrap_or_default();
+                    ObjectStore::from_uri_and_params(session.store_registry(), uri, &store_params)
+                        .await?
                 };
                 (object_store, base_path, commit_handler)
             }

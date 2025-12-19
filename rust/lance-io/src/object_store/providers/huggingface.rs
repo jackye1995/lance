@@ -13,7 +13,7 @@ use url::Url;
 
 use crate::object_store::parse_hf_repo_id;
 use crate::object_store::{
-    ObjectStore, ObjectStoreParams, ObjectStoreProvider, StorageOptions, DEFAULT_CLOUD_BLOCK_SIZE,
+    ObjectStore, ObjectStoreParams, ObjectStoreProvider, DEFAULT_CLOUD_BLOCK_SIZE,
     DEFAULT_CLOUD_IO_PARALLELISM, DEFAULT_MAX_IOP_SIZE,
 };
 use lance_core::error::{Error, Result};
@@ -65,8 +65,8 @@ impl ObjectStoreProvider for HuggingfaceStoreProvider {
         } = parse_hf_url(&base_path)?;
 
         let block_size = params.block_size.unwrap_or(DEFAULT_CLOUD_BLOCK_SIZE);
-        let storage_options = StorageOptions(params.storage_options.clone().unwrap_or_default());
-        let download_retry_count = storage_options.download_retry_count();
+        let accessor = params.accessor();
+        let download_retry_count = accessor.download_retry_count().await?;
 
         // Build OpenDAL config with allowed keys only.
         let mut config_map: HashMap<String, String> = HashMap::new();
@@ -74,22 +74,17 @@ impl ObjectStoreProvider for HuggingfaceStoreProvider {
         config_map.insert("repo_type".to_string(), repo_type);
         config_map.insert("repo_id".to_string(), repo_id);
 
-        if let Some(rev) = storage_options.get("hf_revision").cloned() {
+        if let Some(rev) = accessor.hf_revision().await? {
             config_map.insert("revision".to_string(), rev);
         }
 
-        if let Some(root) = storage_options.get("hf_root").cloned() {
+        if let Some(root) = accessor.hf_root().await? {
             if !root.is_empty() {
                 config_map.insert("root".to_string(), root);
             }
         }
 
-        if let Some(token) = storage_options
-            .get("hf_token")
-            .cloned()
-            .or_else(|| std::env::var("HF_TOKEN").ok())
-            .or_else(|| std::env::var("HUGGINGFACE_TOKEN").ok())
-        {
+        if let Some(token) = accessor.hf_token().await? {
             config_map.insert("token".to_string(), token);
         }
 
@@ -140,6 +135,7 @@ impl ObjectStoreProvider for HuggingfaceStoreProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::object_store::StorageOptionsAccessor;
 
     #[test]
     fn parse_basic_url() {
@@ -155,14 +151,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn storage_option_revision_takes_precedence() {
+    #[tokio::test]
+    async fn storage_option_revision_takes_precedence() {
         let url = Url::parse("hf://datasets/acme/repo/data/file").unwrap();
         let params = ObjectStoreParams {
-            storage_options: Some(HashMap::from([(
-                String::from("hf_revision"),
-                String::from("stable"),
-            )])),
+            storage_options_accessor: Some(Arc::new(StorageOptionsAccessor::new_with_options(
+                HashMap::from([(String::from("hf_revision"), String::from("stable"))]),
+            ))),
             ..Default::default()
         };
         // new_store should accept without creating operator; test precedence via builder config
@@ -174,13 +169,8 @@ mod tests {
         let mut config_map: HashMap<String, String> = HashMap::new();
         config_map.insert("repo_type".to_string(), repo_type);
         config_map.insert("repo".to_string(), repo_id);
-        if let Some(rev) = params
-            .storage_options
-            .as_ref()
-            .unwrap()
-            .get("hf_revision")
-            .cloned()
-        {
+        let accessor = params.accessor();
+        if let Some(rev) = accessor.hf_revision().await.unwrap() {
             config_map.insert("revision".to_string(), rev);
         }
         assert_eq!(config_map.get("revision").unwrap(), "stable");

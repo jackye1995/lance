@@ -46,6 +46,7 @@ if TYPE_CHECKING:
 
     from lance.commit import CommitLock
     from lance.dependencies import pandas as pd
+    from lance.io import StorageOptionsProvider
 
     ts_types = Union[datetime, pd.Timestamp, str]
 
@@ -101,6 +102,7 @@ def dataset(
     table_id: Optional[List[str]] = None,
     ignore_namespace_table_storage_options: bool = False,
     s3_credentials_refresh_offset_seconds: Optional[int] = None,
+    storage_options_provider: Optional[StorageOptionsProvider] = None,
 ) -> LanceDataset:
     """
     Opens the Lance dataset from the address specified.
@@ -181,15 +183,41 @@ def dataset(
         when they have less than 60 seconds remaining before expiration. This
         should be set shorter than the credential lifetime to avoid using
         expired credentials.
+    storage_options_provider : optional, StorageOptionsProvider
+        A custom storage options provider for dynamic credential fetching.
+        This allows using a specific URI with namespace-based credential refresh.
+        If both `storage_options_provider` and `namespace`+`table_id` are provided,
+        the explicitly provided `storage_options_provider` takes precedence.
 
     Notes
     -----
-    When using `namespace` and `table_id`:
-    - The `uri` parameter is optional and will be fetched from the namespace
-    - Storage options from describe_table() will be used unless
-      `ignore_namespace_table_storage_options=True`
-    - Initial storage options from describe_table() will be merged with
-      any provided `storage_options`
+    **Namespace Behavior:**
+
+    When `namespace` and `table_id` are provided (instead of `uri`), the function
+    automatically:
+
+    1. Calls ``describe_table()`` on the namespace to get table metadata
+    2. Uses the returned location as the dataset URI
+    3. Merges namespace storage options with any user-provided storage options
+       (namespace options take precedence)
+    4. Creates a ``LanceNamespaceStorageOptionsProvider`` for automatic credential
+       refresh
+
+    **Using URI with Custom Storage Options Provider:**
+
+    If you need to use a specific URI with namespace-based credential refresh,
+    pass both the URI and a storage options provider::
+
+        from lance.namespace import LanceNamespaceStorageOptionsProvider
+
+        provider = LanceNamespaceStorageOptionsProvider(
+            namespace=my_namespace, table_id=["my_table"]
+        )
+        ds = lance.dataset(
+            uri="s3://bucket/table.lance",
+            storage_options_provider=provider,
+        )
+
     """
     # Validate that user provides either uri OR (namespace + table_id), not both
     has_uri = uri is not None
@@ -206,7 +234,6 @@ def dataset(
         )
 
     # Handle namespace resolution in Python
-    storage_options_provider = None
     if namespace is not None:
         if table_id is None:
             raise ValueError(
@@ -226,9 +253,11 @@ def dataset(
             namespace_storage_options = response.storage_options
 
         if namespace_storage_options:
-            storage_options_provider = LanceNamespaceStorageOptionsProvider(
-                namespace=namespace, table_id=table_id
-            )
+            # Only create namespace provider if user didn't provide one explicitly
+            if storage_options_provider is None:
+                storage_options_provider = LanceNamespaceStorageOptionsProvider(
+                    namespace=namespace, table_id=table_id
+                )
             if storage_options is None:
                 storage_options = namespace_storage_options
             else:

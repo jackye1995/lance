@@ -10,7 +10,7 @@ use snafu::location;
 use url::Url;
 
 use crate::object_store::{
-    ObjectStore, ObjectStoreParams, ObjectStoreProvider, StorageOptions, DEFAULT_CLOUD_BLOCK_SIZE,
+    ObjectStore, ObjectStoreParams, ObjectStoreProvider, DEFAULT_CLOUD_BLOCK_SIZE,
     DEFAULT_CLOUD_IO_PARALLELISM, DEFAULT_MAX_IOP_SIZE,
 };
 use lance_core::error::{Error, Result};
@@ -22,7 +22,8 @@ pub struct OssStoreProvider;
 impl ObjectStoreProvider for OssStoreProvider {
     async fn new_store(&self, base_path: Url, params: &ObjectStoreParams) -> Result<ObjectStore> {
         let block_size = params.block_size.unwrap_or(DEFAULT_CLOUD_BLOCK_SIZE);
-        let storage_options = StorageOptions(params.storage_options.clone().unwrap_or_default());
+        let accessor = params.accessor();
+        let download_retry_count = accessor.download_retry_count().await?;
 
         let bucket = base_path
             .host_str()
@@ -53,21 +54,21 @@ impl ObjectStoreProvider for OssStoreProvider {
             config_map.insert("root".to_string(), "/".to_string());
         }
 
-        // Override with storage options if provided
-        if let Some(endpoint) = storage_options.0.get("oss_endpoint") {
-            config_map.insert("endpoint".to_string(), endpoint.clone());
+        // Override with storage options if provided (using accessor async methods)
+        if let Some(endpoint) = accessor.oss_endpoint().await? {
+            config_map.insert("endpoint".to_string(), endpoint);
         }
 
-        if let Some(access_key_id) = storage_options.0.get("oss_access_key_id") {
-            config_map.insert("access_key_id".to_string(), access_key_id.clone());
+        if let Some(access_key_id) = accessor.oss_access_key_id().await? {
+            config_map.insert("access_key_id".to_string(), access_key_id);
         }
 
-        if let Some(secret_access_key) = storage_options.0.get("oss_secret_access_key") {
-            config_map.insert("access_key_secret".to_string(), secret_access_key.clone());
+        if let Some(secret_access_key) = accessor.oss_secret_access_key().await? {
+            config_map.insert("access_key_secret".to_string(), secret_access_key);
         }
 
-        if let Some(region) = storage_options.0.get("oss_region") {
-            config_map.insert("region".to_string(), region.clone());
+        if let Some(region) = accessor.oss_region().await? {
+            config_map.insert("region".to_string(), region);
         }
 
         if !config_map.contains_key("endpoint") {
@@ -101,7 +102,7 @@ impl ObjectStoreProvider for OssStoreProvider {
             use_constant_size_upload_parts: params.use_constant_size_upload_parts,
             list_is_lexically_ordered: params.list_is_lexically_ordered.unwrap_or(true),
             io_parallelism: DEFAULT_CLOUD_IO_PARALLELISM,
-            download_retry_count: storage_options.download_retry_count(),
+            download_retry_count,
             io_tracker: Default::default(),
         })
     }

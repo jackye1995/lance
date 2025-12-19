@@ -14,7 +14,9 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use lance::dataset::{Dataset, WriteParams};
 use lance::session::Session;
-use lance_io::object_store::{ObjectStore, ObjectStoreParams, ObjectStoreRegistry};
+use lance_io::object_store::{
+    ObjectStore, ObjectStoreParams, ObjectStoreRegistry, StorageOptionsAccessor,
+};
 use object_store::path::Path;
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -319,7 +321,9 @@ impl DirectoryNamespaceBuilder {
     ) -> Result<(Arc<ObjectStore>, Path)> {
         // Build ObjectStoreParams from storage options
         let params = ObjectStoreParams {
-            storage_options: storage_options.clone(),
+            storage_options_accessor: storage_options.as_ref().map(|opts| {
+                std::sync::Arc::new(StorageOptionsAccessor::new_with_options(opts.clone()))
+            }),
             ..Default::default()
         };
 
@@ -932,7 +936,9 @@ impl LanceNamespace for DirectoryNamespace {
         };
 
         let store_params = self.storage_options.as_ref().map(|opts| ObjectStoreParams {
-            storage_options: Some(opts.clone()),
+            storage_options_accessor: Some(std::sync::Arc::new(
+                StorageOptionsAccessor::new_with_options(opts.clone()),
+            )),
             ..Default::default()
         });
 

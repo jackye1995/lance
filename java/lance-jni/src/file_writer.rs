@@ -25,7 +25,7 @@ use lance_file::{
     version::LanceFileVersion,
     writer::{FileWriter, FileWriterOptions},
 };
-use lance_io::object_store::{ObjectStoreParams, ObjectStoreRegistry};
+use lance_io::object_store::{ObjectStoreParams, ObjectStoreRegistry, StorageOptionsAccessor};
 
 pub const NATIVE_WRITER: &str = "nativeFileWriterHandle";
 
@@ -94,7 +94,9 @@ fn inner_open<'local>(
 
     let writer = RT.block_on(async move {
         let object_params = ObjectStoreParams {
-            storage_options: Some(storage_options),
+            storage_options_accessor: Some(Arc::new(StorageOptionsAccessor::new_with_options(
+                storage_options,
+            ))),
             ..Default::default()
         };
         let (obj_store, path) = ObjectStore::from_uri_and_params(

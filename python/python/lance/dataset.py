@@ -951,6 +951,21 @@ class LanceDataset(pa.dataset.Dataset):
         """
         return self._ds.max_field_id
 
+    def current_storage_options(self) -> Dict[str, str]:
+        """Get the current storage options.
+
+        Returns a dictionary combining the initial storage_options with any
+        overrides from the storage_options_provider. Provider options take
+        precedence when keys conflict.
+
+        The options from the provider are cached and automatically refreshed
+        when they expire (based on the `expires_at_millis` key).
+
+        If neither storage_options nor storage_options_provider were specified
+        when opening the dataset, an empty dictionary is returned.
+        """
+        return self._ds.current_storage_options()
+
     def to_table(
         self,
         columns: Optional[Union[List[str], Dict[str, str]]] = None,
@@ -5371,6 +5386,7 @@ def write_dataset(
     table_id: Optional[List[str]] = None,
     ignore_namespace_table_storage_options: bool = False,
     s3_credentials_refresh_offset_seconds: Optional[int] = None,
+    storage_options_provider: Optional[StorageOptionsProvider] = None,
 ) -> LanceDataset:
     """Write a given data_obj to the given uri
 
@@ -5383,7 +5399,8 @@ def write_dataset(
     uri: str, Path, LanceDataset, or None
         Where to write the dataset to (directory). If a LanceDataset is passed,
         the session will be reused.
-        Either `uri` or (`namespace` + `table_id`) must be provided, but not both.
+        If not provided, and `namespace` + `table_id` are given, the URI will be
+        fetched from the namespace.
     schema: Schema, optional
         If specified and the input is a pandas DataFrame, use this schema
         instead of the default pandas to arrow table conversion.
@@ -5464,14 +5481,15 @@ def write_dataset(
         **CREATE mode**: References must match bases in `initial_bases`
         **APPEND/OVERWRITE modes**: References must match bases in the existing manifest
     namespace : optional, LanceNamespace
-        A namespace instance from which to fetch table location and storage options.
-        Must be provided together with `table_id`. Cannot be used with `uri`.
-        When provided, the table location will be fetched automatically from the
-        namespace via describe_table(). Storage options will be automatically refreshed
-        before they expire.
+        A namespace instance from which to fetch table uri and storage options.
+        Must be provided together with `table_id`. Either `uri` or
+        `namespace`+`table_id` must be provided, but not both.
+        When provided, the table location will be fetched from the namespace.
+        Storage options will be automatically refreshed before they expire.
     table_id : optional, List[str]
         The table identifier when using a namespace (e.g., ["my_table"]).
-        Must be provided together with `namespace`. Cannot be used with `uri`.
+        Must be provided together with `namespace`. Either `uri` or
+        `namespace`+`table_id` must be provided, but not both.
     ignore_namespace_table_storage_options : bool, default False
         If True, ignore the storage options returned by the namespace and only use
         the provided `storage_options` parameter. The storage options provider will
@@ -5485,51 +5503,79 @@ def write_dataset(
         when they have less than 60 seconds remaining before expiration. This
         should be set shorter than the credential lifetime to avoid using
         expired credentials.
+    storage_options_provider : optional, StorageOptionsProvider
+        A custom storage options provider for dynamic credential fetching.
+        This allows using a specific URI with namespace-based credential refresh.
+        If both `storage_options_provider` and `namespace`+`table_id` are provided,
+        the explicitly provided `storage_options_provider` takes precedence.
 
     Notes
     -----
-    When using `namespace` and `table_id`:
-    - The `uri` parameter is optional and will be fetched from the namespace
-    - A `LanceNamespaceStorageOptionsProvider` will be created automatically for
-      storage options refresh (unless `ignore_namespace_table_storage_options=True`)
-    - Initial storage options from describe_table() will be merged with
-      any provided `storage_options` (unless
-      `ignore_namespace_table_storage_options=True`)
+    **Namespace Behavior:**
+
+    When `namespace` and `table_id` are provided (instead of `uri`), the function
+    automatically:
+
+    1. Calls ``describe_table()`` (or ``create_empty_table()`` for create mode)
+       on the namespace to get table metadata
+    2. Uses the returned location as the dataset URI
+    3. Merges namespace storage options with any user-provided storage options
+       (namespace options take precedence)
+    4. Creates a ``LanceNamespaceStorageOptionsProvider`` for automatic credential
+       refresh
+
+    **Using URI with Custom Storage Options Provider:**
+
+    If you need to use a specific URI with namespace-based credential refresh,
+    pass both the URI and a storage options provider::
+
+        from lance.namespace import LanceNamespaceStorageOptionsProvider
+
+        provider = LanceNamespaceStorageOptionsProvider(
+            namespace=my_namespace, table_id=["my_table"]
+        )
+        lance.write_dataset(
+            data,
+            uri="s3://bucket/table.lance",
+            storage_options_provider=provider,
+        )
+
     """
-    # Validate that user provides either uri OR (namespace + table_id), not both
+    # Validate that exactly one of uri or namespace+tableId is provided
     has_uri = uri is not None
-    has_namespace = namespace is not None or table_id is not None
+    has_namespace = namespace is not None and table_id is not None
 
     if has_uri and has_namespace:
         raise ValueError(
-            "Cannot specify both 'uri' and 'namespace/table_id'. "
-            "Please provide either 'uri' or both 'namespace' and 'table_id'."
+            "Cannot specify both 'uri' and 'namespace'+'table_id'. Use one or the "
+            "other. If you need to use a specific URI with namespace-based credential "
+            "refresh, create a LanceNamespaceStorageOptionsProvider manually and pass "
+            "it via storage_options_provider."
         )
-    elif not has_uri and not has_namespace:
-        raise ValueError(
-            "Must specify either 'uri' or both 'namespace' and 'table_id'."
-        )
-
-    # Handle namespace-based dataset writing
-    if namespace is not None:
-        if table_id is None:
+    if not has_uri and not has_namespace:
+        if namespace is not None:
             raise ValueError(
-                "Both 'namespace' and 'table_id' must be provided together."
+                "'namespace' is set but 'table_id' is missing. Both 'namespace' and "
+                "'table_id' must be provided together."
             )
+        elif table_id is not None:
+            raise ValueError(
+                "'table_id' is set but 'namespace' is missing. Both 'namespace' and "
+                "'table_id' must be provided together."
+            )
+        else:
+            raise ValueError("Either 'uri' or 'namespace'+'table_id' must be provided.")
 
-        # Implement write_into_namespace logic in Python
-        # This follows the same pattern as the Rust implementation:
-        # - CREATE mode: calls namespace.create_empty_table()
-        # - APPEND/OVERWRITE mode: calls namespace.describe_table()
-        # - Both modes: create storage options provider and merge storage options
-
+    # Handle namespace-based storage options
+    storage_options_provider = None
+    if has_namespace:
         from .namespace import (
             CreateEmptyTableRequest,
             DescribeTableRequest,
             LanceNamespaceStorageOptionsProvider,
         )
 
-        # Determine which namespace method to call based on mode
+        # Fetch location from namespace
         if mode == "create":
             request = CreateEmptyTableRequest(
                 id=table_id, location=None, properties=None
@@ -5541,40 +5587,36 @@ def write_dataset(
         else:
             raise ValueError(f"Invalid mode: {mode}")
 
-        # Get table location from response
         uri = response.location
         if not uri:
             raise ValueError(
                 f"Namespace did not return a table location in {mode} response"
             )
 
-        # Check if we should ignore namespace storage options
+        # Get storage options from response
         if ignore_namespace_table_storage_options:
             namespace_storage_options = None
         else:
             namespace_storage_options = response.storage_options
 
         # Set up storage options and provider
-        if namespace_storage_options:
+        if not ignore_namespace_table_storage_options:
             # Create the storage options provider for automatic refresh
-            storage_options_provider = LanceNamespaceStorageOptionsProvider(
-                namespace=namespace, table_id=table_id
-            )
+            # Only if user didn't provide one explicitly
+            if storage_options_provider is None:
+                storage_options_provider = LanceNamespaceStorageOptionsProvider(
+                    namespace=namespace, table_id=table_id
+                )
 
             # Merge namespace storage options with any existing options
             # Namespace options take precedence (same as Rust implementation)
-            if storage_options is None:
-                storage_options = dict(namespace_storage_options)
-            else:
-                merged_options = dict(storage_options)
-                merged_options.update(namespace_storage_options)
-                storage_options = merged_options
-        else:
-            storage_options_provider = None
-    elif table_id is not None:
-        raise ValueError("Both 'namespace' and 'table_id' must be provided together.")
-    else:
-        storage_options_provider = None
+            if namespace_storage_options:
+                if storage_options is None:
+                    storage_options = dict(namespace_storage_options)
+                else:
+                    merged_options = dict(storage_options)
+                    merged_options.update(namespace_storage_options)
+                    storage_options = merged_options
 
     if use_legacy_format is not None:
         warnings.warn(
@@ -5611,7 +5653,7 @@ def write_dataset(
         "target_bases": target_bases,
     }
 
-    # Add storage_options_provider if created from namespace
+    # Add storage_options_provider if provided (either from namespace or user)
     if storage_options_provider is not None:
         params["storage_options_provider"] = storage_options_provider
 

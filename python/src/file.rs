@@ -28,7 +28,7 @@ use lance_file::reader::{
 };
 use lance_file::writer::{FileWriter, FileWriterOptions};
 use lance_file::{version::LanceFileVersion, LanceEncodingsIo};
-use lance_io::object_store::ObjectStoreParams;
+use lance_io::object_store::{ObjectStoreParams, StorageOptionsAccessor};
 use lance_io::{
     scheduler::{ScanScheduler, SchedulerConfig},
     utils::CachedFileSize,
@@ -391,15 +391,31 @@ pub async fn object_store_from_uri_or_path_with_provider(
     s3_credentials_refresh_offset_seconds: Option<u64>,
 ) -> PyResult<(Arc<ObjectStore>, Path)> {
     let object_store_registry = Arc::new(lance::io::ObjectStoreRegistry::default());
-    let mut object_store_params = ObjectStoreParams {
-        storage_options: storage_options.clone(),
-        storage_options_provider,
+    let s3_credentials_refresh_offset = s3_credentials_refresh_offset_seconds
+        .map(std::time::Duration::from_secs)
+        .unwrap_or(std::time::Duration::from_secs(60));
+
+    let storage_options_accessor = match (storage_options.clone(), storage_options_provider) {
+        (Some(opts), Some(provider)) => Some(Arc::new(
+            StorageOptionsAccessor::new_with_options_and_provider(
+                opts,
+                provider,
+                s3_credentials_refresh_offset,
+            ),
+        )),
+        (Some(opts), None) => Some(Arc::new(StorageOptionsAccessor::new_with_options(opts))),
+        (None, Some(provider)) => Some(Arc::new(StorageOptionsAccessor::new_with_provider(
+            provider,
+            s3_credentials_refresh_offset,
+        ))),
+        (None, None) => None,
+    };
+
+    let object_store_params = ObjectStoreParams {
+        storage_options_accessor,
+        s3_credentials_refresh_offset,
         ..Default::default()
     };
-    if let Some(offset_seconds) = s3_credentials_refresh_offset_seconds {
-        object_store_params.s3_credentials_refresh_offset =
-            std::time::Duration::from_secs(offset_seconds);
-    }
 
     let (object_store, path) = ObjectStore::from_uri_and_params(
         object_store_registry,

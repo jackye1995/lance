@@ -129,10 +129,11 @@ impl<'a> FragmentCreateBuilder<'a> {
 
         Self::validate_schema(&schema, stream.schema().as_ref())?;
 
+        let store_params = params.store_params.clone().unwrap_or_default();
         let (object_store, base_path) = ObjectStore::from_uri_and_params(
             params.store_registry(),
             self.dataset_uri,
-            &params.store_params.clone().unwrap_or_default(),
+            &store_params,
         )
         .await?;
         let data_file_key = generate_random_filename();
@@ -214,10 +215,11 @@ impl<'a> FragmentCreateBuilder<'a> {
         Self::validate_schema(&schema, stream.schema().as_ref())?;
 
         let version = params.data_storage_version.unwrap_or_default();
+        let store_params = params.store_params.clone().unwrap_or_default();
         let (object_store, base_path) = ObjectStore::from_uri_and_params(
             params.store_registry(),
             self.dataset_uri,
-            &params.store_params.clone().unwrap_or_default(),
+            &store_params,
         )
         .await?;
         do_write_fragments(
@@ -251,10 +253,11 @@ impl<'a> FragmentCreateBuilder<'a> {
 
         Self::validate_schema(&schema, stream.schema().as_ref())?;
 
+        let store_params = params.store_params.clone().unwrap_or_default();
         let (object_store, base_path) = ObjectStore::from_uri_and_params(
             params.store_registry(),
             self.dataset_uri,
-            &params.store_params.clone().unwrap_or_default(),
+            &store_params,
         )
         .await?;
         let filename = format!("{}.lance", generate_random_filename());
@@ -303,12 +306,8 @@ impl<'a> FragmentCreateBuilder<'a> {
 
     async fn existing_dataset_schema(&self) -> Result<Option<Schema>> {
         let mut builder = DatasetBuilder::from_uri(self.dataset_uri);
-        let storage_options = self
-            .write_params
-            .and_then(|p| p.store_params.as_ref())
-            .and_then(|p| p.storage_options.clone());
-        if let Some(storage_options) = storage_options {
-            builder = builder.with_storage_options(storage_options);
+        if let Some(store_params) = self.write_params.and_then(|p| p.store_params.as_ref()) {
+            builder = builder.with_store_params(store_params.clone());
         }
         match builder.load().await {
             Ok(dataset) => {

@@ -30,10 +30,22 @@ import java.util.Map;
  * Builder for opening a Dataset.
  *
  * <p>This builder provides a fluent API for opening datasets either directly from a URI or from a
- * LanceNamespace. When using a namespace, the table location and storage options are automatically
- * fetched.
+ * LanceNamespace.
  *
- * <p>Example usage with URI:
+ * <h3>Namespace Behavior</h3>
+ *
+ * <p>When {@code namespace} and {@code tableId} are provided (instead of {@code uri}), the builder
+ * automatically:
+ *
+ * <ol>
+ *   <li>Calls {@code describeTable()} on the namespace to get table metadata
+ *   <li>Uses the returned location as the dataset URI
+ *   <li>Merges namespace storage options with any user-provided storage options (namespace options
+ *       take precedence)
+ *   <li>Creates a {@link LanceNamespaceStorageOptionsProvider} for automatic credential refresh
+ * </ol>
+ *
+ * <h3>Example: URI only</h3>
  *
  * <pre>{@code
  * Dataset dataset = Dataset.open()
@@ -42,12 +54,28 @@ import java.util.Map;
  *     .build();
  * }</pre>
  *
- * <p>Example usage with namespace:
+ * <h3>Example: Namespace</h3>
  *
  * <pre>{@code
  * Dataset dataset = Dataset.open()
  *     .namespace(myNamespace)
  *     .tableId(Arrays.asList("my_table"))
+ *     .build();
+ * }</pre>
+ *
+ * <h3>Example: URI with custom storage options provider</h3>
+ *
+ * <p>If you need to use a specific URI with namespace-based credential refresh, create the provider
+ * manually:
+ *
+ * <pre>{@code
+ * LanceNamespaceStorageOptionsProvider provider =
+ *     new LanceNamespaceStorageOptionsProvider(myNamespace, Arrays.asList("my_table"));
+ * Dataset dataset = Dataset.open()
+ *     .uri("s3://bucket/table.lance")
+ *     .readOptions(new ReadOptions.Builder()
+ *         .setStorageOptionsProvider(provider)
+ *         .build())
  *     .build();
  * }</pre>
  */
@@ -213,9 +241,15 @@ public class OpenDatasetBuilder {
             .setMetadataCacheSizeBytes(options.getMetadataCacheSizeBytes());
 
     if (namespaceStorageOptions != null && !namespaceStorageOptions.isEmpty()) {
-      LanceNamespaceStorageOptionsProvider storageOptionsProvider =
-          new LanceNamespaceStorageOptionsProvider(namespace, tableId);
-      optionsBuilder.setStorageOptionsProvider(storageOptionsProvider);
+      // Only create namespace provider if user didn't provide one explicitly via ReadOptions
+      if (!options.getStorageOptionsProvider().isPresent()) {
+        LanceNamespaceStorageOptionsProvider storageOptionsProvider =
+            new LanceNamespaceStorageOptionsProvider(namespace, tableId);
+        optionsBuilder.setStorageOptionsProvider(storageOptionsProvider);
+      } else {
+        // User provided their own provider - use it
+        optionsBuilder.setStorageOptionsProvider(options.getStorageOptionsProvider().get());
+      }
     }
 
     options.getVersion().ifPresent(optionsBuilder::setVersion);

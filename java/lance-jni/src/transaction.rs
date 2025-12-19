@@ -18,6 +18,7 @@ use lance::dataset::transaction::{
     UpdateMap, UpdateMapEntry, UpdateMode,
 };
 use lance::io::ObjectStoreParams;
+use lance_io::object_store::StorageOptionsAccessor;
 use lance::table::format::{Fragment, IndexMetadata};
 use lance_core::datatypes::Schema as LanceSchema;
 use prost::Message;
@@ -752,17 +753,21 @@ fn inner_commit_transaction<'local>(
         .map(std::time::Duration::from_secs)
         .unwrap_or_else(|| std::time::Duration::from_secs(10));
 
-    // Get the Dataset's storage_options_provider
-    let storage_options_provider = {
+    // Get the Dataset's storage_options_accessor
+    let existing_accessor = {
         let dataset_guard =
             unsafe { env.get_rust_field::<_, _, BlockingDataset>(&java_dataset, NATIVE_DATASET) }?;
-        dataset_guard.get_storage_options_provider()
+        dataset_guard.get_storage_options_accessor()
     };
 
-    // Build ObjectStoreParams using write_param for storage_options and provider from Dataset
+    // Build ObjectStoreParams using write_param for storage_options and accessor from Dataset
+    let storage_options_accessor = Some(Arc::new(existing_accessor.map_or_else(
+        || StorageOptionsAccessor::new_with_options(write_param.clone()),
+        |a| a.with_updated_initial_options(write_param.clone(), s3_credentials_refresh_offset),
+    )));
+
     let store_params = ObjectStoreParams {
-        storage_options: Some(write_param),
-        storage_options_provider,
+        storage_options_accessor,
         s3_credentials_refresh_offset,
         ..Default::default()
     };

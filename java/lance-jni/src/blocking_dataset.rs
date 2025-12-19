@@ -44,6 +44,7 @@ use lance_index::scalar::lance_format::LanceIndexStore;
 use lance_index::DatasetIndexExt;
 use lance_index::{IndexParams, IndexType};
 use lance_io::object_store::ObjectStoreRegistry;
+use lance_io::object_store::StorageOptionsAccessor;
 use lance_io::object_store::StorageOptionsProvider;
 use std::collections::HashMap;
 use std::future::IntoFuture;
@@ -75,16 +76,18 @@ pub struct BlockingDataset {
 }
 
 impl BlockingDataset {
-    /// Get the storage options provider that was used when opening this dataset
-    pub fn get_storage_options_provider(&self) -> Option<Arc<dyn StorageOptionsProvider>> {
-        self.inner.storage_options_provider()
+    /// Get the storage options accessor that was used when opening this dataset
+    pub fn get_storage_options_accessor(&self) -> Option<Arc<StorageOptionsAccessor>> {
+        self.inner.storage_options_accessor()
     }
 
     pub fn drop(uri: &str, storage_options: HashMap<String, String>) -> Result<()> {
         RT.block_on(async move {
             let registry = Arc::new(ObjectStoreRegistry::default());
             let object_store_params = ObjectStoreParams {
-                storage_options: Some(storage_options.clone()),
+                storage_options_accessor: Some(Arc::new(StorageOptionsAccessor::new_with_options(
+                    storage_options.clone(),
+                ))),
                 ..Default::default()
             };
             let (object_store, path) =
@@ -118,18 +121,31 @@ impl BlockingDataset {
         storage_options_provider: Option<Arc<dyn StorageOptionsProvider>>,
         s3_credentials_refresh_offset_seconds: Option<u64>,
     ) -> Result<Self> {
-        let mut store_params = ObjectStoreParams {
+        let s3_credentials_refresh_offset = s3_credentials_refresh_offset_seconds
+            .map(std::time::Duration::from_secs)
+            .unwrap_or(std::time::Duration::from_secs(60));
+
+        // Create StorageOptionsAccessor with options and optional provider
+        let storage_options_accessor = match storage_options_provider {
+            Some(provider) => Some(Arc::new(
+                StorageOptionsAccessor::new_with_options_and_provider(
+                    storage_options.clone(),
+                    provider,
+                    s3_credentials_refresh_offset,
+                ),
+            )),
+            None => Some(Arc::new(StorageOptionsAccessor::new_with_options(
+                storage_options.clone(),
+            ))),
+        };
+
+        let store_params = ObjectStoreParams {
             block_size: block_size.map(|size| size as usize),
-            storage_options: Some(storage_options.clone()),
+            storage_options_accessor: storage_options_accessor.clone(),
+            s3_credentials_refresh_offset,
             ..Default::default()
         };
-        if let Some(offset_seconds) = s3_credentials_refresh_offset_seconds {
-            store_params.s3_credentials_refresh_offset =
-                std::time::Duration::from_secs(offset_seconds);
-        }
-        if let Some(provider) = storage_options_provider.clone() {
-            store_params.storage_options_provider = Some(provider);
-        }
+
         let params = ReadParams {
             index_cache_size_bytes: index_cache_size_bytes as usize,
             metadata_cache_size_bytes: metadata_cache_size_bytes as usize,
@@ -143,8 +159,8 @@ impl BlockingDataset {
             builder = builder.with_version(ver as u64);
         }
         builder = builder.with_storage_options(storage_options);
-        if let Some(provider) = storage_options_provider.clone() {
-            builder = builder.with_storage_options_provider(provider)
+        if let Some(accessor) = storage_options_accessor {
+            builder = builder.with_storage_options_accessor(accessor)
         }
         if let Some(offset_seconds) = s3_credentials_refresh_offset_seconds {
             builder = builder
@@ -170,7 +186,9 @@ impl BlockingDataset {
             operation,
             read_version,
             Some(ObjectStoreParams {
-                storage_options: Some(storage_options),
+                storage_options_accessor: Some(Arc::new(StorageOptionsAccessor::new_with_options(
+                    storage_options,
+                ))),
                 ..Default::default()
             }),
             None,
@@ -1394,7 +1412,9 @@ fn inner_shallow_clone<'local>(
                 storage_options
                     .map(|options| {
                         Some(ObjectStoreParams {
-                            storage_options: Some(options),
+                            storage_options_accessor: Some(Arc::new(
+                                StorageOptionsAccessor::new_with_options(options),
+                            )),
                             ..Default::default()
                         })
                     })
@@ -1527,6 +1547,52 @@ fn inner_get_config<'local>(
         .expect("Failed to create Java HashMap");
 
     for (k, v) in config {
+        let java_key = env
+            .new_string(&k)
+            .expect("Failed to create Java String (key)");
+        let java_value = env
+            .new_string(&v)
+            .expect("Failed to create Java String (value)");
+
+        env.call_method(
+            &java_hashmap,
+            "put",
+            "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+            &[JValue::Object(&java_key), JValue::Object(&java_value)],
+        )
+        .expect("Failed to call HashMap.put()");
+    }
+
+    Ok(java_hashmap)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_lance_Dataset_nativeGetCurrentStorageOptions<'local>(
+    mut env: JNIEnv<'local>,
+    java_dataset: JObject,
+) -> JObject<'local> {
+    ok_or_throw!(
+        env,
+        inner_get_current_storage_options(&mut env, java_dataset)
+    )
+}
+
+fn inner_get_current_storage_options<'local>(
+    env: &mut JNIEnv<'local>,
+    java_dataset: JObject,
+) -> Result<JObject<'local>> {
+    let options = {
+        let dataset_guard =
+            unsafe { env.get_rust_field::<_, _, BlockingDataset>(java_dataset, NATIVE_DATASET) }?;
+        RT.block_on(dataset_guard.inner.current_storage_options())
+            .map_err(|e| Error::io_error(e.to_string()))?
+    };
+
+    let java_hashmap = env
+        .new_object("java/util/HashMap", "()V", &[])
+        .expect("Failed to create Java HashMap");
+
+    for (k, v) in options {
         let java_key = env
             .new_string(&k)
             .expect("Failed to create Java String (key)");

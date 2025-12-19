@@ -23,7 +23,7 @@ use lance_core::cache::LanceCache;
 use lance_core::datatypes::Schema;
 use lance_encoding::decoder::{DecoderPlugins, FilterExpression};
 use lance_file::reader::{FileReader, FileReaderOptions, ReaderProjection};
-use lance_io::object_store::{ObjectStoreParams, ObjectStoreRegistry};
+use lance_io::object_store::{ObjectStoreParams, ObjectStoreRegistry, StorageOptionsAccessor};
 use lance_io::{
     scheduler::{ScanScheduler, SchedulerConfig},
     utils::CachedFileSize,
@@ -112,7 +112,9 @@ fn inner_open<'local>(
     let storage_options = to_rust_map(env, &jmap)?;
     let reader = RT.block_on(async move {
         let object_params = ObjectStoreParams {
-            storage_options: Some(storage_options),
+            storage_options_accessor: Some(Arc::new(StorageOptionsAccessor::new_with_options(
+                storage_options,
+            ))),
             ..Default::default()
         };
         let (obj_store, path) = ObjectStore::from_uri_and_params(

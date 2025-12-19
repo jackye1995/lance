@@ -3,7 +3,6 @@
 
 use std::{
     collections::HashMap,
-    str::FromStr,
     sync::{Arc, LazyLock},
     time::Duration,
 };
@@ -13,15 +12,12 @@ use object_store_opendal::OpendalStore;
 use opendal::{services::Azblob, Operator};
 use snafu::location;
 
-use object_store::{
-    azure::{AzureConfigKey, MicrosoftAzureBuilder},
-    RetryConfig,
-};
+use object_store::{azure::MicrosoftAzureBuilder, RetryConfig};
 use url::Url;
 
 use crate::object_store::{
-    ObjectStore, ObjectStoreParams, ObjectStoreProvider, StorageOptions, DEFAULT_CLOUD_BLOCK_SIZE,
-    DEFAULT_CLOUD_IO_PARALLELISM, DEFAULT_MAX_IOP_SIZE,
+    ObjectStore, ObjectStoreParams, ObjectStoreProvider, StorageOptionsAccessor,
+    DEFAULT_CLOUD_BLOCK_SIZE, DEFAULT_CLOUD_IO_PARALLELISM, DEFAULT_MAX_IOP_SIZE,
 };
 use lance_core::error::{Error, Result};
 
@@ -32,7 +28,7 @@ impl AzureBlobStoreProvider {
     async fn build_opendal_azure_store(
         &self,
         base_path: &Url,
-        storage_options: &StorageOptions,
+        storage_options: &HashMap<String, String>,
     ) -> Result<Arc<dyn OSObjectStore>> {
         let container = base_path
             .host_str()
@@ -45,7 +41,7 @@ impl AzureBlobStoreProvider {
 
         // Start with all storage options as the config map
         // OpenDAL will handle environment variables through its default credentials chain
-        let mut config_map: HashMap<String, String> = storage_options.0.clone();
+        let mut config_map: HashMap<String, String> = storage_options.clone();
 
         // Set required OpenDAL configuration
         config_map.insert("container".to_string(), container);
@@ -69,10 +65,11 @@ impl AzureBlobStoreProvider {
     async fn build_microsoft_azure_store(
         &self,
         base_path: &Url,
-        storage_options: &StorageOptions,
+        accessor: &Arc<StorageOptionsAccessor>,
+        storage_options: &HashMap<String, String>,
     ) -> Result<Arc<dyn OSObjectStore>> {
-        let max_retries = storage_options.client_max_retries();
-        let retry_timeout = storage_options.client_retry_timeout();
+        let max_retries = accessor.client_max_retries().await?;
+        let retry_timeout = accessor.client_retry_timeout().await?;
         let retry_config = RetryConfig {
             backoff: Default::default(),
             max_retries,
@@ -82,7 +79,7 @@ impl AzureBlobStoreProvider {
         let mut builder = MicrosoftAzureBuilder::new()
             .with_url(base_path.as_ref())
             .with_retry(retry_config);
-        for (key, value) in storage_options.as_azure_options() {
+        for (key, value) in StorageOptionsAccessor::as_azure_options(storage_options) {
             builder = builder.with_config(key, value);
         }
 
@@ -94,22 +91,18 @@ impl AzureBlobStoreProvider {
 impl ObjectStoreProvider for AzureBlobStoreProvider {
     async fn new_store(&self, base_path: Url, params: &ObjectStoreParams) -> Result<ObjectStore> {
         let block_size = params.block_size.unwrap_or(DEFAULT_CLOUD_BLOCK_SIZE);
-        let mut storage_options =
-            StorageOptions(params.storage_options.clone().unwrap_or_default());
-        storage_options.with_env_azure();
-        let download_retry_count = storage_options.download_retry_count();
+        let accessor = params.accessor();
 
-        let use_opendal = storage_options
-            .0
-            .get("use_opendal")
-            .map(|v| v.as_str() == "true")
-            .unwrap_or(false);
+        // Get merged storage options with Azure env vars applied
+        let storage_options = accessor.get_options_with_azure_env().await?;
+        let download_retry_count = accessor.download_retry_count().await?;
+        let use_opendal = accessor.azure_use_opendal().await?;
 
         let inner = if use_opendal {
             self.build_opendal_azure_store(&base_path, &storage_options)
                 .await?
         } else {
-            self.build_microsoft_azure_store(&base_path, &storage_options)
+            self.build_microsoft_azure_store(&base_path, &accessor, &storage_options)
                 .await?
         };
 
@@ -147,11 +140,11 @@ impl ObjectStoreProvider for AzureBlobStoreProvider {
                 // The URI looks like 'az://container/path-part/file'.
                 // We must look at the storage options to find the account.
                 let mut account = match storage_options {
-                    Some(opts) => StorageOptions::find_configured_storage_account(opts),
+                    Some(opts) => StorageOptionsAccessor::find_configured_storage_account(opts),
                     None => None,
                 };
                 if account.is_none() {
-                    account = StorageOptions::find_configured_storage_account(&ENV_OPTIONS.0);
+                    account = StorageOptionsAccessor::find_configured_storage_account(&ENV_OPTIONS);
                 }
                 let account = account.ok_or(Error::invalid_input(
                     "Unable to find object store prefix: no Azure account name in URI, and no storage account configured.",
@@ -164,59 +157,15 @@ impl ObjectStoreProvider for AzureBlobStoreProvider {
     }
 }
 
-static ENV_OPTIONS: LazyLock<StorageOptions> = LazyLock::new(StorageOptions::from_env);
-
-impl StorageOptions {
-    /// Iterate over all environment variables, looking for anything related to Azure.
-    fn from_env() -> Self {
-        let mut opts = HashMap::<String, String>::new();
-        for (os_key, os_value) in std::env::vars_os() {
-            if let (Some(key), Some(value)) = (os_key.to_str(), os_value.to_str()) {
-                if let Ok(config_key) = AzureConfigKey::from_str(&key.to_ascii_lowercase()) {
-                    opts.insert(config_key.as_ref().to_string(), value.to_string());
-                }
-            }
-        }
-        Self(opts)
-    }
-
-    /// Add values from the environment to storage options
-    pub fn with_env_azure(&mut self) {
-        for (os_key, os_value) in &ENV_OPTIONS.0 {
-            if !self.0.contains_key(os_key) {
-                self.0.insert(os_key.clone(), os_value.clone());
-            }
-        }
-    }
-
-    /// Subset of options relevant for azure storage
-    pub fn as_azure_options(&self) -> HashMap<AzureConfigKey, String> {
-        self.0
-            .iter()
-            .filter_map(|(key, value)| {
-                let az_key = AzureConfigKey::from_str(&key.to_ascii_lowercase()).ok()?;
-                Some((az_key, value.clone()))
-            })
-            .collect()
-    }
-
-    #[allow(clippy::manual_map)]
-    fn find_configured_storage_account(map: &HashMap<String, String>) -> Option<String> {
-        if let Some(account) = map.get("azure_storage_account_name") {
-            Some(account.clone())
-        } else if let Some(account) = map.get("account_name") {
-            Some(account.clone())
-        } else {
-            None
-        }
-    }
-}
+static ENV_OPTIONS: LazyLock<HashMap<String, String>> =
+    LazyLock::new(StorageOptionsAccessor::from_env_azure);
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::object_store::ObjectStoreParams;
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     #[test]
     fn test_azure_store_path() {
@@ -233,18 +182,20 @@ mod tests {
         let provider = AzureBlobStoreProvider;
         let url = Url::parse("az://test-container/path").unwrap();
         let params_with_flag = ObjectStoreParams {
-            storage_options: Some(HashMap::from([
-                ("use_opendal".to_string(), "true".to_string()),
-                ("account_name".to_string(), "test_account".to_string()),
-                (
-                    "endpoint".to_string(),
-                    "https://test_account.blob.core.windows.net".to_string(),
-                ),
-                (
-                    "account_key".to_string(),
-                    "dGVzdF9hY2NvdW50X2tleQ==".to_string(),
-                ),
-            ])),
+            storage_options_accessor: Some(Arc::new(StorageOptionsAccessor::new_with_options(
+                HashMap::from([
+                    ("use_opendal".to_string(), "true".to_string()),
+                    ("account_name".to_string(), "test_account".to_string()),
+                    (
+                        "endpoint".to_string(),
+                        "https://test_account.blob.core.windows.net".to_string(),
+                    ),
+                    (
+                        "account_key".to_string(),
+                        "dGVzdF9hY2NvdW50X2tleQ==".to_string(),
+                    ),
+                ]),
+            ))),
             ..Default::default()
         };
 
@@ -259,7 +210,7 @@ mod tests {
     fn test_find_configured_storage_account() {
         assert_eq!(
             Some("myaccount".to_string()),
-            StorageOptions::find_configured_storage_account(&HashMap::from_iter(
+            StorageOptionsAccessor::find_configured_storage_account(&HashMap::from_iter(
                 [
                     ("access_key".to_string(), "myaccesskey".to_string()),
                     (

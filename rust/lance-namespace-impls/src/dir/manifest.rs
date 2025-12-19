@@ -21,7 +21,7 @@ use lance_index::optimize::OptimizeOptions;
 use lance_index::scalar::{BuiltinIndexType, ScalarIndexParams};
 use lance_index::traits::DatasetIndexExt;
 use lance_index::IndexType;
-use lance_io::object_store::{ObjectStore, ObjectStoreParams};
+use lance_io::object_store::{ObjectStore, ObjectStoreParams, StorageOptionsAccessor};
 use lance_namespace::models::{
     CreateEmptyTableRequest, CreateEmptyTableResponse, CreateNamespaceRequest,
     CreateNamespaceResponse, CreateTableRequest, CreateTableResponse, DeregisterTableRequest,
@@ -981,7 +981,9 @@ impl ManifestNamespace {
             let write_params = WriteParams {
                 session,
                 store_params: storage_options.as_ref().map(|opts| ObjectStoreParams {
-                    storage_options: Some(opts.clone()),
+                    storage_options_accessor: Some(std::sync::Arc::new(
+                        StorageOptionsAccessor::new_with_options(opts.clone()),
+                    )),
                     ..Default::default()
                 }),
                 ..Default::default()

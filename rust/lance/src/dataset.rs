@@ -171,6 +171,7 @@ pub struct Dataset {
 
     /// Object store parameters used when opening this dataset.
     /// These are used when creating object stores for additional base paths.
+    /// Also contains the storage_options_accessor for efficient repeated access.
     pub(crate) store_params: Option<Box<ObjectStoreParams>>,
 }
 
@@ -807,12 +808,26 @@ impl Dataset {
     /// For CREATE mode, calls create_empty_table() to initialize the table.
     /// For other modes, calls describe_table() and opens dataset with namespace credentials.
     ///
+    /// # Storage Options Handling
+    ///
+    /// Users only need to set basic additional storage options (e.g., region, endpoint overrides)
+    /// in `params.store_params`. This function will automatically:
+    ///
+    /// - Fetch storage options from the namespace (credentials, bucket info, etc.)
+    /// - Merge user-provided options with namespace options (namespace options take precedence)
+    /// - Set up a [`StorageOptionsAccessor`] with a provider for automatic credential refresh
+    ///
+    /// The namespace-provided options are cached and automatically refreshed before expiration
+    /// based on the `expires_at_millis` key returned by the namespace.
+    ///
     /// # Arguments
     ///
     /// * `batches` - The record batches to write
     /// * `namespace` - The namespace to use for table management
     /// * `table_id` - The table identifier
-    /// * `params` - Write parameters
+    /// * `params` - Write parameters. Only basic storage options need to be set in
+    ///   `store_params`; namespace-related configs (credentials, storage options provider)
+    ///   are configured automatically by this function.
     /// * `ignore_namespace_table_storage_options` - If true, ignore storage options returned
     ///   by the namespace and only use the storage options in params. The storage options
     ///   provider will not be created, so credentials will not be automatically refreshed.
@@ -855,18 +870,16 @@ impl Dataset {
                             namespace, table_id,
                         ));
 
-                        // Merge namespace storage options with any existing options
-                        let mut merged_options = write_params
-                            .store_params
-                            .as_ref()
-                            .and_then(|p| p.storage_options.clone())
-                            .unwrap_or_default();
-                        merged_options.extend(namespace_storage_options);
-
+                        // Merge namespace storage options with existing options using accessor
                         let existing_params = write_params.store_params.take().unwrap_or_default();
+                        let existing_accessor = existing_params.accessor();
+                        let merged_accessor = Arc::new(existing_accessor.merge_with_provider(
+                            namespace_storage_options,
+                            provider,
+                            existing_params.s3_credentials_refresh_offset,
+                        ));
                         write_params.store_params = Some(ObjectStoreParams {
-                            storage_options: Some(merged_options),
-                            storage_options_provider: Some(provider),
+                            storage_options_accessor: Some(merged_accessor),
                             ..existing_params
                         });
                     }
@@ -904,18 +917,16 @@ impl Dataset {
                             table_id.clone(),
                         ));
 
-                        // Merge namespace storage options with any existing options
-                        let mut merged_options = write_params
-                            .store_params
-                            .as_ref()
-                            .and_then(|p| p.storage_options.clone())
-                            .unwrap_or_default();
-                        merged_options.extend(namespace_storage_options);
-
+                        // Merge namespace storage options with existing options using accessor
                         let existing_params = write_params.store_params.take().unwrap_or_default();
+                        let existing_accessor = existing_params.accessor();
+                        let merged_accessor = Arc::new(existing_accessor.merge_with_provider(
+                            namespace_storage_options,
+                            provider,
+                            existing_params.s3_credentials_refresh_offset,
+                        ));
                         write_params.store_params = Some(ObjectStoreParams {
-                            storage_options: Some(merged_options),
-                            storage_options_provider: Some(provider),
+                            storage_options_accessor: Some(merged_accessor),
                             ..existing_params
                         });
                     }
@@ -926,11 +937,18 @@ impl Dataset {
                 // assumes no dataset exists and converts the mode to CREATE.
                 let mut builder = DatasetBuilder::from_uri(uri.as_str());
                 if let Some(ref store_params) = write_params.store_params {
-                    if let Some(ref storage_options) = store_params.storage_options {
-                        builder = builder.with_storage_options(storage_options.clone());
-                    }
-                    if let Some(ref provider) = store_params.storage_options_provider {
-                        builder = builder.with_storage_options_provider(provider.clone());
+                    // Copy storage_options_accessor from store_params if present
+                    // The accessor already contains both the initial options and provider
+                    if let Some(ref accessor) = store_params.storage_options_accessor {
+                        // Get initial storage options from the accessor
+                        let initial_options = accessor.initial_options();
+                        if let Some(opts) = initial_options {
+                            builder = builder.with_storage_options(opts.clone());
+                        }
+                        // If the accessor has a provider, set that too
+                        if let Some(provider) = accessor.provider() {
+                            builder = builder.with_storage_options_provider(provider);
+                        }
                     }
                 }
                 let dataset = Arc::new(builder.load().await?);
@@ -1592,19 +1610,38 @@ impl Dataset {
     }
 
     /// Returns the storage options used when opening this dataset, if any.
+    /// Returns the initial storage options (without provider options).
     pub fn storage_options(&self) -> Option<&HashMap<String, String>> {
         self.store_params
             .as_ref()
-            .and_then(|params| params.storage_options.as_ref())
+            .and_then(|p| p.storage_options_accessor.as_ref())
+            .and_then(|a| a.initial_options())
     }
 
-    /// Returns the storage options provider used when opening this dataset, if any.
-    pub fn storage_options_provider(
+    /// Returns the storage options accessor used when opening this dataset, if any.
+    pub fn storage_options_accessor(
         &self,
-    ) -> Option<Arc<dyn lance_io::object_store::StorageOptionsProvider>> {
+    ) -> Option<Arc<lance_io::object_store::StorageOptionsAccessor>> {
         self.store_params
             .as_ref()
-            .and_then(|params| params.storage_options_provider.clone())
+            .and_then(|p| p.storage_options_accessor.clone())
+    }
+
+    /// Returns the current storage options, combining the initial storage_options
+    /// with any overrides from the storage_options_provider (cached until expiration).
+    ///
+    /// Provider options take precedence over initial options when keys conflict.
+    /// The options from the provider are cached and automatically refreshed when
+    /// they expire (based on the `expires_at_millis` key).
+    ///
+    /// If neither storage_options nor storage_options_provider were specified when
+    /// opening the dataset, an empty HashMap is returned.
+    pub async fn current_storage_options(&self) -> Result<HashMap<String, String>> {
+        if let Some(accessor) = self.storage_options_accessor() {
+            Ok(accessor.get_options().await?.unwrap_or_default())
+        } else {
+            Ok(HashMap::new())
+        }
     }
 
     pub fn data_dir(&self) -> Path {

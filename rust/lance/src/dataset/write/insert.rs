@@ -357,18 +357,12 @@ impl<'a> InsertBuilder<'a> {
                     .as_ref()
                     .map(|s| s.store_registry())
                     .unwrap_or_else(|| Arc::new(Default::default()));
-                let (object_store, base_path) = ObjectStore::from_uri_and_params(
-                    registry,
-                    uri,
-                    &params.store_params.clone().unwrap_or_default(),
-                )
-                .await?;
-                let commit_handler = resolve_commit_handler(
-                    uri,
-                    params.commit_handler.clone(),
-                    &params.store_params,
-                )
-                .await?;
+                let store_params = params.store_params.clone().unwrap_or_default();
+                let (object_store, base_path) =
+                    ObjectStore::from_uri_and_params(registry, uri, &store_params).await?;
+                let commit_handler =
+                    resolve_commit_handler(uri, params.commit_handler.clone(), &Some(store_params))
+                        .await?;
                 (object_store, base_path, commit_handler)
             }
         };

@@ -17,7 +17,6 @@ use deepsize::DeepSizeOf;
 use futures::{future, stream::BoxStream, StreamExt, TryStreamExt};
 use futures::{FutureExt, Stream};
 use lance_core::error::LanceOptionExt;
-use lance_core::utils::parse::str_is_truthy;
 use list_retry::ListRetryStream;
 #[cfg(feature = "aws")]
 use object_store::aws::AwsCredentialProvider;
@@ -64,7 +63,8 @@ pub const DEFAULT_DOWNLOAD_RETRY_COUNT: usize = 3;
 
 pub use providers::{ObjectStoreProvider, ObjectStoreRegistry};
 pub use storage_options::{
-    LanceNamespaceStorageOptionsProvider, StorageOptionsProvider, EXPIRES_AT_MILLIS_KEY,
+    LanceNamespaceStorageOptionsProvider, StorageOptionsAccessor, StorageOptionsProvider,
+    EXPIRES_AT_MILLIS_KEY,
 };
 
 #[async_trait]
@@ -187,9 +187,9 @@ pub struct ObjectStoreParams {
     #[cfg(feature = "aws")]
     pub aws_credentials: Option<AwsCredentialProvider>,
     pub object_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
-    pub storage_options: Option<HashMap<String, String>>,
-    /// Dynamic storage options provider for automatic credential refresh
-    pub storage_options_provider: Option<Arc<dyn StorageOptionsProvider>>,
+    /// Unified accessor for storage options, supporting both static options and
+    /// dynamic providers with automatic caching and refresh.
+    pub storage_options_accessor: Option<Arc<StorageOptionsAccessor>>,
     /// Use constant size upload parts for multipart uploads. Only necessary
     /// for Cloudflare R2, which doesn't support variable size parts. When this
     /// is false, max upload size is 2.5TB. When this is true, the max size is
@@ -208,8 +208,7 @@ impl Default for ObjectStoreParams {
             #[cfg(feature = "aws")]
             aws_credentials: None,
             object_store_wrapper: None,
-            storage_options: None,
-            storage_options_provider: None,
+            storage_options_accessor: None,
             use_constant_size_upload_parts: false,
             list_is_lexically_ordered: None,
         }
@@ -220,7 +219,7 @@ impl Default for ObjectStoreParams {
 impl std::hash::Hash for ObjectStoreParams {
     #[allow(deprecated)]
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        // For hashing, we use pointer values for ObjectStore, S3 credentials, wrapper, and storage options provider
+        // For hashing, we use pointer values for ObjectStore, S3 credentials, and wrapper
         self.block_size.hash(state);
         if let Some((store, url)) = &self.object_store {
             Arc::as_ptr(store).hash(state);
@@ -234,14 +233,9 @@ impl std::hash::Hash for ObjectStoreParams {
         if let Some(wrapper) = &self.object_store_wrapper {
             Arc::as_ptr(wrapper).hash(state);
         }
-        if let Some(storage_options) = &self.storage_options {
-            for (key, value) in storage_options {
-                key.hash(state);
-                value.hash(state);
-            }
-        }
-        if let Some(provider) = &self.storage_options_provider {
-            provider.provider_id().hash(state);
+        // StorageOptionsAccessor implements Hash based on initial_options + provider_id
+        if let Some(accessor) = &self.storage_options_accessor {
+            accessor.hash(state);
         }
         self.use_constant_size_upload_parts.hash(state);
         self.list_is_lexically_ordered.hash(state);
@@ -259,7 +253,7 @@ impl PartialEq for ObjectStoreParams {
         }
 
         // For equality, we use pointer comparison for ObjectStore, S3 credentials, wrapper
-        // For storage_options_provider, we use provider_id() for semantic equality
+        // StorageOptionsAccessor implements PartialEq based on initial_options + provider_id
         self.block_size == other.block_size
             && self
                 .object_store
@@ -272,17 +266,38 @@ impl PartialEq for ObjectStoreParams {
             && self.s3_credentials_refresh_offset == other.s3_credentials_refresh_offset
             && self.object_store_wrapper.as_ref().map(Arc::as_ptr)
                 == other.object_store_wrapper.as_ref().map(Arc::as_ptr)
-            && self.storage_options == other.storage_options
-            && self
-                .storage_options_provider
-                .as_ref()
-                .map(|p| p.provider_id())
-                == other
-                    .storage_options_provider
-                    .as_ref()
-                    .map(|p| p.provider_id())
+            && match (
+                &self.storage_options_accessor,
+                &other.storage_options_accessor,
+            ) {
+                (Some(a), Some(b)) => a.as_ref() == b.as_ref(),
+                (None, None) => true,
+                _ => false,
+            }
             && self.use_constant_size_upload_parts == other.use_constant_size_upload_parts
             && self.list_is_lexically_ordered == other.list_is_lexically_ordered
+    }
+}
+
+impl ObjectStoreParams {
+    /// Get the storage options accessor, creating a default one if none is set.
+    ///
+    /// This is the preferred way to access storage options. Use the accessor's
+    /// async methods to get merged/refreshed options.
+    pub fn accessor(&self) -> Arc<StorageOptionsAccessor> {
+        self.storage_options_accessor
+            .clone()
+            .unwrap_or_else(|| Arc::new(StorageOptionsAccessor::new_with_options(HashMap::new())))
+    }
+
+    /// Get a reference to the initial storage options (synchronous, no provider refresh).
+    ///
+    /// This is primarily used for synchronous operations that need to access
+    /// storage options without going through the async provider refresh mechanism.
+    pub fn storage_options_ref(&self) -> Option<&HashMap<String, String>> {
+        self.storage_options_accessor
+            .as_ref()
+            .and_then(|a| a.initial_options())
     }
 }
 
@@ -410,7 +425,7 @@ impl ObjectStore {
         if let Some((store, path)) = params.object_store.as_ref() {
             let mut inner = store.clone();
             let store_prefix =
-                registry.calculate_object_store_prefix(uri, params.storage_options.as_ref())?;
+                registry.calculate_object_store_prefix(uri, params.storage_options_ref())?;
             if let Some(wrapper) = params.object_store_wrapper.as_ref() {
                 inner = wrapper.wrap(&store_prefix, inner);
             }
@@ -763,83 +778,6 @@ impl FromStr for LanceConfigKey {
     }
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct StorageOptions(pub HashMap<String, String>);
-
-impl StorageOptions {
-    /// Create a new instance of [`StorageOptions`]
-    pub fn new(options: HashMap<String, String>) -> Self {
-        let mut options = options;
-        if let Ok(value) = std::env::var("AZURE_STORAGE_ALLOW_HTTP") {
-            options.insert("allow_http".into(), value);
-        }
-        if let Ok(value) = std::env::var("AZURE_STORAGE_USE_HTTP") {
-            options.insert("allow_http".into(), value);
-        }
-        if let Ok(value) = std::env::var("AWS_ALLOW_HTTP") {
-            options.insert("allow_http".into(), value);
-        }
-        if let Ok(value) = std::env::var("OBJECT_STORE_CLIENT_MAX_RETRIES") {
-            options.insert("client_max_retries".into(), value);
-        }
-        if let Ok(value) = std::env::var("OBJECT_STORE_CLIENT_RETRY_TIMEOUT") {
-            options.insert("client_retry_timeout".into(), value);
-        }
-        Self(options)
-    }
-
-    /// Denotes if unsecure connections via http are allowed
-    pub fn allow_http(&self) -> bool {
-        self.0.iter().any(|(key, value)| {
-            key.to_ascii_lowercase().contains("allow_http") & str_is_truthy(value)
-        })
-    }
-
-    /// Number of times to retry a download that fails
-    pub fn download_retry_count(&self) -> usize {
-        self.0
-            .iter()
-            .find(|(key, _)| key.eq_ignore_ascii_case("download_retry_count"))
-            .map(|(_, value)| value.parse::<usize>().unwrap_or(3))
-            .unwrap_or(3)
-    }
-
-    /// Max retry times to set in RetryConfig for object store client
-    pub fn client_max_retries(&self) -> usize {
-        self.0
-            .iter()
-            .find(|(key, _)| key.eq_ignore_ascii_case("client_max_retries"))
-            .and_then(|(_, value)| value.parse::<usize>().ok())
-            .unwrap_or(10)
-    }
-
-    /// Seconds of timeout to set in RetryConfig for object store client
-    pub fn client_retry_timeout(&self) -> u64 {
-        self.0
-            .iter()
-            .find(|(key, _)| key.eq_ignore_ascii_case("client_retry_timeout"))
-            .and_then(|(_, value)| value.parse::<u64>().ok())
-            .unwrap_or(180)
-    }
-
-    pub fn get(&self, key: &str) -> Option<&String> {
-        self.0.get(key)
-    }
-
-    /// Get the expiration time in milliseconds since epoch, if present
-    pub fn expires_at_millis(&self) -> Option<u64> {
-        self.0
-            .get(EXPIRES_AT_MILLIS_KEY)
-            .and_then(|s| s.parse::<u64>().ok())
-    }
-}
-
-impl From<HashMap<String, String>> for StorageOptions {
-    fn from(value: HashMap<String, String>) -> Self {
-        Self::new(value)
-    }
-}
-
 static DEFAULT_OBJECT_STORE_REGISTRY: std::sync::LazyLock<ObjectStoreRegistry> =
     std::sync::LazyLock::new(ObjectStoreRegistry::default);
 
@@ -975,7 +913,9 @@ mod tests {
         // Test the default
         let registry = Arc::new(ObjectStoreRegistry::default());
         let params = ObjectStoreParams {
-            storage_options: storage_options.clone(),
+            storage_options_accessor: storage_options
+                .clone()
+                .map(|opts| Arc::new(StorageOptionsAccessor::new_with_options(opts))),
             ..ObjectStoreParams::default()
         };
         let (store, _) = ObjectStore::from_uri_and_params(registry, uri, &params)
@@ -987,7 +927,8 @@ mod tests {
         let registry = Arc::new(ObjectStoreRegistry::default());
         let params = ObjectStoreParams {
             block_size: Some(1024),
-            storage_options: storage_options.clone(),
+            storage_options_accessor: storage_options
+                .map(|opts| Arc::new(StorageOptionsAccessor::new_with_options(opts))),
             ..ObjectStoreParams::default()
         };
         let (store, _) = ObjectStore::from_uri_and_params(registry, uri, &params)

@@ -60,7 +60,7 @@ use {
     self::external_manifest::{ExternalManifestCommitHandler, ExternalManifestStore},
     aws_credential_types::provider::error::CredentialsError,
     aws_credential_types::provider::ProvideCredentials,
-    lance_io::object_store::{providers::aws::build_aws_credential, StorageOptions},
+    lance_io::object_store::{providers::aws::build_aws_credential, StorageOptionsAccessor},
     object_store::aws::AmazonS3ConfigKey,
     object_store::aws::AwsCredentialProvider,
     std::borrow::Cow,
@@ -765,28 +765,28 @@ pub async fn commit_handler_from_url(
                 }
             };
             let options = options.clone().unwrap_or_default();
-            let storage_options = StorageOptions(options.storage_options.unwrap_or_default());
-            let dynamo_endpoint = get_dynamodb_endpoint(&storage_options);
-            let expires_at_millis = storage_options.expires_at_millis();
-            let storage_options = storage_options.as_s3_options();
+            let accessor = options.accessor();
+            let dynamo_endpoint = accessor.dynamodb_endpoint().await?;
+            let s3_storage_options = accessor.get_s3_options_with_env().await?;
 
-            let region = storage_options.get(&AmazonS3ConfigKey::Region).cloned();
+            let region = s3_storage_options.get(&AmazonS3ConfigKey::Region).cloned();
+            let storage_options_provider = accessor.provider();
 
-            let (aws_creds, region) = build_aws_credential(
+            let cred_result = build_aws_credential(
                 options.s3_credentials_refresh_offset,
                 options.aws_credentials.clone(),
-                Some(&storage_options),
+                Some(&s3_storage_options),
                 region,
-                options.storage_options_provider.clone(),
-                expires_at_millis,
+                storage_options_provider,
+                None, // expires_at_millis
             )
             .await?;
 
             Ok(Arc::new(ExternalManifestCommitHandler {
                 external_manifest_store: build_dynamodb_external_store(
                     table_name,
-                    aws_creds.clone(),
-                    &region,
+                    cred_result.credential_provider.clone(),
+                    &cred_result.region,
                     dynamo_endpoint,
                     "lancedb",
                 )
@@ -794,15 +794,6 @@ pub async fn commit_handler_from_url(
             }))
         }
         _ => Ok(Arc::new(UnsafeCommitHandler)),
-    }
-}
-
-#[cfg(feature = "dynamodb")]
-fn get_dynamodb_endpoint(storage_options: &StorageOptions) -> Option<String> {
-    if let Some(endpoint) = storage_options.0.get("dynamodb_endpoint") {
-        Some(endpoint.clone())
-    } else {
-        std::env::var("DYNAMODB_ENDPOINT").ok()
     }
 }
 

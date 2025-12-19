@@ -25,7 +25,7 @@ use crate::storage_options::JavaStorageOptionsProvider;
 
 use crate::traits::FromJObjectWithEnv;
 use lance_index::vector::Query;
-use lance_io::object_store::StorageOptionsProvider;
+use lance_io::object_store::{StorageOptionsAccessor, StorageOptionsProvider};
 use std::collections::HashMap;
 use std::str::FromStr;
 
@@ -84,14 +84,26 @@ pub fn extract_write_params(
             JavaStorageOptionsProvider::new(env, provider_obj)
         })?;
 
-    let storage_options_provider_arc: Option<Arc<dyn StorageOptionsProvider>> =
-        storage_options_provider.map(|v| Arc::new(v) as Arc<dyn StorageOptionsProvider>);
-
     // Extract s3_credentials_refresh_offset_seconds if present
     let s3_credentials_refresh_offset = env
         .get_long_opt(s3_credentials_refresh_offset_seconds_obj)?
         .map(|v| std::time::Duration::from_secs(v as u64))
         .unwrap_or_else(|| std::time::Duration::from_secs(10));
+
+    // Create StorageOptionsAccessor with options and optional provider
+    let storage_options_accessor = match storage_options_provider {
+        Some(provider) => {
+            let provider_arc = Arc::new(provider) as Arc<dyn StorageOptionsProvider>;
+            Some(Arc::new(StorageOptionsAccessor::new_with_options_and_provider(
+                storage_options.clone(),
+                provider_arc,
+                s3_credentials_refresh_offset,
+            )))
+        }
+        None => Some(Arc::new(StorageOptionsAccessor::new_with_options(
+            storage_options.clone(),
+        ))),
+    };
 
     if let Some(initial_bases) =
         env.get_list_opt(initial_bases, |env, elem| elem.extract_object(env))?
@@ -104,8 +116,7 @@ pub fn extract_write_params(
     }
 
     write_params.store_params = Some(ObjectStoreParams {
-        storage_options: Some(storage_options),
-        storage_options_provider: storage_options_provider_arc,
+        storage_options_accessor,
         s3_credentials_refresh_offset,
         ..Default::default()
     });

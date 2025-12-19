@@ -41,7 +41,7 @@ import java.util.Optional;
  * URI or through a LanceNamespace. When using a namespace, the table location and storage options
  * are automatically managed with credential vending support.
  *
- * <p>Example usage with URI and reader:
+ * <h3>Example: URI only</h3>
  *
  * <pre>{@code
  * Dataset dataset = Dataset.write(allocator)
@@ -51,13 +51,28 @@ import java.util.Optional;
  *     .execute();
  * }</pre>
  *
- * <p>Example usage with namespace:
+ * <h3>Example: Namespace</h3>
  *
  * <pre>{@code
  * Dataset dataset = Dataset.write(allocator)
  *     .reader(myReader)
  *     .namespace(myNamespace)
  *     .tableId(Arrays.asList("my_table"))
+ *     .mode(WriteMode.CREATE)
+ *     .execute();
+ * }</pre>
+ *
+ * <h3>Example: URI with custom storage options provider</h3>
+ *
+ * <p>If you need to use a specific URI with namespace-based credential refresh:
+ *
+ * <pre>{@code
+ * LanceNamespaceStorageOptionsProvider provider =
+ *     new LanceNamespaceStorageOptionsProvider(myNamespace, Arrays.asList("my_table"));
+ * Dataset dataset = Dataset.write(allocator)
+ *     .reader(myReader)
+ *     .uri("s3://bucket/table.lance")
+ *     .storageOptionsProvider(provider)
  *     .mode(WriteMode.CREATE)
  *     .execute();
  * }</pre>
@@ -81,6 +96,7 @@ public class WriteDatasetBuilder {
   private Optional<Long> s3CredentialsRefreshOffsetSeconds = Optional.empty();
   private Optional<List<BasePath>> initialBases = Optional.empty();
   private Optional<List<String>> targetBases = Optional.empty();
+  private StorageOptionsProvider storageOptionsProvider = null;
 
   /** Creates a new builder instance. Package-private, use Dataset.write() instead. */
   WriteDatasetBuilder() {
@@ -300,6 +316,34 @@ public class WriteDatasetBuilder {
   }
 
   /**
+   * Sets a custom storage options provider for dynamic credential fetching.
+   *
+   * <p>This allows using a specific URI with namespace-based credential refresh. If both this
+   * method and namespace()+tableId() are called, the explicitly provided storageOptionsProvider
+   * takes precedence.
+   *
+   * <p>Example:
+   *
+   * <pre>{@code
+   * LanceNamespaceStorageOptionsProvider provider =
+   *     new LanceNamespaceStorageOptionsProvider(myNamespace, Arrays.asList("my_table"));
+   * Dataset dataset = Dataset.write(allocator)
+   *     .reader(myReader)
+   *     .uri("s3://bucket/table.lance")
+   *     .storageOptionsProvider(provider)
+   *     .mode(WriteMode.CREATE)
+   *     .execute();
+   * }</pre>
+   *
+   * @param storageOptionsProvider The storage options provider
+   * @return this builder instance
+   */
+  public WriteDatasetBuilder storageOptionsProvider(StorageOptionsProvider storageOptionsProvider) {
+    this.storageOptionsProvider = storageOptionsProvider;
+    return this;
+  }
+
+  /**
    * Executes the write operation and returns the created dataset.
    *
    * <p>If a namespace is configured via namespace()+tableId(), this automatically handles table
@@ -416,13 +460,19 @@ public class WriteDatasetBuilder {
     WriteParams params = paramsBuilder.build();
 
     // Create storage options provider for credential refresh during long-running writes
-    StorageOptionsProvider storageOptionsProvider =
-        ignoreNamespaceStorageOptions
-            ? null
-            : new LanceNamespaceStorageOptionsProvider(namespace, tableId);
+    // Only create namespace provider if user didn't provide one explicitly
+    StorageOptionsProvider effectiveProvider;
+    if (storageOptionsProvider != null) {
+      // User provided their own provider - use it
+      effectiveProvider = storageOptionsProvider;
+    } else if (!ignoreNamespaceStorageOptions) {
+      effectiveProvider = new LanceNamespaceStorageOptionsProvider(namespace, tableId);
+    } else {
+      effectiveProvider = null;
+    }
 
     // Use Dataset.create() which handles CREATE/APPEND/OVERWRITE modes
-    return createDatasetWithStream(tableUri, params, storageOptionsProvider);
+    return createDatasetWithStream(tableUri, params, effectiveProvider);
   }
 
   private Dataset executeWithUri() {
@@ -441,7 +491,8 @@ public class WriteDatasetBuilder {
 
     WriteParams params = paramsBuilder.build();
 
-    return createDatasetWithStream(uri, params, null);
+    // Pass user-provided storage options provider if set
+    return createDatasetWithStream(uri, params, storageOptionsProvider);
   }
 
   private Dataset createDatasetWithStream(

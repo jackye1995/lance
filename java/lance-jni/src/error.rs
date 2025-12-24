@@ -28,9 +28,7 @@ impl JavaExceptionClass {
             Self::UnsupportedOperationException => "java/lang/UnsupportedOperationException",
             // Included for display purposes.  This is not a real exception.
             Self::AlreadyInException => "AlreadyInException",
-            Self::LanceNamespaceException => {
-                "org/lance/namespace/errors/LanceNamespaceException"
-            }
+            Self::LanceNamespaceException => "org/lance/namespace/errors/LanceNamespaceException",
         }
     }
 }
@@ -93,17 +91,19 @@ impl Error {
             return;
         }
 
-        // For namespace errors, try to throw the specific LanceNamespaceException
+        // For namespace errors, throw the specific LanceNamespaceException
         if self.java_class == JavaExceptionClass::LanceNamespaceException {
             if let Some(code) = self.namespace_error_code {
-                // Try to call LanceNamespaceException.fromCode static method
-                if let Err(_) = self.throw_namespace_exception(env, code) {
-                    // Fall back to RuntimeException with code prefix
-                    let fallback_msg = format!("[NamespaceError code={}] {}", code, self.message);
-                    if let Err(e) = env.throw_new("java/lang/RuntimeException", &fallback_msg) {
-                        eprintln!("Error when throwing Java exception: {:?}", e.to_string());
-                        panic!("Error when throwing Java exception: {:?}", e);
-                    }
+                // Call LanceNamespaceException.fromCode static method
+                if self.throw_namespace_exception(env, code).is_err() {
+                    // lance-namespace is bundled as a dependency, so the exception classes
+                    // should always be available. Panic if they're not.
+                    panic!(
+                        "Failed to throw LanceNamespaceException (code={}). \
+                        org.lance.namespace.errors.LanceNamespaceException and ErrorCode classes \
+                        must be available in the classpath.",
+                        code
+                    );
                 }
                 return;
             }
@@ -115,7 +115,11 @@ impl Error {
         }
     }
 
-    fn throw_namespace_exception(&self, env: &mut JNIEnv, code: u32) -> std::result::Result<(), ()> {
+    fn throw_namespace_exception(
+        &self,
+        env: &mut JNIEnv,
+        code: u32,
+    ) -> std::result::Result<(), ()> {
         // Try to find and call the LanceNamespaceException constructor
         // that takes ErrorCode and message
         let class_name = "org/lance/namespace/errors/LanceNamespaceException";

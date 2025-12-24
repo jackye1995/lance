@@ -1159,6 +1159,7 @@ impl LanceNamespace for DirectoryNamespace {
         request: CreateEmptyTableRequest,
     ) -> Result<CreateEmptyTableResponse> {
         if let Some(ref manifest_ns) = self.manifest_ns {
+            #[allow(deprecated)]
             return manifest_ns.create_empty_table(request).await;
         }
 
@@ -2024,6 +2025,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(deprecated)]
     async fn test_create_empty_table() {
         let (namespace, temp_dir) = create_test_namespace().await;
 
@@ -2068,6 +2070,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(deprecated)]
     async fn test_create_empty_table_with_wrong_location() {
         let (namespace, _temp_dir) = create_test_namespace().await;
 
@@ -2084,6 +2087,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(deprecated)]
     async fn test_create_empty_table_then_drop() {
         let (namespace, temp_dir) = create_test_namespace().await;
 
@@ -2303,6 +2307,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(deprecated)]
     async fn test_empty_table_in_child_namespace() {
         let (namespace, _temp_dir) = create_test_namespace().await;
 
@@ -3023,7 +3028,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_declare_table_v1_mode() {
-        use lance_namespace::models::{DeclareTableRequest, DescribeTableRequest, TableExistsRequest};
+        use lance_namespace::models::{
+            DeclareTableRequest, DescribeTableRequest, TableExistsRequest,
+        };
 
         let temp_dir = TempStdDir::default();
         let temp_path = temp_dir.to_str().unwrap();
@@ -3061,7 +3068,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_declare_table_with_manifest() {
-        use lance_namespace::models::{DeclareTableRequest, DescribeTableRequest, TableExistsRequest};
+        use lance_namespace::models::{DeclareTableRequest, TableExistsRequest};
 
         let temp_dir = TempStdDir::default();
         let temp_path = temp_dir.to_str().unwrap();
@@ -3199,12 +3206,18 @@ mod tests {
         // Deregister once
         let mut deregister_req = DeregisterTableRequest::new();
         deregister_req.id = Some(vec!["test_table".to_string()]);
-        namespace.deregister_table(deregister_req.clone()).await.unwrap();
+        namespace
+            .deregister_table(deregister_req.clone())
+            .await
+            .unwrap();
 
         // Try to deregister again - should fail
         let result = namespace.deregister_table(deregister_req).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("already deregistered"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("already deregistered"));
     }
 
     // ============================================================

@@ -205,10 +205,7 @@ pub trait LanceNamespace: Send + Sync + std::fmt::Debug {
     }
 
     /// Declare a table (metadata only operation).
-    async fn declare_table(
-        &self,
-        _request: DeclareTableRequest,
-    ) -> Result<DeclareTableResponse> {
+    async fn declare_table(&self, _request: DeclareTableRequest) -> Result<DeclareTableResponse> {
         Err(Error::NotSupported {
             source: "declare_table not implemented".into(),
             location: Location::new(file!(), line!(), column!()),
@@ -220,7 +217,10 @@ pub trait LanceNamespace: Send + Sync + std::fmt::Debug {
     /// # Deprecated
     ///
     /// Use [`declare_table`](Self::declare_table) instead. Support will be removed in 3.0.0.
-    #[deprecated(since = "2.0.0", note = "Use declare_table instead. Support will be removed in 3.0.0.")]
+    #[deprecated(
+        since = "2.0.0",
+        note = "Use declare_table instead. Support will be removed in 3.0.0."
+    )]
     async fn create_empty_table(
         &self,
         _request: CreateEmptyTableRequest,

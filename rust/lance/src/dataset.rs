@@ -832,7 +832,7 @@ impl Dataset {
                 #[allow(deprecated)]
                 let response = match namespace.declare_table(declare_request).await {
                     Ok(resp) => resp,
-                    Err(e) if matches!(e, Error::NotSupported { .. }) => {
+                    Err(Error::NotSupported { .. }) => {
                         let fallback_request = CreateEmptyTableRequest {
                             id: Some(table_id.clone()),
                             location: None,

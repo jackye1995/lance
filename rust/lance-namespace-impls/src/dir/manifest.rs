@@ -1629,10 +1629,7 @@ impl LanceNamespace for ManifestNamespace {
         })
     }
 
-    async fn declare_table(
-        &self,
-        request: DeclareTableRequest,
-    ) -> Result<DeclareTableResponse> {
+    async fn declare_table(&self, request: DeclareTableRequest) -> Result<DeclareTableResponse> {
         let table_id = request.id.as_ref().ok_or_else(|| Error::InvalidInput {
             source: "Table ID is required".into(),
             location: location!(),

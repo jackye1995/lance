@@ -313,6 +313,7 @@ pub extern "system" fn Java_org_lance_namespace_DirectoryNamespace_createTableNa
 }
 
 #[no_mangle]
+#[allow(deprecated)]
 pub extern "system" fn Java_org_lance_namespace_DirectoryNamespace_createEmptyTableNative(
     mut env: JNIEnv,
     _obj: JObject,
@@ -807,6 +808,7 @@ pub extern "system" fn Java_org_lance_namespace_RestNamespace_createTableNative(
 }
 
 #[no_mangle]
+#[allow(deprecated)]
 pub extern "system" fn Java_org_lance_namespace_RestNamespace_createEmptyTableNative(
     mut env: JNIEnv,
     _obj: JObject,

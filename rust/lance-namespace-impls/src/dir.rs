@@ -16,6 +16,7 @@ use lance::dataset::{Dataset, WriteParams};
 use lance::session::Session;
 use lance_io::object_store::{ObjectStore, ObjectStoreParams, ObjectStoreRegistry};
 use object_store::path::Path;
+use object_store::{Error as ObjectStoreError, ObjectStore as OSObjectStore, PutMode, PutOptions};
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Arc;
@@ -661,6 +662,38 @@ impl DirectoryNamespace {
         }
     }
 
+    /// Atomically create a marker file using put_if_not_exists semantics.
+    ///
+    /// This uses `PutMode::Create` which will fail if the file already exists,
+    /// providing atomic creation semantics to avoid race conditions.
+    ///
+    /// Returns Ok(()) if the file was created successfully.
+    /// Returns Err with appropriate message if the file already exists or other error.
+    async fn put_marker_file_atomic(
+        &self,
+        path: &Path,
+        file_description: &str,
+    ) -> std::result::Result<(), String> {
+        let put_opts = PutOptions {
+            mode: PutMode::Create,
+            ..Default::default()
+        };
+
+        match self
+            .object_store
+            .inner
+            .put_opts(path, bytes::Bytes::new().into(), put_opts)
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(ObjectStoreError::AlreadyExists { .. })
+            | Err(ObjectStoreError::Precondition { .. }) => {
+                Err(format!("{} already exists", file_description))
+            }
+            Err(e) => Err(format!("Failed to create {}: {}", file_description, e)),
+        }
+    }
+
     /// Get storage options for a table, using credential vending if configured.
     ///
     /// If credential vendor properties are configured and the table location matches
@@ -1182,28 +1215,14 @@ impl LanceNamespace for DirectoryNamespace {
             }
         }
 
-        // Create the .lance-reserved file to mark the table as existing
+        // Atomically create the .lance-reserved file to mark the table as existing.
+        // This uses put_if_not_exists semantics to avoid race conditions.
         let reserved_file_path = self.table_reserved_file_path(&table_name);
 
-        self.object_store
-            .create(&reserved_file_path)
+        self.put_marker_file_atomic(&reserved_file_path, &format!("table {}", table_name))
             .await
             .map_err(|e| Error::Namespace {
-                source: format!(
-                    "Failed to create .lance-reserved file for table {}: {}",
-                    table_name, e
-                )
-                .into(),
-                location: snafu::location!(),
-            })?
-            .shutdown()
-            .await
-            .map_err(|e| Error::Namespace {
-                source: format!(
-                    "Failed to finalize .lance-reserved file for table {}: {}",
-                    table_name, e
-                )
-                .into(),
+                source: e.into(),
                 location: snafu::location!(),
             })?;
 
@@ -1237,37 +1256,27 @@ impl LanceNamespace for DirectoryNamespace {
             }
         }
 
-        // Check if table already exists (either has data or is declared)
+        // Check if table already has data (created via create_table).
+        // The atomic put only prevents races between concurrent declare_table calls,
+        // not between declare_table and existing data.
         let status = self.check_table_status(&table_name).await;
-        if status.exists {
+        if status.exists && !status.has_reserved_file {
+            // Table has data but no reserved file - it was created with data
             return Err(Error::Namespace {
                 source: format!("Table already exists: {}", table_name).into(),
                 location: snafu::location!(),
             });
         }
 
-        // Create the .lance-reserved file to mark the table as existing
+        // Atomically create the .lance-reserved file to mark the table as declared.
+        // This uses put_if_not_exists semantics to avoid race conditions between
+        // concurrent declare_table calls.
         let reserved_file_path = self.table_reserved_file_path(&table_name);
 
-        self.object_store
-            .create(&reserved_file_path)
+        self.put_marker_file_atomic(&reserved_file_path, &format!("table {}", table_name))
             .await
             .map_err(|e| Error::Namespace {
-                source: format!(
-                    "Failed to create .lance-reserved file for table {}: {}",
-                    table_name, e
-                )
-                .into(),
-                location: snafu::location!(),
-            })?
-            .shutdown()
-            .await
-            .map_err(|e| Error::Namespace {
-                source: format!(
-                    "Failed to finalize .lance-reserved file for table {}: {}",
-                    table_name, e
-                )
-                .into(),
+                source: e.into(),
                 location: snafu::location!(),
             })?;
 
@@ -1307,7 +1316,8 @@ impl LanceNamespace for DirectoryNamespace {
         let table_name = Self::table_name_from_id(&request.id)?;
         let table_uri = self.table_full_uri(&table_name);
 
-        // Atomically check table existence and deregistration status
+        // Check table existence and deregistration status.
+        // This provides better error messages for common cases.
         let status = self.check_table_status(&table_name).await;
 
         if !status.exists {
@@ -1324,15 +1334,29 @@ impl LanceNamespace for DirectoryNamespace {
             });
         }
 
-        // Create the .lance-deregistered marker file
+        // Atomically create the .lance-deregistered marker file.
+        // This uses put_if_not_exists semantics to prevent race conditions
+        // when multiple processes try to deregister the same table concurrently.
+        // If a race occurs and another process already created the file,
+        // we'll get an AlreadyExists error which we convert to a proper message.
         let deregistered_path = self.table_deregistered_file_path(&table_name);
-        self.object_store
-            .put(&deregistered_path, b"")
-            .await
-            .map_err(|e| Error::Namespace {
-                source: format!("Failed to deregister table {}: {}", table_name, e).into(),
+        self.put_marker_file_atomic(
+            &deregistered_path,
+            &format!("deregistration marker for table {}", table_name),
+        )
+        .await
+        .map_err(|e| {
+            // Convert "already exists" to "already deregistered" for better UX
+            let message = if e.contains("already exists") {
+                format!("Table is already deregistered: {}", table_name)
+            } else {
+                e
+            };
+            Error::Namespace {
+                source: message.into(),
                 location: snafu::location!(),
-            })?;
+            }
+        })?;
 
         Ok(lance_namespace::models::DeregisterTableResponse {
             id: request.id,

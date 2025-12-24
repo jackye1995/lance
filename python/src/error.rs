@@ -84,6 +84,11 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                     if let Some(ns_err) = source.downcast_ref::<NamespaceError>() {
                         Python::with_gil(|py| Err(namespace_error_to_pyerr(py, ns_err)))
                     } else {
+                        log::warn!(
+                            "Failed to downcast NamespaceError source, falling back to runtime error. \
+                             This may indicate a version mismatch. Source type: {:?}",
+                            source
+                        );
                         self.runtime_error()
                     }
                 }

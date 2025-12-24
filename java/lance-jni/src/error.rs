@@ -214,6 +214,11 @@ impl From<LanceError> for Error {
                 if let Some(ns_err) = source.downcast_ref::<NamespaceError>() {
                     Self::namespace_error(ns_err.code().as_u32(), ns_err.to_string())
                 } else {
+                    log::warn!(
+                        "Failed to downcast NamespaceError source, falling back to runtime error. \
+                         This may indicate a version mismatch. Source type: {:?}",
+                        source
+                    );
                     Self::runtime_error(err.to_string())
                 }
             }

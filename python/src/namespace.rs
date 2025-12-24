@@ -183,6 +183,7 @@ impl PyDirectoryNamespace {
         Ok(pythonize(py, &response)?.into())
     }
 
+    #[allow(deprecated)]
     fn create_empty_table(&self, py: Python, request: &Bound<'_, PyAny>) -> PyResult<PyObject> {
         let request = depythonize(request)?;
         let response = crate::rt()
@@ -349,6 +350,7 @@ impl PyRestNamespace {
         Ok(pythonize(py, &response)?.into())
     }
 
+    #[allow(deprecated)]
     fn create_empty_table(&self, py: Python, request: &Bound<'_, PyAny>) -> PyResult<PyObject> {
         let request = depythonize(request)?;
         let response = crate::rt()

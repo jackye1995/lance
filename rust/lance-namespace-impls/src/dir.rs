@@ -561,8 +561,9 @@ impl DirectoryNamespace {
 
             let table_name = &path[..path.len() - 6];
 
-            // Skip deregistered tables
-            if self.is_table_deregistered(table_name).await {
+            // Use atomic check to skip deregistered tables and declared-but-not-written tables
+            let status = self.check_table_status(table_name).await;
+            if status.is_deregistered || status.has_reserved_file {
                 continue;
             }
 

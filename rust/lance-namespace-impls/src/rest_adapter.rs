@@ -501,6 +501,7 @@ async fn create_table(
     }
 }
 
+#[allow(deprecated)]
 async fn create_empty_table(
     State(backend): State<Arc<dyn LanceNamespace>>,
     Path(id): Path<String>,
@@ -1440,6 +1441,7 @@ mod tests {
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[allow(deprecated)]
         async fn test_empty_table_exists_in_child_namespace() {
             let fixture = RestServerFixture::new().await;
 
@@ -1611,6 +1613,7 @@ mod tests {
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[allow(deprecated)]
         async fn test_create_empty_table_in_child_namespace() {
             let fixture = RestServerFixture::new().await;
 
@@ -1665,6 +1668,7 @@ mod tests {
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[allow(deprecated)]
         async fn test_describe_empty_table_in_child_namespace() {
             let fixture = RestServerFixture::new().await;
 
@@ -1720,6 +1724,7 @@ mod tests {
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[allow(deprecated)]
         async fn test_drop_empty_table_in_child_namespace() {
             let fixture = RestServerFixture::new().await;
 
@@ -1765,6 +1770,7 @@ mod tests {
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[allow(deprecated)]
         async fn test_deeply_nested_namespace_with_empty_table() {
             let fixture = RestServerFixture::new().await;
 

@@ -20,8 +20,6 @@ from lance_namespace import (
     CreateNamespaceResponse,
     CreateTableRequest,
     CreateTableResponse,
-    DeclareTableRequest,
-    DeclareTableResponse,
     DeregisterTableRequest,
     DeregisterTableResponse,
     DescribeNamespaceRequest,

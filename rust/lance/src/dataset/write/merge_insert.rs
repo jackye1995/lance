@@ -279,16 +279,25 @@ pub enum WhenNotMatched {
     DoNothing,
 }
 
-/// Describes the ordering used for deduplication when multiple source rows match the same target row
+/// Describes the ordering used for deduplication when multiple source rows match the same target row.
 ///
 /// When `dedupe_by` is set, this controls which row to keep when duplicates are found.
-/// NULL handling follows DataFusion semantics for sort ordering.
+/// Follows DataFusion/SQL sort semantics:
+/// - `Ascending`: Keep the row with the smallest value (NULLS LAST - NULL loses to non-NULL)
+/// - `Descending`: Keep the row with the largest value (NULLS FIRST - NULL loses to non-NULL)
+///
+/// For floating-point values, NaN is treated as larger than all other values (including Infinity),
+/// consistent with Arrow's total ordering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Hash, Default)]
 pub enum DedupeOrdering {
-    /// Keep the row with the smallest `dedupe_by` column value
+    /// Keep the row with the smallest dedupe column value.
+    /// NULL loses to any non-NULL value (NULLS LAST semantics).
+    /// For floats: -Inf < normal values < Inf < NaN
     #[default]
     Ascending,
-    /// Keep the row with the largest `dedupe_by` column value
+    /// Keep the row with the largest dedupe column value.
+    /// NULL loses to any non-NULL value (NULLS FIRST semantics).
+    /// For floats: NaN > Inf > normal values > -Inf
     Descending,
 }
 
@@ -318,7 +327,7 @@ struct MergeInsertParams {
     // If set, specifies the column to use for deduplication when multiple source rows
     // match the same target row. The row with the best value (based on dedupe_ordering) is kept.
     dedupe_by: Option<String>,
-    // Controls whether to keep the row with the smallest or largest dedupe_by value
+    // Controls ordering for deduplication (sort direction and NULL handling)
     dedupe_ordering: DedupeOrdering,
 }
 

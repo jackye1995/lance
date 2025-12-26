@@ -108,11 +108,30 @@ impl MergeState {
         }
     }
 
-    /// Check if the new value is better than the existing value based on dedupe_ordering
+    /// Check if the new value is better than the existing value based on dedupe_ordering.
+    ///
+    /// Follows DataFusion/SQL sort semantics where NULL loses to any non-NULL value:
+    /// - ASC (NULLS LAST): NULL is considered larger than any non-NULL
+    /// - DESC (NULLS FIRST): NULL is considered smaller than any non-NULL
+    ///
+    /// For non-NULL values, uses ScalarValue's total ordering which handles
+    /// floats as: -Inf < normal values < Inf < NaN
     fn is_better_value(&self, new: &ScalarValue, existing: &ScalarValue) -> bool {
-        match self.dedupe_ordering {
-            DedupeOrdering::Ascending => new < existing,
-            DedupeOrdering::Descending => new > existing,
+        let new_is_null = new.is_null();
+        let existing_is_null = existing.is_null();
+
+        match (new_is_null, existing_is_null) {
+            // Both NULL: keep existing (no improvement)
+            (true, true) => false,
+            // New is NULL, existing is non-NULL: existing wins (NULL loses)
+            (true, false) => false,
+            // New is non-NULL, existing is NULL: new wins (NULL loses)
+            (false, true) => true,
+            // Both non-NULL: compare based on ordering
+            (false, false) => match self.dedupe_ordering {
+                DedupeOrdering::Ascending => new < existing,
+                DedupeOrdering::Descending => new > existing,
+            },
         }
     }
 

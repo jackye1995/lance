@@ -233,7 +233,10 @@ impl MergeInsertBuilder {
     ///
     /// When the source data contains multiple rows with the same key, this column
     /// determines which row to keep based on the dedupe_ordering.
-    pub fn dedupe_by(mut slf: PyRefMut<Self>, column: &str) -> PyResult<PyRefMut<Self>> {
+    pub fn dedupe_by<'a>(
+        mut slf: PyRefMut<'a, Self>,
+        column: &str,
+    ) -> PyResult<PyRefMut<'a, Self>> {
         slf.builder.dedupe_by(column);
         Ok(slf)
     }
@@ -241,10 +244,10 @@ impl MergeInsertBuilder {
     /// Set the ordering for deduplication: "ascending" keeps the smallest value,
     /// "descending" keeps the largest value.
     #[pyo3(signature=(ordering = "ascending"))]
-    pub fn dedupe_ordering(
-        mut slf: PyRefMut<Self>,
+    pub fn dedupe_ordering<'a>(
+        mut slf: PyRefMut<'a, Self>,
         ordering: &str,
-    ) -> PyResult<PyRefMut<Self>> {
+    ) -> PyResult<PyRefMut<'a, Self>> {
         let ordering = match ordering.to_lowercase().as_str() {
             "ascending" | "asc" => DedupeOrdering::Ascending,
             "descending" | "desc" => DedupeOrdering::Descending,

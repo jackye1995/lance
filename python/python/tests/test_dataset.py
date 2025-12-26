@@ -2561,6 +2561,144 @@ def test_merge_insert_permissive_nullability(tmp_path):
     assert result_table.sort_by("id").equals(expected_data.sort_by("id"))
 
 
+def test_merge_insert_dedupe_ascending(tmp_path: Path):
+    """Test dedupe_by with ascending ordering keeps the smallest value."""
+    # Create initial dataset
+    data = pa.table({"id": [1, 2, 3], "value": [1.0, 2.0, 3.0], "ts": [100, 200, 300]})
+    ds = lance.write_dataset(data, tmp_path / "dataset")
+
+    # Source data with duplicates:
+    # id=1: ts=150 and ts=50 -> should keep ts=50 (ascending)
+    # id=2: ts=180 and ts=250 -> should keep ts=180 (ascending)
+    # id=4: new insert
+    new_data = pa.table(
+        {
+            "id": [1, 1, 2, 2, 4],
+            "value": [10.0, 11.0, 20.0, 21.0, 40.0],
+            "ts": [150, 50, 180, 250, 400],
+        }
+    )
+
+    stats = (
+        ds.merge_insert("id")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .dedupe_by("ts")
+        .dedupe_ordering("ascending")
+        .execute(new_data)
+    )
+
+    assert stats["num_inserted_rows"] == 1  # id=4
+    assert stats["num_updated_rows"] == 2  # id=1 and id=2
+
+    result = ds.to_table().sort_by("id")
+
+    # Expected: id=1 has ts=50, id=2 has ts=180, id=3 unchanged, id=4 new
+    expected = pa.table(
+        {
+            "id": [1, 2, 3, 4],
+            "value": [11.0, 20.0, 3.0, 40.0],
+            "ts": [50, 180, 300, 400],
+        }
+    )
+    assert result.equals(expected.sort_by("id"))
+
+
+def test_merge_insert_dedupe_descending(tmp_path: Path):
+    """Test dedupe_by with descending ordering keeps the largest value."""
+    # Create initial dataset
+    data = pa.table({"id": [1, 2, 3], "value": [1.0, 2.0, 3.0], "ts": [100, 200, 300]})
+    ds = lance.write_dataset(data, tmp_path / "dataset")
+
+    # Source data with duplicates:
+    # id=1: ts=150 and ts=50 -> should keep ts=150 (descending)
+    # id=2: ts=180 and ts=250 -> should keep ts=250 (descending)
+    # id=4: new insert
+    new_data = pa.table(
+        {
+            "id": [1, 1, 2, 2, 4],
+            "value": [10.0, 11.0, 20.0, 21.0, 40.0],
+            "ts": [150, 50, 180, 250, 400],
+        }
+    )
+
+    stats = (
+        ds.merge_insert("id")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .dedupe_by("ts")
+        .dedupe_ordering("descending")
+        .execute(new_data)
+    )
+
+    assert stats["num_inserted_rows"] == 1  # id=4
+    assert stats["num_updated_rows"] == 2  # id=1 and id=2
+
+    result = ds.to_table().sort_by("id")
+
+    # Expected: id=1 has ts=150, id=2 has ts=250, id=3 unchanged, id=4 new
+    expected = pa.table(
+        {
+            "id": [1, 2, 3, 4],
+            "value": [10.0, 21.0, 3.0, 40.0],
+            "ts": [150, 250, 300, 400],
+        }
+    )
+    assert result.equals(expected.sort_by("id"))
+
+
+def test_merge_insert_dedupe_large(tmp_path: Path):
+    """Test dedupe_by with large dataset to trigger multiple batches."""
+    # Create initial dataset with 1000 rows
+    num_rows = 1000
+    data = pa.table(
+        {
+            "id": list(range(1, num_rows + 1)),
+            "value": [float(i) for i in range(1, num_rows + 1)],
+            "ts": [i * 100 for i in range(1, num_rows + 1)],
+        }
+    )
+    ds = lance.write_dataset(data, tmp_path / "dataset")
+
+    # Source data: ids 1-500 each appear 3 times with different ts values
+    source_ids = []
+    source_values = []
+    source_ts = []
+    for i in range(1, 501):
+        for j in range(3):
+            source_ids.append(i)
+            source_values.append(float(i * 10 + j))
+            source_ts.append(i * 1000 + j * 100)  # e.g., id=1: ts=1000, 1100, 1200
+
+    new_data = pa.table({"id": source_ids, "value": source_values, "ts": source_ts})
+
+    # Use descending - should keep largest ts (i*1000 + 200)
+    stats = (
+        ds.merge_insert("id")
+        .when_matched_update_all()
+        .dedupe_by("ts")
+        .dedupe_ordering("descending")
+        .execute(new_data)
+    )
+
+    assert stats["num_updated_rows"] == 500  # ids 1-500
+
+    result = ds.to_table().sort_by("id")
+
+    # Verify first few and last few rows
+    for i in range(1, 11):  # Check ids 1-10
+        row_idx = i - 1
+        assert result["id"][row_idx].as_py() == i
+        assert result["ts"][row_idx].as_py() == i * 1000 + 200  # largest ts
+        assert result["value"][row_idx].as_py() == float(i * 10 + 2)
+
+    # Check unchanged rows (501-510)
+    for i in range(501, 511):
+        row_idx = i - 1
+        assert result["id"][row_idx].as_py() == i
+        assert result["ts"][row_idx].as_py() == i * 100  # original value
+
+
 def test_add_null_columns_with_conflict_names(tmp_path: Path):
     data = pa.table({"id": [1, 2, 4]})
     ds = lance.write_dataset(data, tmp_path)

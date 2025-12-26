@@ -279,6 +279,19 @@ pub enum WhenNotMatched {
     DoNothing,
 }
 
+/// Describes the ordering used for deduplication when multiple source rows match the same target row
+///
+/// When `dedupe_by` is set, this controls which row to keep when duplicates are found.
+/// NULL handling follows DataFusion semantics for sort ordering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Hash, Default)]
+pub enum DedupeOrdering {
+    /// Keep the row with the smallest `dedupe_by` column value
+    #[default]
+    Ascending,
+    /// Keep the row with the largest `dedupe_by` column value
+    Descending,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Hash)]
 struct MergeInsertParams {
     // The column(s) to join on
@@ -302,6 +315,11 @@ struct MergeInsertParams {
     // Controls whether to use indices for the merge operation. Default is true.
     // Setting to false forces a full table scan even if an index exists.
     use_index: bool,
+    // If set, specifies the column to use for deduplication when multiple source rows
+    // match the same target row. The row with the best value (based on dedupe_ordering) is kept.
+    dedupe_by: Option<String>,
+    // Controls whether to keep the row with the smallest or largest dedupe_by value
+    dedupe_ordering: DedupeOrdering,
 }
 
 /// A MergeInsertJob inserts new rows, deletes old rows, and updates existing rows all as
@@ -405,6 +423,8 @@ impl MergeInsertBuilder {
                 mem_wal_to_merge: None,
                 skip_auto_cleanup: false,
                 use_index: true,
+                dedupe_by: None,
+                dedupe_ordering: DedupeOrdering::default(),
             },
         })
     }
@@ -473,6 +493,28 @@ impl MergeInsertBuilder {
     /// Default is true (use index if available).
     pub fn use_index(&mut self, use_index: bool) -> &mut Self {
         self.params.use_index = use_index;
+        self
+    }
+
+    /// Specifies the column to use for deduplication when multiple source rows match the same target row.
+    ///
+    /// When the source table contains duplicate rows (rows with the same join key), this setting
+    /// determines which row to keep based on the value of the specified column. Use `dedupe_ordering`
+    /// to control whether to keep the row with the smallest or largest value.
+    ///
+    /// If not set (default), duplicate source rows will cause an error.
+    pub fn dedupe_by(&mut self, column: impl Into<String>) -> &mut Self {
+        self.params.dedupe_by = Some(column.into());
+        self
+    }
+
+    /// Controls the ordering used for deduplication.
+    ///
+    /// When `dedupe_by` is set and multiple source rows match the same target row:
+    /// - `DedupeOrdering::Ascending`: Keep the row with the smallest `dedupe_by` value (default)
+    /// - `DedupeOrdering::Descending`: Keep the row with the largest `dedupe_by` value
+    pub fn dedupe_ordering(&mut self, ordering: DedupeOrdering) -> &mut Self {
+        self.params.dedupe_ordering = ordering;
         self
     }
 
@@ -1461,6 +1503,14 @@ impl MergeInsertJob {
                 transaction,
                 affected_rows,
                 stats,
+            });
+        }
+
+        // dedupe_by is only supported in the v2 path
+        if self.params.dedupe_by.is_some() {
+            return Err(Error::NotSupported {
+                source: "dedupe_by is only supported for full-schema merge insert (v2 path)".into(),
+                location: location!(),
             });
         }
 
@@ -5313,5 +5363,496 @@ MergeInsert: on=[id], when_matched=UpdateAll, when_not_matched=InsertAll, when_n
         .unwrap();
 
         assert_eq!(result, expected);
+    }
+
+    #[tokio::test]
+    async fn test_dedupe_ascending() {
+        use arrow_array::record_batch;
+
+        // Test that when duplicates exist, the row with the smallest dedupe_by value is kept
+        let test_dir = TempStrDir::default();
+
+        // Create initial dataset
+        let data = record_batch!(
+            ("id", Int32, [1, 2, 3]),
+            ("value", Float64, [1.0, 2.0, 3.0]),
+            ("ts", Int64, [100, 200, 300])
+        )
+        .unwrap();
+
+        let dataset = InsertBuilder::new(test_dir.as_str())
+            .execute(vec![data])
+            .await
+            .unwrap();
+
+        // Source data with duplicates: two rows have id=1 and id=2
+        // For id=1: ts=150 and ts=50 -> should keep ts=50 (ascending)
+        // For id=2: ts=180 and ts=250 -> should keep ts=180 (ascending)
+        // id=4 is a new insert
+        let new_data = record_batch!(
+            ("id", Int32, [1, 1, 2, 2, 4]),
+            ("value", Float64, [10.0, 11.0, 20.0, 21.0, 40.0]),
+            ("ts", Int64, [150, 50, 180, 250, 400])
+        )
+        .unwrap();
+
+        let (merged_dataset, stats) =
+            MergeInsertBuilder::try_new(dataset.into(), vec!["id".into()])
+                .unwrap()
+                .when_matched(WhenMatched::UpdateAll)
+                .when_not_matched(WhenNotMatched::InsertAll)
+                .dedupe_by("ts")
+                .dedupe_ordering(DedupeOrdering::Ascending)
+                .try_build()
+                .unwrap()
+                .execute_reader(Box::new(RecordBatchIterator::new(
+                    vec![Ok(new_data.clone())],
+                    new_data.schema(),
+                )))
+                .await
+                .unwrap();
+
+        assert_eq!(stats.num_inserted_rows, 1); // id=4
+        assert_eq!(stats.num_updated_rows, 2); // id=1 and id=2
+
+        let result = merged_dataset
+            .scan()
+            .order_by(Some(vec![ColumnOrdering::asc_nulls_first(
+                "id".to_string(),
+            )]))
+            .unwrap()
+            .try_into_batch()
+            .await
+            .unwrap();
+
+        // Expected: id=1 has ts=50 (smallest), id=2 has ts=180 (smallest), id=3 unchanged, id=4 new
+        let expected = record_batch!(
+            ("id", Int32, [1, 2, 3, 4]),
+            ("value", Float64, [11.0, 20.0, 3.0, 40.0]),
+            ("ts", Int64, [50, 180, 300, 400])
+        )
+        .unwrap();
+
+        assert_eq!(result, expected);
+    }
+
+    #[tokio::test]
+    async fn test_dedupe_descending() {
+        // Test that when duplicates exist, the row with the largest dedupe_by value is kept
+        // Using large dataset to trigger multiple batches
+        let test_dir = TempStrDir::default();
+
+        // Create initial dataset with 1000 rows
+        let num_rows = 1000;
+        let ids: Vec<i32> = (1..=num_rows).collect();
+        let values: Vec<f64> = (1..=num_rows).map(|i| i as f64).collect();
+        let timestamps: Vec<i64> = (1..=num_rows).map(|i| i as i64 * 100).collect();
+
+        let data = RecordBatch::try_new(
+            Arc::new(arrow_schema::Schema::new(vec![
+                arrow_schema::Field::new("id", arrow_schema::DataType::Int32, false),
+                arrow_schema::Field::new("value", arrow_schema::DataType::Float64, false),
+                arrow_schema::Field::new("ts", arrow_schema::DataType::Int64, false),
+            ])),
+            vec![
+                Arc::new(Int32Array::from(ids.clone())),
+                Arc::new(Float64Array::from(values)),
+                Arc::new(Int64Array::from(timestamps)),
+            ],
+        )
+        .unwrap();
+
+        let dataset = InsertBuilder::new(test_dir.as_str())
+            .execute(vec![data.clone()])
+            .await
+            .unwrap();
+
+        // Source data with duplicates: each id from 1-500 appears 3 times with different ts values
+        // For descending, the row with the largest ts should be kept
+        let mut source_ids = Vec::new();
+        let mut source_values = Vec::new();
+        let mut source_ts = Vec::new();
+
+        for id in 1..=500 {
+            // First occurrence: ts = id * 1000
+            source_ids.push(id);
+            source_values.push(id as f64 * 10.0);
+            source_ts.push(id as i64 * 1000);
+
+            // Second occurrence: ts = id * 1000 + 500 (this should be kept for descending)
+            source_ids.push(id);
+            source_values.push(id as f64 * 10.0 + 0.5);
+            source_ts.push(id as i64 * 1000 + 500);
+
+            // Third occurrence: ts = id * 1000 - 200
+            source_ids.push(id);
+            source_values.push(id as f64 * 10.0 + 0.1);
+            source_ts.push(id as i64 * 1000 - 200);
+        }
+
+        let new_data = RecordBatch::try_new(
+            data.schema(),
+            vec![
+                Arc::new(Int32Array::from(source_ids)),
+                Arc::new(Float64Array::from(source_values)),
+                Arc::new(Int64Array::from(source_ts)),
+            ],
+        )
+        .unwrap();
+
+        let (merged_dataset, stats) =
+            MergeInsertBuilder::try_new(dataset.into(), vec!["id".into()])
+                .unwrap()
+                .when_matched(WhenMatched::UpdateAll)
+                .when_not_matched(WhenNotMatched::InsertAll)
+                .dedupe_by("ts")
+                .dedupe_ordering(DedupeOrdering::Descending)
+                .try_build()
+                .unwrap()
+                .execute_reader(Box::new(RecordBatchIterator::new(
+                    vec![Ok(new_data.clone())],
+                    new_data.schema(),
+                )))
+                .await
+                .unwrap();
+
+        assert_eq!(stats.num_inserted_rows, 0);
+        assert_eq!(stats.num_updated_rows, 500); // ids 1-500 updated
+
+        let result = merged_dataset
+            .scan()
+            .order_by(Some(vec![ColumnOrdering::asc_nulls_first(
+                "id".to_string(),
+            )]))
+            .unwrap()
+            .try_into_batch()
+            .await
+            .unwrap();
+
+        // Verify: ids 1-500 should have ts = id * 1000 + 500 (largest), value = id * 10.0 + 0.5
+        // ids 501-1000 should remain unchanged
+        let result_ids = result.column(0).as_primitive::<Int32Type>();
+        let result_values = result
+            .column(1)
+            .as_primitive::<arrow_array::types::Float64Type>();
+        let result_ts = result
+            .column(2)
+            .as_primitive::<arrow_array::types::Int64Type>();
+
+        for i in 0..result.num_rows() {
+            let id = result_ids.value(i);
+            if id <= 500 {
+                // Updated rows - should have the largest ts (id * 1000 + 500)
+                assert_eq!(
+                    result_ts.value(i),
+                    id as i64 * 1000 + 500,
+                    "id {} should have ts {}",
+                    id,
+                    id as i64 * 1000 + 500
+                );
+                assert!(
+                    (result_values.value(i) - (id as f64 * 10.0 + 0.5)).abs() < 0.001,
+                    "id {} should have value {}",
+                    id,
+                    id as f64 * 10.0 + 0.5
+                );
+            } else {
+                // Unchanged rows
+                assert_eq!(result_ts.value(i), id as i64 * 100);
+                assert!((result_values.value(i) - id as f64).abs() < 0.001);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dedupe_large_ascending() {
+        // Test ascending deduplication with large dataset to trigger multiple batches
+        let test_dir = TempStrDir::default();
+
+        // Create initial dataset with 1000 rows
+        let num_rows = 1000;
+        let ids: Vec<i32> = (1..=num_rows).collect();
+        let values: Vec<f64> = (1..=num_rows).map(|i| i as f64).collect();
+        let timestamps: Vec<i64> = (1..=num_rows).map(|i| i as i64 * 100).collect();
+
+        let data = RecordBatch::try_new(
+            Arc::new(arrow_schema::Schema::new(vec![
+                arrow_schema::Field::new("id", arrow_schema::DataType::Int32, false),
+                arrow_schema::Field::new("value", arrow_schema::DataType::Float64, false),
+                arrow_schema::Field::new("ts", arrow_schema::DataType::Int64, false),
+            ])),
+            vec![
+                Arc::new(Int32Array::from(ids.clone())),
+                Arc::new(Float64Array::from(values)),
+                Arc::new(Int64Array::from(timestamps)),
+            ],
+        )
+        .unwrap();
+
+        let dataset = InsertBuilder::new(test_dir.as_str())
+            .execute(vec![data.clone()])
+            .await
+            .unwrap();
+
+        // Source data with duplicates: each id from 1-500 appears 3 times with different ts values
+        // For ascending, the row with the smallest ts should be kept
+        let mut source_ids = Vec::new();
+        let mut source_values = Vec::new();
+        let mut source_ts = Vec::new();
+
+        for id in 1..=500 {
+            // First occurrence: ts = id * 1000
+            source_ids.push(id);
+            source_values.push(id as f64 * 10.0);
+            source_ts.push(id as i64 * 1000);
+
+            // Second occurrence: ts = id * 1000 + 500
+            source_ids.push(id);
+            source_values.push(id as f64 * 10.0 + 0.5);
+            source_ts.push(id as i64 * 1000 + 500);
+
+            // Third occurrence: ts = id * 1000 - 200 (this should be kept for ascending)
+            source_ids.push(id);
+            source_values.push(id as f64 * 10.0 + 0.1);
+            source_ts.push(id as i64 * 1000 - 200);
+        }
+
+        let new_data = RecordBatch::try_new(
+            data.schema(),
+            vec![
+                Arc::new(Int32Array::from(source_ids)),
+                Arc::new(Float64Array::from(source_values)),
+                Arc::new(Int64Array::from(source_ts)),
+            ],
+        )
+        .unwrap();
+
+        let (merged_dataset, stats) =
+            MergeInsertBuilder::try_new(dataset.into(), vec!["id".into()])
+                .unwrap()
+                .when_matched(WhenMatched::UpdateAll)
+                .when_not_matched(WhenNotMatched::InsertAll)
+                .dedupe_by("ts")
+                .dedupe_ordering(DedupeOrdering::Ascending)
+                .try_build()
+                .unwrap()
+                .execute_reader(Box::new(RecordBatchIterator::new(
+                    vec![Ok(new_data.clone())],
+                    new_data.schema(),
+                )))
+                .await
+                .unwrap();
+
+        assert_eq!(stats.num_inserted_rows, 0);
+        assert_eq!(stats.num_updated_rows, 500); // ids 1-500 updated
+
+        let result = merged_dataset
+            .scan()
+            .order_by(Some(vec![ColumnOrdering::asc_nulls_first(
+                "id".to_string(),
+            )]))
+            .unwrap()
+            .try_into_batch()
+            .await
+            .unwrap();
+
+        // Verify: ids 1-500 should have ts = id * 1000 - 200 (smallest), value = id * 10.0 + 0.1
+        // ids 501-1000 should remain unchanged
+        let result_ids = result.column(0).as_primitive::<Int32Type>();
+        let result_values = result
+            .column(1)
+            .as_primitive::<arrow_array::types::Float64Type>();
+        let result_ts = result
+            .column(2)
+            .as_primitive::<arrow_array::types::Int64Type>();
+
+        for i in 0..result.num_rows() {
+            let id = result_ids.value(i);
+            if id <= 500 {
+                // Updated rows - should have the smallest ts (id * 1000 - 200)
+                assert_eq!(
+                    result_ts.value(i),
+                    id as i64 * 1000 - 200,
+                    "id {} should have ts {}",
+                    id,
+                    id as i64 * 1000 - 200
+                );
+                assert!(
+                    (result_values.value(i) - (id as f64 * 10.0 + 0.1)).abs() < 0.001,
+                    "id {} should have value {}",
+                    id,
+                    id as f64 * 10.0 + 0.1
+                );
+            } else {
+                // Unchanged rows
+                assert_eq!(result_ts.value(i), id as i64 * 100);
+                assert!((result_values.value(i) - id as f64).abs() < 0.001);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dedupe_no_duplicates_large() {
+        // Test that deduplication works correctly when there are no duplicates
+        // Using large dataset to trigger multiple batches
+        let test_dir = TempStrDir::default();
+
+        // Create initial dataset with 1000 rows
+        let num_rows = 1000;
+        let ids: Vec<i32> = (1..=num_rows).collect();
+        let values: Vec<f64> = (1..=num_rows).map(|i| i as f64).collect();
+        let timestamps: Vec<i64> = (1..=num_rows).map(|i| i as i64 * 100).collect();
+
+        let data = RecordBatch::try_new(
+            Arc::new(arrow_schema::Schema::new(vec![
+                arrow_schema::Field::new("id", arrow_schema::DataType::Int32, false),
+                arrow_schema::Field::new("value", arrow_schema::DataType::Float64, false),
+                arrow_schema::Field::new("ts", arrow_schema::DataType::Int64, false),
+            ])),
+            vec![
+                Arc::new(Int32Array::from(ids)),
+                Arc::new(Float64Array::from(values)),
+                Arc::new(Int64Array::from(timestamps)),
+            ],
+        )
+        .unwrap();
+
+        let dataset = InsertBuilder::new(test_dir.as_str())
+            .execute(vec![data.clone()])
+            .await
+            .unwrap();
+
+        // Source data without duplicates: update ids 1-500, insert ids 1001-1500
+        let mut source_ids: Vec<i32> = (1..=500).collect();
+        source_ids.extend(1001..=1500);
+        let source_values: Vec<f64> = source_ids.iter().map(|&id| id as f64 * 10.0).collect();
+        let source_ts: Vec<i64> = source_ids.iter().map(|&id| id as i64 * 1000).collect();
+
+        let new_data = RecordBatch::try_new(
+            data.schema(),
+            vec![
+                Arc::new(Int32Array::from(source_ids)),
+                Arc::new(Float64Array::from(source_values)),
+                Arc::new(Int64Array::from(source_ts)),
+            ],
+        )
+        .unwrap();
+
+        // Test with ascending
+        let (merged_dataset, stats) =
+            MergeInsertBuilder::try_new(dataset.into(), vec!["id".into()])
+                .unwrap()
+                .when_matched(WhenMatched::UpdateAll)
+                .when_not_matched(WhenNotMatched::InsertAll)
+                .dedupe_by("ts")
+                .dedupe_ordering(DedupeOrdering::Ascending)
+                .try_build()
+                .unwrap()
+                .execute_reader(Box::new(RecordBatchIterator::new(
+                    vec![Ok(new_data.clone())],
+                    new_data.schema(),
+                )))
+                .await
+                .unwrap();
+
+        assert_eq!(stats.num_inserted_rows, 500); // ids 1001-1500
+        assert_eq!(stats.num_updated_rows, 500); // ids 1-500
+
+        let result = merged_dataset
+            .scan()
+            .order_by(Some(vec![ColumnOrdering::asc_nulls_first(
+                "id".to_string(),
+            )]))
+            .unwrap()
+            .try_into_batch()
+            .await
+            .unwrap();
+
+        assert_eq!(result.num_rows(), 1500); // 1000 original + 500 new
+
+        let result_ids = result.column(0).as_primitive::<Int32Type>();
+        let result_values = result
+            .column(1)
+            .as_primitive::<arrow_array::types::Float64Type>();
+        let result_ts = result
+            .column(2)
+            .as_primitive::<arrow_array::types::Int64Type>();
+
+        for i in 0..result.num_rows() {
+            let id = result_ids.value(i);
+            if id <= 500 {
+                // Updated rows
+                assert_eq!(result_ts.value(i), id as i64 * 1000);
+                assert!((result_values.value(i) - id as f64 * 10.0).abs() < 0.001);
+            } else if id <= 1000 {
+                // Unchanged rows
+                assert_eq!(result_ts.value(i), id as i64 * 100);
+                assert!((result_values.value(i) - id as f64).abs() < 0.001);
+            } else {
+                // Inserted rows
+                assert_eq!(result_ts.value(i), id as i64 * 1000);
+                assert!((result_values.value(i) - id as f64 * 10.0).abs() < 0.001);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dedupe_v1_path_unsupported() {
+        use arrow_array::record_batch;
+
+        // Test that dedupe_by returns NotSupported error when v1 path is used (e.g., with scalar index)
+        let test_dir = TempStrDir::default();
+
+        // Create initial dataset
+        let data = record_batch!(
+            ("id", Int32, [1, 2, 3]),
+            ("value", Float64, [1.0, 2.0, 3.0]),
+            ("ts", Int64, [100, 200, 300])
+        )
+        .unwrap();
+
+        let mut dataset = InsertBuilder::new(test_dir.as_str())
+            .execute(vec![data])
+            .await
+            .unwrap();
+
+        // Create a scalar index on id column - this forces the v1 path
+        let index_params = ScalarIndexParams::default();
+        dataset
+            .create_index(&["id"], IndexType::Scalar, None, &index_params, false)
+            .await
+            .unwrap();
+
+        // Source data with duplicates
+        let new_data = record_batch!(
+            ("id", Int32, [1, 1, 2]),
+            ("value", Float64, [10.0, 11.0, 20.0]),
+            ("ts", Int64, [150, 50, 180])
+        )
+        .unwrap();
+
+        // Try to use dedupe_by with scalar index - should fail
+        let result = MergeInsertBuilder::try_new(dataset.into(), vec!["id".into()])
+            .unwrap()
+            .when_matched(WhenMatched::UpdateAll)
+            .when_not_matched(WhenNotMatched::InsertAll)
+            .dedupe_by("ts")
+            .dedupe_ordering(DedupeOrdering::Ascending)
+            .try_build()
+            .unwrap()
+            .execute_reader(Box::new(RecordBatchIterator::new(
+                vec![Ok(new_data.clone())],
+                new_data.schema(),
+            )))
+            .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("NotSupported")
+                || err.to_string().contains("dedupe_by is only supported"),
+            "Expected NotSupported error, got: {}",
+            err
+        );
     }
 }

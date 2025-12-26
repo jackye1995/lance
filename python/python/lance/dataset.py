@@ -245,6 +245,60 @@ class MergeInsertBuilder(_MergeInsertBuilder):
         """
         return super(MergeInsertBuilder, self).use_index(use_index)
 
+    def dedupe_by(self, column: str) -> "MergeInsertBuilder":
+        """
+        Configure deduplication when source data has multiple rows with the same key.
+
+        When the source data contains duplicate keys, this setting determines which
+        row to keep based on the value of the specified column. Use with
+        `dedupe_ordering` to control whether to keep the row with the smallest
+        or largest value.
+
+        Parameters
+        ----------
+        column : str
+            The name of the column to use for comparing duplicate rows.
+            The row with the best value (based on dedupe_ordering) will be kept.
+
+        Returns
+        -------
+        MergeInsertBuilder
+            The builder instance for method chaining.
+
+        Examples
+        --------
+        Keep the row with the latest timestamp when duplicates exist::
+
+            builder.dedupe_by("timestamp").dedupe_ordering("descending")
+
+        Keep the row with the smallest version number when duplicates exist::
+
+            builder.dedupe_by("version").dedupe_ordering("ascending")
+        """
+        return super(MergeInsertBuilder, self).dedupe_by(column)
+
+    def dedupe_ordering(self, ordering: str = "ascending") -> "MergeInsertBuilder":
+        """
+        Set the ordering for deduplication.
+
+        When source data has duplicate keys and `dedupe_by` is set, this controls
+        which row to keep:
+        - "ascending" (default): Keep the row with the smallest value
+        - "descending": Keep the row with the largest value
+
+        Parameters
+        ----------
+        ordering : str, default "ascending"
+            Either "ascending" (or "asc") to keep the smallest value,
+            or "descending" (or "desc") to keep the largest value.
+
+        Returns
+        -------
+        MergeInsertBuilder
+            The builder instance for method chaining.
+        """
+        return super(MergeInsertBuilder, self).dedupe_ordering(ordering)
+
     def explain_plan(
         self, schema: Optional[pa.Schema] = None, verbose: bool = False
     ) -> str:

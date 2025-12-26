@@ -36,6 +36,9 @@ public class MergeInsertParams {
   private long retryTimeoutMs = 30 * 1000;
   private boolean skipAutoCleanup = false;
 
+  private Optional<String> dedupeBy = Optional.empty();
+  private DedupeOrdering dedupeOrdering = DedupeOrdering.Ascending;
+
   public MergeInsertParams(List<String> on) {
     this.on = on;
   }
@@ -262,6 +265,54 @@ public class MergeInsertParams {
     return skipAutoCleanup;
   }
 
+  /**
+   * Configure deduplication when source data has multiple rows with the same key.
+   *
+   * <p>When the source data contains duplicate keys, this setting determines which row to keep
+   * based on the value of the specified column. Use with {@link #withDedupeOrdering} to control
+   * whether to keep the row with the smallest or largest value.
+   *
+   * @param column The name of the column to use for comparing duplicate rows.
+   * @return This MergeInsertParams instance
+   */
+  public MergeInsertParams withDedupeBy(String column) {
+    Preconditions.checkNotNull(column);
+    this.dedupeBy = Optional.of(column);
+    return this;
+  }
+
+  /**
+   * Set the ordering for deduplication.
+   *
+   * <p>When source data has duplicate keys and {@link #withDedupeBy} is set, this controls which
+   * row to keep:
+   *
+   * <ul>
+   *   <li>{@link DedupeOrdering#Ascending} (default): Keep the row with the smallest value
+   *   <li>{@link DedupeOrdering#Descending}: Keep the row with the largest value
+   * </ul>
+   *
+   * @param ordering The ordering to use for deduplication.
+   * @return This MergeInsertParams instance
+   */
+  public MergeInsertParams withDedupeOrdering(DedupeOrdering ordering) {
+    Preconditions.checkNotNull(ordering);
+    this.dedupeOrdering = ordering;
+    return this;
+  }
+
+  public Optional<String> dedupeBy() {
+    return dedupeBy;
+  }
+
+  public DedupeOrdering dedupeOrdering() {
+    return dedupeOrdering;
+  }
+
+  public String dedupeOrderingValue() {
+    return dedupeOrdering.name();
+  }
+
   @Override
   public String toString() {
     return MoreObjects.toStringHelper(this)
@@ -279,7 +330,18 @@ public class MergeInsertParams {
         .add("conflictRetries", conflictRetries)
         .add("retryTimeoutMs", retryTimeoutMs)
         .add("skipAutoCleanup", skipAutoCleanup)
+        .add("dedupeBy", dedupeBy.orElse(null))
+        .add("dedupeOrdering", dedupeOrdering)
         .toString();
+  }
+
+  /** Ordering for deduplication when source data has duplicate keys. */
+  public enum DedupeOrdering {
+    /** Keep the row with the smallest dedupe column value. */
+    Ascending,
+
+    /** Keep the row with the largest dedupe column value. */
+    Descending,
   }
 
   public enum WhenMatched {

@@ -46,9 +46,10 @@ use lance::dataset::{
     progress::WriteFragmentProgress,
     scanner::Scanner as LanceScanner,
     transaction::{Operation, Transaction},
-    Dataset as LanceDataset, DeleteBuilder, MergeInsertBuilder as LanceMergeInsertBuilder,
-    ReadParams, UncommittedMergeInsert, UpdateBuilder, Version, WhenMatched, WhenNotMatched,
-    WhenNotMatchedBySource, WriteMode, WriteParams,
+    Dataset as LanceDataset, DeleteBuilder, DedupeOrdering,
+    MergeInsertBuilder as LanceMergeInsertBuilder, ReadParams, UncommittedMergeInsert,
+    UpdateBuilder, Version, WhenMatched, WhenNotMatched, WhenNotMatchedBySource, WriteMode,
+    WriteParams,
 };
 use lance::dataset::{
     BatchInfo, BatchUDF, CommitBuilder, MergeStats, NewColumnTransform, UDFCheckpointStore,
@@ -225,6 +226,39 @@ impl MergeInsertBuilder {
 
     pub fn use_index(mut slf: PyRefMut<'_, Self>, use_index: bool) -> PyResult<PyRefMut<'_, Self>> {
         slf.builder.use_index(use_index);
+        Ok(slf)
+    }
+
+    /// Set the column to use for deduplication when source has duplicate keys.
+    ///
+    /// When the source data contains multiple rows with the same key, this column
+    /// determines which row to keep based on the dedupe_ordering.
+    pub fn dedupe_by(
+        mut slf: PyRefMut<'_, Self>,
+        column: &str,
+    ) -> PyResult<PyRefMut<'_, Self>> {
+        slf.builder.dedupe_by(column);
+        Ok(slf)
+    }
+
+    /// Set the ordering for deduplication: "ascending" keeps the smallest value,
+    /// "descending" keeps the largest value.
+    #[pyo3(signature=(ordering = "ascending"))]
+    pub fn dedupe_ordering(
+        mut slf: PyRefMut<'_, Self>,
+        ordering: &str,
+    ) -> PyResult<PyRefMut<'_, Self>> {
+        let ordering = match ordering.to_lowercase().as_str() {
+            "ascending" | "asc" => DedupeOrdering::Ascending,
+            "descending" | "desc" => DedupeOrdering::Descending,
+            _ => {
+                return Err(PyValueError::new_err(format!(
+                    "Invalid dedupe_ordering: '{}'. Must be 'ascending' or 'descending'",
+                    ordering
+                )))
+            }
+        };
+        slf.builder.dedupe_ordering(ordering);
         Ok(slf)
     }
 

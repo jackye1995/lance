@@ -19,12 +19,15 @@ import org.lance.merge.MergeInsertResult;
 import org.apache.arrow.c.ArrowArrayStream;
 import org.apache.arrow.c.Data;
 import org.apache.arrow.memory.RootAllocator;
+import org.apache.arrow.vector.BigIntVector;
 import org.apache.arrow.vector.IntVector;
 import org.apache.arrow.vector.VarCharVector;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.ipc.ArrowReader;
 import org.apache.arrow.vector.ipc.ArrowStreamReader;
 import org.apache.arrow.vector.ipc.ArrowStreamWriter;
+import org.apache.arrow.vector.types.pojo.ArrowType;
+import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
@@ -267,6 +270,186 @@ public class MergeInsertTest {
           IntVector idVector = (IntVector) batch.getVector("id");
           VarCharVector nameVector = (VarCharVector) batch.getVector("name");
           map.put(idVector.get(i), new String(nameVector.get(i)));
+        }
+      }
+
+      return map;
+    }
+  }
+
+  @Test
+  public void testDedupeAscending() throws Exception {
+    // Test dedupe_by with ascending ordering keeps the smallest value
+
+    // Create a dataset with id, value, ts columns
+    Schema schemaWithTs =
+        new Schema(
+            Arrays.asList(
+                Field.nullable("id", new ArrowType.Int(32, true)),
+                Field.nullable(
+                    "value", new ArrowType.FloatingPoint(ArrowType.FloatingPoint.Precision.DOUBLE)),
+                Field.nullable("ts", new ArrowType.Int(64, true))));
+
+    String datasetPath = tempDir.resolve("dedupe_test_asc").toString();
+
+    // Create initial dataset
+    try (VectorSchemaRoot root = VectorSchemaRoot.create(schemaWithTs, allocator)) {
+      root.allocateNew();
+      IntVector idVector = (IntVector) root.getVector("id");
+      org.apache.arrow.vector.Float8Vector valueVector =
+          (org.apache.arrow.vector.Float8Vector) root.getVector("value");
+      BigIntVector tsVector = (BigIntVector) root.getVector("ts");
+
+      int[] ids = {1, 2, 3};
+      double[] values = {1.0, 2.0, 3.0};
+      long[] timestamps = {100, 200, 300};
+
+      for (int i = 0; i < ids.length; i++) {
+        idVector.setSafe(i, ids[i]);
+        valueVector.setSafe(i, values[i]);
+        tsVector.setSafe(i, timestamps[i]);
+      }
+      root.setRowCount(ids.length);
+
+      try (ArrowArrayStream stream = convertToStream(root, allocator)) {
+        Dataset.create(allocator, datasetPath, stream, new WriteParams.Builder().build()).close();
+      }
+    }
+
+    // Source data with duplicates:
+    // id=1: ts=150 and ts=50 -> should keep ts=50 (ascending)
+    // id=2: ts=180 and ts=250 -> should keep ts=180 (ascending)
+    try (Dataset ds = Dataset.open(datasetPath, allocator)) {
+      try (VectorSchemaRoot source = VectorSchemaRoot.create(schemaWithTs, allocator)) {
+        source.allocateNew();
+        IntVector idVector = (IntVector) source.getVector("id");
+        org.apache.arrow.vector.Float8Vector valueVector =
+            (org.apache.arrow.vector.Float8Vector) source.getVector("value");
+        BigIntVector tsVector = (BigIntVector) source.getVector("ts");
+
+        int[] ids = {1, 1, 2, 2};
+        double[] values = {10.0, 11.0, 20.0, 21.0};
+        long[] timestamps = {150, 50, 180, 250};
+
+        for (int i = 0; i < ids.length; i++) {
+          idVector.setSafe(i, ids[i]);
+          valueVector.setSafe(i, values[i]);
+          tsVector.setSafe(i, timestamps[i]);
+        }
+        source.setRowCount(ids.length);
+
+        try (ArrowArrayStream sourceStream = convertToStream(source, allocator)) {
+          MergeInsertResult result =
+              ds.mergeInsert(
+                  new MergeInsertParams(Collections.singletonList("id"))
+                      .withMatchedUpdateAll()
+                      .withDedupeBy("ts")
+                      .withDedupeOrdering(MergeInsertParams.DedupeOrdering.Ascending),
+                  sourceStream);
+
+          Assertions.assertEquals(2, result.stats().numUpdatedRows());
+
+          // Verify results - should have ts=50 for id=1 and ts=180 for id=2
+          TreeMap<Integer, Long> tsMap = readAllWithTs(result.dataset());
+          Assertions.assertEquals(50L, tsMap.get(1));
+          Assertions.assertEquals(180L, tsMap.get(2));
+          Assertions.assertEquals(300L, tsMap.get(3)); // unchanged
+        }
+      }
+    }
+  }
+
+  @Test
+  public void testDedupeDescending() throws Exception {
+    // Test dedupe_by with descending ordering keeps the largest value
+
+    Schema schemaWithTs =
+        new Schema(
+            Arrays.asList(
+                Field.nullable("id", new ArrowType.Int(32, true)),
+                Field.nullable(
+                    "value", new ArrowType.FloatingPoint(ArrowType.FloatingPoint.Precision.DOUBLE)),
+                Field.nullable("ts", new ArrowType.Int(64, true))));
+
+    String datasetPath = tempDir.resolve("dedupe_test_desc").toString();
+
+    // Create initial dataset
+    try (VectorSchemaRoot root = VectorSchemaRoot.create(schemaWithTs, allocator)) {
+      root.allocateNew();
+      IntVector idVector = (IntVector) root.getVector("id");
+      org.apache.arrow.vector.Float8Vector valueVector =
+          (org.apache.arrow.vector.Float8Vector) root.getVector("value");
+      BigIntVector tsVector = (BigIntVector) root.getVector("ts");
+
+      int[] ids = {1, 2, 3};
+      double[] values = {1.0, 2.0, 3.0};
+      long[] timestamps = {100, 200, 300};
+
+      for (int i = 0; i < ids.length; i++) {
+        idVector.setSafe(i, ids[i]);
+        valueVector.setSafe(i, values[i]);
+        tsVector.setSafe(i, timestamps[i]);
+      }
+      root.setRowCount(ids.length);
+
+      try (ArrowArrayStream stream = convertToStream(root, allocator)) {
+        Dataset.create(allocator, datasetPath, stream, new WriteParams.Builder().build()).close();
+      }
+    }
+
+    // Source data with duplicates:
+    // id=1: ts=150 and ts=50 -> should keep ts=150 (descending)
+    // id=2: ts=180 and ts=250 -> should keep ts=250 (descending)
+    try (Dataset ds = Dataset.open(datasetPath, allocator)) {
+      try (VectorSchemaRoot source = VectorSchemaRoot.create(schemaWithTs, allocator)) {
+        source.allocateNew();
+        IntVector idVector = (IntVector) source.getVector("id");
+        org.apache.arrow.vector.Float8Vector valueVector =
+            (org.apache.arrow.vector.Float8Vector) source.getVector("value");
+        BigIntVector tsVector = (BigIntVector) source.getVector("ts");
+
+        int[] ids = {1, 1, 2, 2};
+        double[] values = {10.0, 11.0, 20.0, 21.0};
+        long[] timestamps = {150, 50, 180, 250};
+
+        for (int i = 0; i < ids.length; i++) {
+          idVector.setSafe(i, ids[i]);
+          valueVector.setSafe(i, values[i]);
+          tsVector.setSafe(i, timestamps[i]);
+        }
+        source.setRowCount(ids.length);
+
+        try (ArrowArrayStream sourceStream = convertToStream(source, allocator)) {
+          MergeInsertResult result =
+              ds.mergeInsert(
+                  new MergeInsertParams(Collections.singletonList("id"))
+                      .withMatchedUpdateAll()
+                      .withDedupeBy("ts")
+                      .withDedupeOrdering(MergeInsertParams.DedupeOrdering.Descending),
+                  sourceStream);
+
+          Assertions.assertEquals(2, result.stats().numUpdatedRows());
+
+          // Verify results - should have ts=150 for id=1 and ts=250 for id=2
+          TreeMap<Integer, Long> tsMap = readAllWithTs(result.dataset());
+          Assertions.assertEquals(150L, tsMap.get(1));
+          Assertions.assertEquals(250L, tsMap.get(2));
+          Assertions.assertEquals(300L, tsMap.get(3)); // unchanged
+        }
+      }
+    }
+  }
+
+  private TreeMap<Integer, Long> readAllWithTs(Dataset dataset) throws Exception {
+    try (ArrowReader reader = dataset.newScan().scanBatches()) {
+      TreeMap<Integer, Long> map = new TreeMap<>();
+
+      while (reader.loadNextBatch()) {
+        VectorSchemaRoot batch = reader.getVectorSchemaRoot();
+        for (int i = 0; i < batch.getRowCount(); i++) {
+          IntVector idVector = (IntVector) batch.getVector("id");
+          BigIntVector tsVector = (BigIntVector) batch.getVector("ts");
+          map.put(idVector.get(i), tsVector.get(i));
         }
       }
 

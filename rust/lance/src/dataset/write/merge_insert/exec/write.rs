@@ -9,6 +9,7 @@ use arrow_schema::Schema;
 use arrow_select;
 use datafusion::common::Result as DFResult;
 use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
+use datafusion::scalar::ScalarValue;
 use datafusion::{
     execution::{SendableRecordBatchStream, TaskContext},
     physical_plan::{
@@ -24,7 +25,7 @@ use roaring::RoaringTreemap;
 use crate::dataset::transaction::UpdateMode::RewriteRows;
 use crate::dataset::utils::CapturedRowIds;
 use crate::dataset::write::merge_insert::{
-    create_duplicate_row_error, format_key_values_on_columns,
+    create_duplicate_row_error, format_key_values_on_columns, DedupeOrdering,
 };
 use crate::{
     dataset::{
@@ -44,6 +45,18 @@ use lance_table::format::{Fragment, RowIdMeta};
 use snafu::location;
 use std::collections::BTreeMap;
 
+/// Accumulated update row position for running deduplication
+struct AccumulatedUpdate {
+    /// The dedupe column value for this row
+    dedupe_value: ScalarValue,
+    /// The row address of the target row
+    row_addr: u64,
+    /// Index of the batch in buffered_batches
+    batch_idx: usize,
+    /// Row index within the batch
+    row_idx: usize,
+}
+
 /// Shared state for merge insert operations to simplify lock management
 struct MergeState {
     /// Row addresses that need to be deleted, due to a row update or delete action
@@ -58,10 +71,29 @@ struct MergeState {
     processed_row_ids: HashSet<u64>,
     /// The "on" column names for merge operation
     on_columns: Vec<String>,
+    /// Dedupe column name (if configured)
+    dedupe_by: Option<String>,
+    /// Dedupe ordering
+    dedupe_ordering: DedupeOrdering,
+    /// Column index of dedupe_by in the batch schema (lazily computed)
+    dedupe_col_idx: Option<usize>,
+    /// Accumulated best rows for deduplication: row_id -> AccumulatedUpdate
+    accumulated_updates: BTreeMap<u64, AccumulatedUpdate>,
+    /// Buffered batches for dedupe mode (contains only data columns, indexed by batch_idx)
+    /// Uses Option to allow clearing batches that are no longer referenced
+    buffered_batches: Vec<Option<RecordBatch>>,
+    /// Reference counts for each buffered batch
+    batch_ref_counts: Vec<usize>,
 }
 
 impl MergeState {
-    fn new(metrics: MergeInsertMetrics, stable_row_ids: bool, on_columns: Vec<String>) -> Self {
+    fn new(
+        metrics: MergeInsertMetrics,
+        stable_row_ids: bool,
+        on_columns: Vec<String>,
+        dedupe_by: Option<String>,
+        dedupe_ordering: DedupeOrdering,
+    ) -> Self {
         Self {
             delete_row_addrs: RoaringTreemap::new(),
             updating_row_ids: Arc::new(Mutex::new(CapturedRowIds::new(stable_row_ids))),
@@ -69,10 +101,45 @@ impl MergeState {
             stable_row_ids,
             processed_row_ids: HashSet::new(),
             on_columns,
+            dedupe_by,
+            dedupe_ordering,
+            dedupe_col_idx: None,
+            accumulated_updates: BTreeMap::new(),
+            buffered_batches: Vec::new(),
+            batch_ref_counts: Vec::new(),
+        }
+    }
+
+    /// Check if the new value is better than the existing value based on dedupe_ordering
+    fn is_better_value(&self, new: &ScalarValue, existing: &ScalarValue) -> bool {
+        match self.dedupe_ordering {
+            DedupeOrdering::Ascending => new < existing,
+            DedupeOrdering::Descending => new > existing,
+        }
+    }
+
+    /// Resolve the dedupe column index from the batch schema (lazily)
+    fn resolve_dedupe_col_idx(&mut self, batch: &RecordBatch) -> Option<usize> {
+        if self.dedupe_col_idx.is_some() {
+            return self.dedupe_col_idx;
+        }
+
+        if let Some(ref col_name) = self.dedupe_by {
+            // Try to find the column - it may be qualified with "source." prefix
+            let idx = batch.schema().index_of(col_name).ok().or_else(|| {
+                let qualified_name = format!("source.{}", col_name);
+                batch.schema().index_of(&qualified_name).ok()
+            });
+            self.dedupe_col_idx = idx;
+            idx
+        } else {
+            None
         }
     }
 
     /// Process a single row based on its action, updating internal state
+    ///
+    /// For dedupe mode, `batch_idx` must be provided (the index in buffered_batches).
     fn process_row_action(
         &mut self,
         action: Action,
@@ -80,6 +147,7 @@ impl MergeState {
         row_addr_array: &UInt64Array,
         row_id_array: &UInt64Array,
         batch: &RecordBatch,
+        batch_idx: Option<usize>,
     ) -> DFResult<Option<usize>> {
         match action {
             Action::Delete => {
@@ -96,6 +164,65 @@ impl MergeState {
                 if !row_addr_array.is_null(row_idx) {
                     let row_addr = row_addr_array.value(row_idx);
                     let row_id = row_id_array.value(row_idx);
+
+                    if self.dedupe_by.is_some() {
+                        // Running deduplication mode
+                        let dedupe_col_idx = self.dedupe_col_idx.ok_or_else(|| {
+                            datafusion::error::DataFusionError::Internal(format!(
+                                "dedupe_by column '{}' not found in batch schema",
+                                self.dedupe_by.as_ref().unwrap()
+                            ))
+                        })?;
+
+                        let dedupe_value =
+                            ScalarValue::try_from_array(batch.column(dedupe_col_idx), row_idx)?;
+
+                        let new_batch_idx = batch_idx.ok_or_else(|| {
+                            datafusion::error::DataFusionError::Internal(
+                                "batch_idx required for dedupe mode".to_string(),
+                            )
+                        })?;
+
+                        let should_use_new = match self.accumulated_updates.get(&row_id) {
+                            None => true,
+                            Some(existing) => {
+                                self.is_better_value(&dedupe_value, &existing.dedupe_value)
+                            }
+                        };
+
+                        if should_use_new {
+                            // Handle ref counting when replacing an existing entry
+                            if let Some(old) = self.accumulated_updates.get(&row_id) {
+                                let old_batch_idx = old.batch_idx;
+                                if old_batch_idx != new_batch_idx {
+                                    // Only adjust ref counts when switching batches
+                                    self.batch_ref_counts[old_batch_idx] -= 1;
+                                    // Clear batch if no longer referenced
+                                    if self.batch_ref_counts[old_batch_idx] == 0 {
+                                        self.buffered_batches[old_batch_idx] = None;
+                                    }
+                                    self.batch_ref_counts[new_batch_idx] += 1;
+                                }
+                                // If same batch, ref count stays the same
+                            } else {
+                                // New entry, increment ref count
+                                self.batch_ref_counts[new_batch_idx] += 1;
+                            }
+
+                            self.accumulated_updates.insert(
+                                row_id,
+                                AccumulatedUpdate {
+                                    dedupe_value,
+                                    row_addr,
+                                    batch_idx: new_batch_idx,
+                                    row_idx,
+                                },
+                            );
+                        }
+
+                        // In dedupe mode, we return None here and process accumulated rows later
+                        return Ok(None);
+                    }
 
                     // Check for duplicate _rowid in the current merge operation
                     if !self.processed_row_ids.insert(row_id) {
@@ -130,6 +257,85 @@ impl MergeState {
                 )))
             }
         }
+    }
+
+    /// Finalize the accumulated updates after all batches have been processed.
+    /// Returns a RecordBatch containing all the deduplicated rows to write.
+    fn finalize_dedupe(&mut self, output_schema: &Arc<Schema>) -> DFResult<Option<RecordBatch>> {
+        if self.accumulated_updates.is_empty() {
+            return Ok(None);
+        }
+
+        // Group accumulated updates by batch_idx for efficient extraction
+        let mut batch_rows: BTreeMap<usize, Vec<(u64, u64, usize)>> = BTreeMap::new(); // batch_idx -> [(row_id, row_addr, row_idx)]
+        for (row_id, acc) in std::mem::take(&mut self.accumulated_updates) {
+            batch_rows
+                .entry(acc.batch_idx)
+                .or_default()
+                .push((row_id, acc.row_addr, acc.row_idx));
+        }
+
+        let mut result_batches: Vec<RecordBatch> = Vec::new();
+
+        for (batch_idx, rows) in batch_rows {
+            let buffered_batch = self.buffered_batches[batch_idx].as_ref().ok_or_else(|| {
+                datafusion::error::DataFusionError::Internal(format!(
+                    "Buffered batch {} was unexpectedly cleared",
+                    batch_idx
+                ))
+            })?;
+
+            // Update state for each row
+            for (row_id, row_addr, _) in &rows {
+                self.delete_row_addrs.insert(*row_addr);
+                self.metrics.num_updated_rows.add(1);
+                if self.stable_row_ids {
+                    let _ = self.updating_row_ids.lock().unwrap().capture(&[*row_id]);
+                }
+            }
+
+            // Extract rows from this batch
+            let row_indices: Vec<u32> = rows.iter().map(|(_, _, idx)| *idx as u32).collect();
+            let indices = arrow_array::UInt32Array::from(row_indices);
+            let extracted = arrow_select::take::take_record_batch(buffered_batch, &indices)
+                .map_err(|e| datafusion::error::DataFusionError::ArrowError(Box::new(e), None))?;
+            result_batches.push(extracted);
+        }
+
+        // Concatenate all extracted batches
+        if result_batches.is_empty() {
+            Ok(None)
+        } else {
+            let concatenated = arrow_select::concat::concat_batches(output_schema, &result_batches)
+                .map_err(|e| datafusion::error::DataFusionError::ArrowError(Box::new(e), None))?;
+            Ok(Some(concatenated))
+        }
+    }
+
+    /// Check if running in dedupe mode
+    fn is_dedupe_mode(&self) -> bool {
+        self.dedupe_by.is_some()
+    }
+
+    /// Buffer a batch with only data columns for deduplication.
+    /// Returns the batch index in buffered_batches.
+    fn buffer_data_batch(
+        &mut self,
+        batch: &RecordBatch,
+        data_column_indices: &[usize],
+        output_schema: &Arc<Schema>,
+    ) -> DFResult<usize> {
+        // Create a batch with only data columns
+        let columns: Vec<_> = data_column_indices
+            .iter()
+            .map(|&idx| batch.column(idx).clone())
+            .collect();
+        let data_batch = RecordBatch::try_new(output_schema.clone(), columns)
+            .map_err(|e| datafusion::error::DataFusionError::ArrowError(Box::new(e), None))?;
+        let batch_idx = self.buffered_batches.len();
+        self.buffered_batches.push(Some(data_batch));
+        self.batch_ref_counts.push(0); // Will be incremented when referenced
+        Ok(batch_idx)
     }
 }
 
@@ -227,6 +433,8 @@ impl FullSchemaMergeInsertExec {
     ///
     /// It processes batches one at a time as they arrive from the input stream,
     /// immediately filtering and transforming each batch without buffering.
+    ///
+    /// For dedupe mode, accumulated UpdateAll rows are emitted at the end of the stream.
     fn create_streaming_write_stream(
         &self,
         input_stream: SendableRecordBatchStream,
@@ -235,8 +443,30 @@ impl FullSchemaMergeInsertExec {
         let (_, rowaddr_idx, rowid_idx, action_idx, data_column_indices, output_schema) =
             self.prepare_stream_schema(input_stream.schema())?;
 
+        // Check if we're in dedupe mode and resolve the dedupe column index
+        let is_dedupe_mode = {
+            let mut state = merge_state.lock().map_err(|e| {
+                datafusion::error::DataFusionError::Internal(format!(
+                    "Failed to lock merge state: {}",
+                    e
+                ))
+            })?;
+            if state.is_dedupe_mode() {
+                // Resolve the dedupe column index from the input schema
+                // The dedupe column should be in the source columns
+                let input_schema = input_stream.schema();
+                state.resolve_dedupe_col_idx(&RecordBatch::new_empty(input_schema));
+                true
+            } else {
+                false
+            }
+        };
+
         let output_schema_clone = output_schema.clone();
-        let stream = input_stream.map(move |batch_result| -> DFResult<RecordBatch> {
+        let data_column_indices_clone = data_column_indices;
+        let merge_state_clone = merge_state.clone();
+
+        let main_stream = input_stream.map(move |batch_result| -> DFResult<RecordBatch> {
             let batch = batch_result?;
             let (row_addr_array, row_id_array, action_array) =
                 Self::extract_control_arrays(&batch, rowaddr_idx, rowid_idx, action_idx)?;
@@ -244,12 +474,28 @@ impl FullSchemaMergeInsertExec {
             // Process each row using the shared state
             let mut keep_rows: Vec<u32> = Vec::with_capacity(batch.num_rows());
 
-            let mut merge_state = merge_state.lock().map_err(|e| {
+            let mut merge_state = merge_state_clone.lock().map_err(|e| {
                 datafusion::error::DataFusionError::Internal(format!(
                     "Failed to lock merge state: {}",
                     e
                 ))
             })?;
+
+            // Resolve dedupe column index on first batch with data (if not already done)
+            if merge_state.is_dedupe_mode() && merge_state.dedupe_col_idx.is_none() {
+                merge_state.resolve_dedupe_col_idx(&batch);
+            }
+
+            // In dedupe mode, buffer the data columns from this batch
+            let batch_idx = if merge_state.is_dedupe_mode() {
+                Some(merge_state.buffer_data_batch(
+                    &batch,
+                    &data_column_indices_clone,
+                    &output_schema_clone,
+                )?)
+            } else {
+                None
+            };
 
             for row_idx in 0..batch.num_rows() {
                 let action_code = action_array.value(row_idx);
@@ -261,7 +507,14 @@ impl FullSchemaMergeInsertExec {
                 })?;
 
                 if merge_state
-                    .process_row_action(action, row_idx, row_addr_array, row_id_array, &batch)?
+                    .process_row_action(
+                        action,
+                        row_idx,
+                        row_addr_array,
+                        row_id_array,
+                        &batch,
+                        batch_idx,
+                    )?
                     .is_some()
                 {
                     keep_rows.push(row_idx as u32);
@@ -271,15 +524,41 @@ impl FullSchemaMergeInsertExec {
             Self::create_filtered_batch(
                 &batch,
                 keep_rows,
-                &data_column_indices,
+                &data_column_indices_clone,
                 output_schema_clone.clone(),
             )
         });
 
-        Ok(Box::pin(RecordBatchStreamAdapter::new(
-            output_schema,
-            stream,
-        )))
+        if is_dedupe_mode {
+            // In dedupe mode, chain a finalization stream to emit accumulated rows
+            let output_schema_for_finalize = output_schema.clone();
+            let finalize_stream = stream::once(async move {
+                let mut state = merge_state.lock().map_err(|e| {
+                    datafusion::error::DataFusionError::Internal(format!(
+                        "Failed to lock merge state for finalization: {}",
+                        e
+                    ))
+                })?;
+                state.finalize_dedupe(&output_schema_for_finalize)
+            })
+            .filter_map(|result| async {
+                match result {
+                    Ok(Some(batch)) => Some(Ok(batch)),
+                    Ok(None) => None,
+                    Err(e) => Some(Err(e)),
+                }
+            });
+
+            Ok(Box::pin(RecordBatchStreamAdapter::new(
+                output_schema,
+                main_stream.chain(finalize_stream),
+            )))
+        } else {
+            Ok(Box::pin(RecordBatchStreamAdapter::new(
+                output_schema,
+                main_stream,
+            )))
+        }
     }
 
     /// Creates an ordered update-insert stream ensuring updated data before inserted data.
@@ -622,6 +901,18 @@ impl FullSchemaMergeInsertExec {
                 ))
             })?;
 
+            // Resolve dedupe column index on first batch if in dedupe mode
+            if merge_state.is_dedupe_mode() && merge_state.dedupe_col_idx.is_none() {
+                merge_state.resolve_dedupe_col_idx(batch);
+            }
+
+            // In dedupe mode, buffer the data columns from this batch
+            let batch_idx = if merge_state.is_dedupe_mode() {
+                Some(merge_state.buffer_data_batch(batch, data_column_indices, &output_schema)?)
+            } else {
+                None
+            };
+
             for row_idx in 0..batch.num_rows() {
                 let action_code = action_array.value(row_idx);
                 let action = Action::try_from(action_code).map_err(|e| {
@@ -632,7 +923,14 @@ impl FullSchemaMergeInsertExec {
                 })?;
 
                 if merge_state
-                    .process_row_action(action, row_idx, row_addr_array, row_id_array, batch)?
+                    .process_row_action(
+                        action,
+                        row_idx,
+                        row_addr_array,
+                        row_id_array,
+                        batch,
+                        batch_idx,
+                    )?
                     .is_some()
                 {
                     match action {
@@ -809,6 +1107,8 @@ impl ExecutionPlan for FullSchemaMergeInsertExec {
             MergeInsertMetrics::new(&self.metrics, partition),
             self.dataset.manifest.uses_stable_row_ids(),
             self.params.on.clone(),
+            self.params.dedupe_by.clone(),
+            self.params.dedupe_ordering,
         )));
         let write_data_stream =
             self.create_filtered_write_stream(input_stream, merge_state.clone())?;
@@ -939,7 +1239,13 @@ mod tests {
     #[test]
     fn test_merge_state_duplicate_rowid_detection() {
         let metrics = MergeInsertMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
-        let mut merge_state = MergeState::new(metrics, false, Vec::new());
+        let mut merge_state = MergeState::new(
+            metrics,
+            false,
+            Vec::new(),
+            None,                      // no dedupe_by
+            DedupeOrdering::default(), // default ordering
+        );
 
         let row_addr_array = UInt64Array::from(vec![1000, 2000, 3000]);
         let row_id_array = UInt64Array::from(vec![100, 100, 300]); // Duplicate row_id 100
@@ -950,6 +1256,7 @@ mod tests {
             &row_addr_array,
             &row_id_array,
             &RecordBatch::new_empty(Arc::new(arrow_schema::Schema::empty())),
+            None, // no batch_idx for non-dedupe mode
         );
         assert!(result1.is_ok(), "First call should succeed");
 
@@ -959,6 +1266,7 @@ mod tests {
             &row_addr_array,
             &row_id_array,
             &RecordBatch::new_empty(Arc::new(arrow_schema::Schema::empty())),
+            None,
         );
         assert!(
             result2.is_err(),
@@ -979,6 +1287,7 @@ mod tests {
             &row_addr_array,
             &row_id_array,
             &RecordBatch::new_empty(Arc::new(arrow_schema::Schema::empty())),
+            None,
         );
         assert!(
             result3.is_ok(),

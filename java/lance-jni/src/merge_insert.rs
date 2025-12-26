@@ -11,7 +11,8 @@ use jni::sys::jlong;
 use jni::JNIEnv;
 use lance::dataset::scanner::ExprFilter;
 use lance::dataset::{
-    MergeInsertBuilder, MergeStats, WhenMatched, WhenNotMatched, WhenNotMatchedBySource,
+    DedupeOrdering, MergeInsertBuilder, MergeStats, WhenMatched, WhenNotMatched,
+    WhenNotMatchedBySource,
 };
 use lance_core::datatypes::Schema;
 use std::sync::Arc;
@@ -48,6 +49,8 @@ fn inner_merge_insert<'local>(
     let conflict_retries = extract_conflict_retries(env, &jparam)?;
     let retry_timeout_ms = extract_retry_timeout_ms(env, &jparam)?;
     let skip_auto_cleanup = extract_skip_auto_cleanup(env, &jparam)?;
+    let dedupe_by = extract_dedupe_by(env, &jparam)?;
+    let dedupe_ordering = extract_dedupe_ordering(env, &jparam)?;
 
     let (new_ds, merge_stats) = unsafe {
         let dataset = env.get_rust_field::<_, _, BlockingDataset>(jdataset, NATIVE_DATASET)?;
@@ -58,14 +61,21 @@ fn inner_merge_insert<'local>(
             when_not_matched_by_source_delete_expr,
         )?;
 
-        let merge_insert_job = MergeInsertBuilder::try_new(Arc::new(dataset.clone().inner), on)?
+        let mut builder = MergeInsertBuilder::try_new(Arc::new(dataset.clone().inner), on)?;
+        builder
             .when_matched(when_matched)
             .when_not_matched(when_not_matched)
             .when_not_matched_by_source(when_not_matched_by_source)
             .conflict_retries(conflict_retries)
-            .retry_timeout(Duration::from_millis(retry_timeout_ms as u64))
+            .retry_timeout(Duration::from_millis(retry_timeout_ms))
             .skip_auto_cleanup(skip_auto_cleanup)
-            .try_build()?;
+            .dedupe_ordering(dedupe_ordering);
+
+        if let Some(column) = dedupe_by {
+            builder.dedupe_by(column);
+        }
+
+        let merge_insert_job = builder.try_build()?;
 
         let stream_ptr = batch_address as *mut FFI_ArrowArrayStream;
         let source_stream = ArrowArrayStreamReader::from_raw(stream_ptr)?;
@@ -226,6 +236,32 @@ fn extract_skip_auto_cleanup<'local>(env: &mut JNIEnv<'local>, jparam: &JObject)
         .call_method(jparam, "skipAutoCleanup", "()Z", &[])?
         .z()?;
     Ok(skip_auto_cleanup)
+}
+
+fn extract_dedupe_by<'local>(env: &mut JNIEnv<'local>, jparam: &JObject) -> Result<Option<String>> {
+    let dedupe_by = env
+        .call_method(jparam, "dedupeBy", "()Ljava/util/Optional;", &[])?
+        .l()?;
+    env.get_string_opt(&dedupe_by)
+}
+
+fn extract_dedupe_ordering<'local>(
+    env: &mut JNIEnv<'local>,
+    jparam: &JObject,
+) -> Result<DedupeOrdering> {
+    let ordering: JString = env
+        .call_method(jparam, "dedupeOrderingValue", "()Ljava/lang/String;", &[])?
+        .l()?
+        .into();
+    let ordering = ordering.extract(env)?;
+
+    match ordering.as_str() {
+        "Ascending" => Ok(DedupeOrdering::Ascending),
+        "Descending" => Ok(DedupeOrdering::Descending),
+        _ => Err(Error::input_error(format!(
+            "Illegal dedupe_ordering: {ordering}",
+        ))),
+    }
 }
 
 const MERGE_STATS_CLASS: &str = "org/lance/merge/MergeInsertStats";

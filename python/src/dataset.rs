@@ -46,10 +46,9 @@ use lance::dataset::{
     progress::WriteFragmentProgress,
     scanner::Scanner as LanceScanner,
     transaction::{Operation, Transaction},
-    Dataset as LanceDataset, DeleteBuilder,
-    MergeInsertBuilder as LanceMergeInsertBuilder, ReadParams, SortOptions, UncommittedMergeInsert,
-    UpdateBuilder, Version, WhenMatched, WhenNotMatched, WhenNotMatchedBySource, WriteMode,
-    WriteParams,
+    Dataset as LanceDataset, DeleteBuilder, MergeInsertBuilder as LanceMergeInsertBuilder,
+    ReadParams, SortOptions, UncommittedMergeInsert, UpdateBuilder, Version, WhenMatched,
+    WhenNotMatched, WhenNotMatchedBySource, WriteMode, WriteParams,
 };
 use lance::dataset::{
     BatchInfo, BatchUDF, CommitBuilder, MergeStats, NewColumnTransform, UDFCheckpointStore,
@@ -252,7 +251,8 @@ impl MergeInsertBuilder {
         descending: bool,
         nulls_first: bool,
     ) -> PyResult<PyRefMut<'a, Self>> {
-        slf.builder.dedupe_sort_options(SortOptions::new(descending, nulls_first));
+        slf.builder
+            .dedupe_sort_options(SortOptions::new(descending, nulls_first));
         Ok(slf)
     }
 

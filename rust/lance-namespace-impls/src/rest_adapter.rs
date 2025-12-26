@@ -80,6 +80,7 @@ impl RestAdapter {
             // Table data operations
             .route("/v1/table/:id/create", post(create_table))
             .route("/v1/table/:id/create-empty", post(create_empty_table))
+            .route("/v1/table/:id/declare", post(declare_table))
             .route("/v1/table/:id/insert", post(insert_into_table))
             .route("/v1/table/:id/merge_insert", post(merge_insert_into_table))
             .route("/v1/table/:id/update", post(update_table))
@@ -511,6 +512,20 @@ async fn create_empty_table(
     request.id = Some(parse_id(&id, params.delimiter.as_deref()));
 
     match backend.create_empty_table(request).await {
+        Ok(response) => (StatusCode::CREATED, Json(response)).into_response(),
+        Err(e) => error_to_response(e),
+    }
+}
+
+async fn declare_table(
+    State(backend): State<Arc<dyn LanceNamespace>>,
+    Path(id): Path<String>,
+    Query(params): Query<DelimiterQuery>,
+    Json(mut request): Json<DeclareTableRequest>,
+) -> Response {
+    request.id = Some(parse_id(&id, params.delimiter.as_deref()));
+
+    match backend.declare_table(request).await {
         Ok(response) => (StatusCode::CREATED, Json(response)).into_response(),
         Err(e) => error_to_response(e),
     }

@@ -46,7 +46,7 @@ use lance::dataset::{
     progress::WriteFragmentProgress,
     scanner::Scanner as LanceScanner,
     transaction::{Operation, Transaction},
-    Dataset as LanceDataset, DeleteBuilder, DedupeOrdering,
+    Dataset as LanceDataset, DedupeOrdering, DeleteBuilder,
     MergeInsertBuilder as LanceMergeInsertBuilder, ReadParams, UncommittedMergeInsert,
     UpdateBuilder, Version, WhenMatched, WhenNotMatched, WhenNotMatchedBySource, WriteMode,
     WriteParams,
@@ -233,10 +233,7 @@ impl MergeInsertBuilder {
     ///
     /// When the source data contains multiple rows with the same key, this column
     /// determines which row to keep based on the dedupe_ordering.
-    pub fn dedupe_by(
-        mut slf: PyRefMut<'_, Self>,
-        column: &str,
-    ) -> PyResult<PyRefMut<'_, Self>> {
+    pub fn dedupe_by(mut slf: PyRefMut<Self>, column: &str) -> PyResult<PyRefMut<Self>> {
         slf.builder.dedupe_by(column);
         Ok(slf)
     }
@@ -245,9 +242,9 @@ impl MergeInsertBuilder {
     /// "descending" keeps the largest value.
     #[pyo3(signature=(ordering = "ascending"))]
     pub fn dedupe_ordering(
-        mut slf: PyRefMut<'_, Self>,
+        mut slf: PyRefMut<Self>,
         ordering: &str,
-    ) -> PyResult<PyRefMut<'_, Self>> {
+    ) -> PyResult<PyRefMut<Self>> {
         let ordering = match ordering.to_lowercase().as_str() {
             "ascending" | "asc" => DedupeOrdering::Ascending,
             "descending" | "desc" => DedupeOrdering::Descending,

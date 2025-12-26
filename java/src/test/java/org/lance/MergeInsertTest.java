@@ -26,6 +26,7 @@ import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.ipc.ArrowReader;
 import org.apache.arrow.vector.ipc.ArrowStreamReader;
 import org.apache.arrow.vector.ipc.ArrowStreamWriter;
+import org.apache.arrow.vector.types.FloatingPointPrecision;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
@@ -286,8 +287,7 @@ public class MergeInsertTest {
         new Schema(
             Arrays.asList(
                 Field.nullable("id", new ArrowType.Int(32, true)),
-                Field.nullable(
-                    "value", new ArrowType.FloatingPoint(ArrowType.FloatingPoint.Precision.DOUBLE)),
+                Field.nullable("value", new ArrowType.FloatingPoint(FloatingPointPrecision.DOUBLE)),
                 Field.nullable("ts", new ArrowType.Int(64, true))));
 
     String datasetPath = tempDir.resolve("dedupe_test_asc").toString();
@@ -312,7 +312,7 @@ public class MergeInsertTest {
       root.setRowCount(ids.length);
 
       try (ArrowArrayStream stream = convertToStream(root, allocator)) {
-        Dataset.create(allocator, datasetPath, stream, new WriteParams.Builder().build()).close();
+        Dataset.create(allocator, stream, datasetPath, new WriteParams.Builder().build()).close();
       }
     }
 
@@ -367,8 +367,7 @@ public class MergeInsertTest {
         new Schema(
             Arrays.asList(
                 Field.nullable("id", new ArrowType.Int(32, true)),
-                Field.nullable(
-                    "value", new ArrowType.FloatingPoint(ArrowType.FloatingPoint.Precision.DOUBLE)),
+                Field.nullable("value", new ArrowType.FloatingPoint(FloatingPointPrecision.DOUBLE)),
                 Field.nullable("ts", new ArrowType.Int(64, true))));
 
     String datasetPath = tempDir.resolve("dedupe_test_desc").toString();
@@ -393,7 +392,7 @@ public class MergeInsertTest {
       root.setRowCount(ids.length);
 
       try (ArrowArrayStream stream = convertToStream(root, allocator)) {
-        Dataset.create(allocator, datasetPath, stream, new WriteParams.Builder().build()).close();
+        Dataset.create(allocator, stream, datasetPath, new WriteParams.Builder().build()).close();
       }
     }
 

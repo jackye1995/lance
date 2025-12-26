@@ -308,11 +308,11 @@ public class MergeInsertParams {
   }
 
   public boolean dedupeDescending() {
-    return dedupeSortOptions.descending();
+    return dedupeSortOptions.isDescending();
   }
 
   public boolean dedupeNullsFirst() {
-    return dedupeSortOptions.nullsFirst();
+    return dedupeSortOptions.isNullsFirst();
   }
 
   @Override
@@ -373,11 +373,11 @@ public class MergeInsertParams {
       return new SortOptions(true, false);
     }
 
-    public boolean descending() {
+    public boolean isDescending() {
       return descending;
     }
 
-    public boolean nullsFirst() {
+    public boolean isNullsFirst() {
       return nullsFirst;
     }
 

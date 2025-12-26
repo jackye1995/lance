@@ -118,7 +118,7 @@ pub use schema_evolution::{
 };
 pub use take::TakeBuilder;
 pub use write::merge_insert::{
-    DedupeOrdering, MergeInsertBuilder, MergeInsertJob, MergeStats, UncommittedMergeInsert,
+    MergeInsertBuilder, MergeInsertJob, MergeStats, SortOptions, UncommittedMergeInsert,
     WhenMatched, WhenNotMatched, WhenNotMatchedBySource,
 };
 

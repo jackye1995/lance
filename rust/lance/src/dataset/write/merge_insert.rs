@@ -279,23 +279,53 @@ pub enum WhenNotMatched {
     DoNothing,
 }
 
-/// Describes the ordering used for deduplication when multiple source rows match the same target row.
+/// Sort options for deduplication when multiple source rows match the same target row.
 ///
 /// When `dedupe_by` is set, this controls which row to keep when duplicates are found.
-/// Follows DataFusion/SQL sort semantics:
-/// - `Ascending`: Keep the row with the smallest value (NULLS LAST - NULL loses to non-NULL)
-/// - `Descending`: Keep the row with the largest value (NULLS FIRST - NULL loses to non-NULL)
+/// Modeled after Arrow's `SortOptions` to provide familiar semantics.
 ///
-/// When values are equal (including both NULL), the first encountered row is kept.
+/// # Examples
+///
+/// ```
+/// use lance::dataset::SortOptions;
+///
+/// // Keep the row with the smallest value, NULL loses (default)
+/// let opts = SortOptions::default();
+/// assert!(!opts.descending);
+/// assert!(!opts.nulls_first);
+///
+/// // Keep the row with the largest value, NULL loses
+/// let opts = SortOptions::new(true, false);
+/// assert!(opts.descending);
+/// assert!(!opts.nulls_first);
+///
+/// // Keep the row with the smallest value, NULL wins
+/// let opts = SortOptions::new(false, true);
+/// assert!(!opts.descending);
+/// assert!(opts.nulls_first);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Hash, Default)]
-pub enum DedupeOrdering {
-    /// Keep the row with the smallest dedupe column value.
-    /// NULL loses to any non-NULL value (NULLS LAST semantics).
-    #[default]
-    Ascending,
-    /// Keep the row with the largest dedupe column value.
-    /// NULL loses to any non-NULL value (NULLS FIRST semantics).
-    Descending,
+pub struct SortOptions {
+    /// Sort in descending order (largest value wins).
+    /// Default is false (ascending, smallest value wins).
+    pub descending: bool,
+    /// Whether NULL values should be ordered first.
+    ///
+    /// - When `nulls_first = true`: NULL wins (is considered "better")
+    /// - When `nulls_first = false`: NULL loses (is considered "worse")
+    ///
+    /// Default is false (NULL loses to any non-NULL value).
+    pub nulls_first: bool,
+}
+
+impl SortOptions {
+    /// Create new sort options with the given settings.
+    pub fn new(descending: bool, nulls_first: bool) -> Self {
+        Self {
+            descending,
+            nulls_first,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Hash)]
@@ -322,10 +352,10 @@ struct MergeInsertParams {
     // Setting to false forces a full table scan even if an index exists.
     use_index: bool,
     // If set, specifies the column to use for deduplication when multiple source rows
-    // match the same target row. The row with the best value (based on dedupe_ordering) is kept.
+    // match the same target row. The row with the best value (based on dedupe_sort_options) is kept.
     dedupe_by: Option<String>,
     // Controls ordering for deduplication (sort direction and NULL handling)
-    dedupe_ordering: DedupeOrdering,
+    dedupe_sort_options: SortOptions,
 }
 
 /// A MergeInsertJob inserts new rows, deletes old rows, and updates existing rows all as
@@ -430,7 +460,7 @@ impl MergeInsertBuilder {
                 skip_auto_cleanup: false,
                 use_index: true,
                 dedupe_by: None,
-                dedupe_ordering: DedupeOrdering::default(),
+                dedupe_sort_options: SortOptions::default(),
             },
         })
     }
@@ -505,7 +535,7 @@ impl MergeInsertBuilder {
     /// Specifies the column to use for deduplication when multiple source rows match the same target row.
     ///
     /// When the source table contains duplicate rows (rows with the same join key), this setting
-    /// determines which row to keep based on the value of the specified column. Use `dedupe_ordering`
+    /// determines which row to keep based on the value of the specified column. Use `dedupe_sort_options`
     /// to control whether to keep the row with the smallest or largest value.
     ///
     /// If not set (default), duplicate source rows will cause an error.
@@ -514,17 +544,26 @@ impl MergeInsertBuilder {
         self
     }
 
-    /// Controls the ordering used for deduplication.
+    /// Controls the sort options used for deduplication.
     ///
-    /// When `dedupe_by` is set and multiple source rows match the same target row:
-    /// - `DedupeOrdering::Ascending`: Keep the row with the smallest `dedupe_by` value (default)
-    /// - `DedupeOrdering::Descending`: Keep the row with the largest `dedupe_by` value
+    /// When `dedupe_by` is set and multiple source rows match the same target row,
+    /// these options control which row to keep:
     ///
-    /// NULL handling follows DataFusion/SQL semantics:
-    /// - NULL always loses to any non-NULL value (in both ascending and descending)
-    /// - When values are equal (including both NULL), the first encountered row is kept
-    pub fn dedupe_ordering(&mut self, ordering: DedupeOrdering) -> &mut Self {
-        self.params.dedupe_ordering = ordering;
+    /// - `descending: false` (default): Keep the row with the smallest value
+    /// - `descending: true`: Keep the row with the largest value
+    /// - `nulls_first: false` (default): NULL loses to any non-NULL value
+    /// - `nulls_first: true`: NULL wins over any non-NULL value
+    ///
+    /// If values are equal (including both NULL), the operation fails with an error.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Keep row with largest timestamp, NULL loses
+    /// builder.dedupe_sort_options(SortOptions::new(true, false));
+    /// ```
+    pub fn dedupe_sort_options(&mut self, options: SortOptions) -> &mut Self {
+        self.params.dedupe_sort_options = options;
         self
     }
 
@@ -5514,7 +5553,7 @@ MergeInsert: on=[id], when_matched=UpdateAll, when_not_matched=InsertAll, when_n
                 .when_matched(WhenMatched::UpdateAll)
                 .when_not_matched(WhenNotMatched::InsertAll)
                 .dedupe_by("ts")
-                .dedupe_ordering(DedupeOrdering::Ascending)
+                .dedupe_sort_options(SortOptions::default())
                 .try_build()
                 .unwrap()
                 .execute_reader(Box::new(RecordBatchIterator::new(
@@ -5598,7 +5637,7 @@ MergeInsert: on=[id], when_matched=UpdateAll, when_not_matched=InsertAll, when_n
                 .when_matched(WhenMatched::UpdateAll)
                 .when_not_matched(WhenNotMatched::InsertAll)
                 .dedupe_by("ts")
-                .dedupe_ordering(DedupeOrdering::Ascending)
+                .dedupe_sort_options(SortOptions::default())
                 .try_build()
                 .unwrap()
                 .execute_reader(Box::new(RecordBatchIterator::new(
@@ -5665,7 +5704,7 @@ MergeInsert: on=[id], when_matched=UpdateAll, when_not_matched=InsertAll, when_n
             .when_matched(WhenMatched::UpdateAll)
             .when_not_matched(WhenNotMatched::InsertAll)
             .dedupe_by("ts")
-            .dedupe_ordering(DedupeOrdering::Descending)
+            .dedupe_sort_options(SortOptions::new(true, false))
             .try_build()
             .unwrap()
             .execute_reader(Box::new(RecordBatchIterator::new(
@@ -5695,7 +5734,7 @@ MergeInsert: on=[id], when_matched=UpdateAll, when_not_matched=InsertAll, when_n
         );
         assert!(!result_ts2.is_null(0), "id=1 ts should not be NULL");
 
-        // Test 3: Both NULL - first one encountered is kept
+        // Test 3: Both NULL - should fail (can't determine which to keep)
         let test_dir3 = TempStrDir::default();
         let data3 = RecordBatch::try_new(
             schema.clone(),
@@ -5713,7 +5752,7 @@ MergeInsert: on=[id], when_matched=UpdateAll, when_not_matched=InsertAll, when_n
             .unwrap();
 
         // Source has: id=1 with two NULL ts values
-        // Expected: first NULL is kept (no improvement possible)
+        // Expected: Error - can't determine which NULL row to keep
         let new_data3 = RecordBatch::try_new(
             schema.clone(),
             vec![
@@ -5724,40 +5763,32 @@ MergeInsert: on=[id], when_matched=UpdateAll, when_not_matched=InsertAll, when_n
         )
         .unwrap();
 
-        let (merged_dataset3, _) = MergeInsertBuilder::try_new(dataset3.into(), vec!["id".into()])
+        let result3 = MergeInsertBuilder::try_new(dataset3.into(), vec!["id".into()])
             .unwrap()
             .when_matched(WhenMatched::UpdateAll)
             .when_not_matched(WhenNotMatched::InsertAll)
             .dedupe_by("ts")
-            .dedupe_ordering(DedupeOrdering::Ascending)
+            .dedupe_sort_options(SortOptions::default())
             .try_build()
             .unwrap()
             .execute_reader(Box::new(RecordBatchIterator::new(
                 vec![Ok(new_data3.clone())],
                 new_data3.schema(),
             )))
-            .await
-            .unwrap();
+            .await;
 
-        let result3 = merged_dataset3.scan().try_into_batch().await.unwrap();
-
-        let result_ts3 = result3
-            .column(2)
-            .as_primitive::<arrow_array::types::Int64Type>();
-        // When both are NULL, the first one is kept (value=10.0)
         assert!(
-            result_ts3.is_null(0),
-            "id=1 ts should be NULL when both source rows have NULL"
+            result3.is_err(),
+            "Should fail when both dedupe values are NULL"
         );
-        let result_values3 = result3
-            .column(1)
-            .as_primitive::<arrow_array::types::Float64Type>();
+        let err_msg = result3.unwrap_err().to_string();
         assert!(
-            (result_values3.value(0) - 10.0).abs() < 0.001,
-            "First NULL row (value=10.0) should be kept"
+            err_msg.contains("Cannot deduplicate") && err_msg.contains("NULL"),
+            "Error should mention NULL values: {}",
+            err_msg
         );
 
-        // Test 4: Equal non-NULL values - first one encountered is kept (no failure)
+        // Test 4: Equal non-NULL values - should fail (can't determine which to keep)
         let test_dir4 = TempStrDir::default();
         let data4 = RecordBatch::try_new(
             schema.clone(),
@@ -5775,7 +5806,7 @@ MergeInsert: on=[id], when_matched=UpdateAll, when_not_matched=InsertAll, when_n
             .unwrap();
 
         // Source has: id=1 with two rows having the same ts=50
-        // Expected: first row (value=10.0) is kept since values are equal
+        // Expected: Error - can't determine which row to keep when values are equal
         let new_data4 = RecordBatch::try_new(
             schema.clone(),
             vec![
@@ -5786,33 +5817,26 @@ MergeInsert: on=[id], when_matched=UpdateAll, when_not_matched=InsertAll, when_n
         )
         .unwrap();
 
-        let (merged_dataset4, _) = MergeInsertBuilder::try_new(dataset4.into(), vec!["id".into()])
+        let result4 = MergeInsertBuilder::try_new(dataset4.into(), vec!["id".into()])
             .unwrap()
             .when_matched(WhenMatched::UpdateAll)
             .when_not_matched(WhenNotMatched::InsertAll)
             .dedupe_by("ts")
-            .dedupe_ordering(DedupeOrdering::Ascending)
+            .dedupe_sort_options(SortOptions::default())
             .try_build()
             .unwrap()
             .execute_reader(Box::new(RecordBatchIterator::new(
                 vec![Ok(new_data4.clone())],
                 new_data4.schema(),
             )))
-            .await
-            .unwrap();
+            .await;
 
-        let result4 = merged_dataset4.scan().try_into_batch().await.unwrap();
-
-        let result_ts4 = result4
-            .column(2)
-            .as_primitive::<arrow_array::types::Int64Type>();
-        assert_eq!(result_ts4.value(0), 50);
-        let result_values4 = result4
-            .column(1)
-            .as_primitive::<arrow_array::types::Float64Type>();
+        assert!(result4.is_err(), "Should fail when dedupe values are equal");
+        let err_msg4 = result4.unwrap_err().to_string();
         assert!(
-            (result_values4.value(0) - 10.0).abs() < 0.001,
-            "First row (value=10.0) should be kept when dedupe values are equal"
+            err_msg4.contains("Cannot deduplicate") && err_msg4.contains("same value"),
+            "Error should mention equal values: {}",
+            err_msg4
         );
     }
 
@@ -5886,7 +5910,7 @@ MergeInsert: on=[id], when_matched=UpdateAll, when_not_matched=InsertAll, when_n
                 .when_matched(WhenMatched::UpdateAll)
                 .when_not_matched(WhenNotMatched::InsertAll)
                 .dedupe_by("ts")
-                .dedupe_ordering(DedupeOrdering::Descending)
+                .dedupe_sort_options(SortOptions::new(true, false))
                 .try_build()
                 .unwrap()
                 .execute_reader(Box::new(RecordBatchIterator::new(
@@ -6013,7 +6037,7 @@ MergeInsert: on=[id], when_matched=UpdateAll, when_not_matched=InsertAll, when_n
                 .when_matched(WhenMatched::UpdateAll)
                 .when_not_matched(WhenNotMatched::InsertAll)
                 .dedupe_by("ts")
-                .dedupe_ordering(DedupeOrdering::Ascending)
+                .dedupe_sort_options(SortOptions::default())
                 .try_build()
                 .unwrap()
                 .execute_reader(Box::new(RecordBatchIterator::new(
@@ -6125,7 +6149,7 @@ MergeInsert: on=[id], when_matched=UpdateAll, when_not_matched=InsertAll, when_n
                 .when_matched(WhenMatched::UpdateAll)
                 .when_not_matched(WhenNotMatched::InsertAll)
                 .dedupe_by("ts")
-                .dedupe_ordering(DedupeOrdering::Ascending)
+                .dedupe_sort_options(SortOptions::default())
                 .try_build()
                 .unwrap()
                 .execute_reader(Box::new(RecordBatchIterator::new(
@@ -6217,7 +6241,7 @@ MergeInsert: on=[id], when_matched=UpdateAll, when_not_matched=InsertAll, when_n
             .when_matched(WhenMatched::UpdateAll)
             .when_not_matched(WhenNotMatched::InsertAll)
             .dedupe_by("ts")
-            .dedupe_ordering(DedupeOrdering::Ascending)
+            .dedupe_sort_options(SortOptions::default())
             .try_build()
             .unwrap()
             .execute_reader(Box::new(RecordBatchIterator::new(
@@ -6265,7 +6289,7 @@ MergeInsert: on=[id], when_matched=UpdateAll, when_not_matched=InsertAll, when_n
             .when_matched(WhenMatched::UpdateAll)
             .when_not_matched(WhenNotMatched::InsertAll)
             .dedupe_by("nonexistent_column")
-            .dedupe_ordering(DedupeOrdering::Ascending)
+            .dedupe_sort_options(SortOptions::default())
             .try_build()
             .unwrap()
             .execute_reader(Box::new(RecordBatchIterator::new(
@@ -6361,7 +6385,7 @@ MergeInsert: on=[id], when_matched=UpdateAll, when_not_matched=InsertAll, when_n
                 .when_matched(WhenMatched::UpdateAll)
                 .when_not_matched(WhenNotMatched::InsertAll)
                 .dedupe_by("metrics.timestamp") // Nested field path
-                .dedupe_ordering(DedupeOrdering::Ascending)
+                .dedupe_sort_options(SortOptions::default())
                 .try_build()
                 .unwrap()
                 .execute_reader(Box::new(RecordBatchIterator::new(
@@ -6434,7 +6458,7 @@ MergeInsert: on=[id], when_matched=UpdateAll, when_not_matched=InsertAll, when_n
                 .when_matched(WhenMatched::UpdateAll)
                 .when_not_matched(WhenNotMatched::InsertAll)
                 .dedupe_by("ts")
-                .dedupe_ordering(DedupeOrdering::Ascending)
+                .dedupe_sort_options(SortOptions::default())
                 .try_build()
                 .unwrap()
                 .execute_reader(Box::new(RecordBatchIterator::new(
@@ -6527,7 +6551,7 @@ MergeInsert: on=[id], when_matched=UpdateAll, when_not_matched=InsertAll, when_n
                 .when_matched(WhenMatched::UpdateAll)
                 .when_not_matched(WhenNotMatched::InsertAll)
                 .dedupe_by("ts")
-                .dedupe_ordering(DedupeOrdering::Ascending)
+                .dedupe_sort_options(SortOptions::default())
                 .try_build()
                 .unwrap()
                 .execute_reader(Box::new(RecordBatchIterator::new(

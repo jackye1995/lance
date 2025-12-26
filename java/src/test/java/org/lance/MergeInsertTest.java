@@ -344,7 +344,7 @@ public class MergeInsertTest {
                   new MergeInsertParams(Collections.singletonList("id"))
                       .withMatchedUpdateAll()
                       .withDedupeBy("ts")
-                      .withDedupeOrdering(MergeInsertParams.DedupeOrdering.Ascending),
+                      .withDedupeSortOptions(MergeInsertParams.SortOptions.ascending()),
                   sourceStream);
 
           Assertions.assertEquals(2, result.stats().numUpdatedRows());
@@ -424,7 +424,7 @@ public class MergeInsertTest {
                   new MergeInsertParams(Collections.singletonList("id"))
                       .withMatchedUpdateAll()
                       .withDedupeBy("ts")
-                      .withDedupeOrdering(MergeInsertParams.DedupeOrdering.Descending),
+                      .withDedupeSortOptions(MergeInsertParams.SortOptions.descending()),
                   sourceStream);
 
           Assertions.assertEquals(2, result.stats().numUpdatedRows());

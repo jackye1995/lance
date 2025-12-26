@@ -26,7 +26,7 @@ use roaring::RoaringTreemap;
 use crate::dataset::transaction::UpdateMode::RewriteRows;
 use crate::dataset::utils::CapturedRowIds;
 use crate::dataset::write::merge_insert::{
-    create_duplicate_row_error, format_key_values_on_columns, DedupeOrdering,
+    create_duplicate_row_error, format_key_values_on_columns, SortOptions,
 };
 use crate::{
     dataset::{
@@ -74,8 +74,8 @@ struct MergeState {
     on_columns: Vec<String>,
     /// Dedupe column name (if configured)
     dedupe_by: Option<String>,
-    /// Dedupe ordering
-    dedupe_ordering: DedupeOrdering,
+    /// Dedupe sort options (direction and NULL handling)
+    dedupe_sort_options: SortOptions,
     /// Accumulated best rows for deduplication: row_id -> AccumulatedUpdate
     accumulated_updates: BTreeMap<u64, AccumulatedUpdate>,
     /// Buffered batches for dedupe mode (contains only data columns, indexed by batch_idx)
@@ -91,7 +91,7 @@ impl MergeState {
         stable_row_ids: bool,
         on_columns: Vec<String>,
         dedupe_by: Option<String>,
-        dedupe_ordering: DedupeOrdering,
+        dedupe_sort_options: SortOptions,
     ) -> Self {
         Self {
             delete_row_addrs: RoaringTreemap::new(),
@@ -101,36 +101,49 @@ impl MergeState {
             processed_row_ids: HashSet::new(),
             on_columns,
             dedupe_by,
-            dedupe_ordering,
+            dedupe_sort_options,
             accumulated_updates: BTreeMap::new(),
             buffered_batches: Vec::new(),
             batch_ref_counts: Vec::new(),
         }
     }
 
-    /// Check if the new value is better than the existing value based on dedupe_ordering.
+    /// Check if the new value is better than the existing value based on dedupe_sort_options.
     ///
-    /// Follows DataFusion/SQL sort semantics where NULL loses to any non-NULL value:
-    /// - ASC (NULLS LAST): NULL is considered larger than any non-NULL
-    /// - DESC (NULLS FIRST): NULL is considered smaller than any non-NULL
+    /// Returns `Ok(true)` if new is better, `Ok(false)` if existing is better.
+    /// Returns an error if values are equal (including both NULL).
     ///
-    /// For non-NULL values, uses ScalarValue's total ordering.
-    fn is_better_value(&self, new: &ScalarValue, existing: &ScalarValue) -> bool {
+    /// NULL handling is controlled by `nulls_first`:
+    /// - `nulls_first = false` (default): NULL loses to any non-NULL value
+    /// - `nulls_first = true`: NULL wins over any non-NULL value
+    fn is_better_value(&self, new: &ScalarValue, existing: &ScalarValue) -> DFResult<bool> {
         let new_is_null = new.is_null();
         let existing_is_null = existing.is_null();
 
         match (new_is_null, existing_is_null) {
-            // Both NULL: keep existing (no improvement)
-            (true, true) => false,
-            // New is NULL, existing is non-NULL: existing wins (NULL loses)
-            (true, false) => false,
-            // New is non-NULL, existing is NULL: new wins (NULL loses)
-            (false, true) => true,
+            // Both NULL: can't determine which is better, fail
+            (true, true) => Err(datafusion::error::DataFusionError::Execution(
+                "Cannot deduplicate: multiple rows have NULL values in the dedupe column"
+                    .to_string(),
+            )),
+            // New is NULL, existing is non-NULL
+            (true, false) => Ok(self.dedupe_sort_options.nulls_first),
+            // New is non-NULL, existing is NULL
+            (false, true) => Ok(!self.dedupe_sort_options.nulls_first),
             // Both non-NULL: compare based on ordering
-            (false, false) => match self.dedupe_ordering {
-                DedupeOrdering::Ascending => new < existing,
-                DedupeOrdering::Descending => new > existing,
-            },
+            (false, false) => {
+                if new == existing {
+                    // Equal values: can't determine which is better, fail
+                    Err(datafusion::error::DataFusionError::Execution(format!(
+                        "Cannot deduplicate: multiple rows have the same value ({}) in the dedupe column",
+                        new
+                    )))
+                } else if self.dedupe_sort_options.descending {
+                    Ok(new > existing)
+                } else {
+                    Ok(new < existing)
+                }
+            }
         }
     }
 
@@ -192,7 +205,7 @@ impl MergeState {
                         let should_use_new = match self.accumulated_updates.get(&row_id) {
                             None => true,
                             Some(existing) => {
-                                self.is_better_value(&dedupe_value, &existing.dedupe_value)
+                                self.is_better_value(&dedupe_value, &existing.dedupe_value)?
                             }
                         };
 
@@ -1134,7 +1147,7 @@ impl ExecutionPlan for FullSchemaMergeInsertExec {
             self.dataset.manifest.uses_stable_row_ids(),
             self.params.on.clone(),
             self.params.dedupe_by.clone(),
-            self.params.dedupe_ordering,
+            self.params.dedupe_sort_options,
         )));
         let write_data_stream =
             self.create_filtered_write_stream(input_stream, merge_state.clone())?;
@@ -1269,8 +1282,8 @@ mod tests {
             metrics,
             false,
             Vec::new(),
-            None,                      // no dedupe_by
-            DedupeOrdering::default(), // default ordering
+            None,                   // no dedupe_by
+            SortOptions::default(), // default sort options
         );
 
         let row_addr_array = UInt64Array::from(vec![1000, 2000, 3000]);

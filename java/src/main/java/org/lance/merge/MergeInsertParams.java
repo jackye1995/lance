@@ -37,7 +37,7 @@ public class MergeInsertParams {
   private boolean skipAutoCleanup = false;
 
   private Optional<String> dedupeBy = Optional.empty();
-  private DedupeOrdering dedupeOrdering = DedupeOrdering.Ascending;
+  private SortOptions dedupeSortOptions = SortOptions.defaultOptions();
 
   public MergeInsertParams(List<String> on) {
     this.on = on;
@@ -269,8 +269,8 @@ public class MergeInsertParams {
    * Configure deduplication when source data has multiple rows with the same key.
    *
    * <p>When the source data contains duplicate keys, this setting determines which row to keep
-   * based on the value of the specified column. Use with {@link #withDedupeOrdering} to control
-   * whether to keep the row with the smallest or largest value.
+   * based on the value of the specified column. Use with {@link #withDedupeSortOptions} to control
+   * sorting behavior.
    *
    * @param column The name of the column to use for comparing duplicate rows.
    * @return This MergeInsertParams instance
@@ -282,26 +282,20 @@ public class MergeInsertParams {
   }
 
   /**
-   * Set the ordering for deduplication.
+   * Set the sort options for deduplication.
    *
    * <p>When source data has duplicate keys and {@link #withDedupeBy} is set, this controls which
-   * row to keep:
+   * row to keep based on the sort options.
    *
-   * <ul>
-   *   <li>{@link DedupeOrdering#Ascending} (default): Keep the row with the smallest value
-   *   <li>{@link DedupeOrdering#Descending}: Keep the row with the largest value
-   * </ul>
+   * <p>If values are equal (including both NULL), the operation fails with an error.
    *
-   * <p>NULL handling follows DataFusion/SQL semantics: NULL always loses to any non-NULL value (in
-   * both ascending and descending). When values are equal (including both NULL), the first
-   * encountered row is kept.
-   *
-   * @param ordering The ordering to use for deduplication.
+   * @param options The sort options to use for deduplication.
    * @return This MergeInsertParams instance
+   * @see SortOptions
    */
-  public MergeInsertParams withDedupeOrdering(DedupeOrdering ordering) {
-    Preconditions.checkNotNull(ordering);
-    this.dedupeOrdering = ordering;
+  public MergeInsertParams withDedupeSortOptions(SortOptions options) {
+    Preconditions.checkNotNull(options);
+    this.dedupeSortOptions = options;
     return this;
   }
 
@@ -309,12 +303,16 @@ public class MergeInsertParams {
     return dedupeBy;
   }
 
-  public DedupeOrdering dedupeOrdering() {
-    return dedupeOrdering;
+  public SortOptions dedupeSortOptions() {
+    return dedupeSortOptions;
   }
 
-  public String dedupeOrderingValue() {
-    return dedupeOrdering.name();
+  public boolean dedupeDescending() {
+    return dedupeSortOptions.descending();
+  }
+
+  public boolean dedupeNullsFirst() {
+    return dedupeSortOptions.nullsFirst();
   }
 
   @Override
@@ -335,22 +333,61 @@ public class MergeInsertParams {
         .add("retryTimeoutMs", retryTimeoutMs)
         .add("skipAutoCleanup", skipAutoCleanup)
         .add("dedupeBy", dedupeBy.orElse(null))
-        .add("dedupeOrdering", dedupeOrdering)
+        .add("dedupeSortOptions", dedupeSortOptions)
         .toString();
   }
 
   /**
-   * Ordering for deduplication when source data has duplicate keys.
+   * Sort options for deduplication when source data has duplicate keys.
    *
-   * <p>NULL always loses to any non-NULL value. When values are equal (including both NULL), the
-   * first encountered row is kept.
+   * <p>Controls sort direction and NULL handling for determining which row to keep.
    */
-  public enum DedupeOrdering {
-    /** Keep the row with the smallest dedupe column value. NULL loses (NULLS LAST semantics). */
-    Ascending,
+  public static class SortOptions {
+    private final boolean descending;
+    private final boolean nullsFirst;
 
-    /** Keep the row with the largest dedupe column value. NULL loses (NULLS FIRST semantics). */
-    Descending,
+    /**
+     * Create sort options with the given settings.
+     *
+     * @param descending If true, keep the row with the largest value. Default false (smallest
+     *     wins).
+     * @param nullsFirst If true, NULL values win over non-NULL. Default false (NULL loses).
+     */
+    public SortOptions(boolean descending, boolean nullsFirst) {
+      this.descending = descending;
+      this.nullsFirst = nullsFirst;
+    }
+
+    /** Default options: ascending order, NULL loses to non-NULL. */
+    public static SortOptions defaultOptions() {
+      return new SortOptions(false, false);
+    }
+
+    /** Ascending order: keep the row with the smallest value. NULL loses. */
+    public static SortOptions ascending() {
+      return new SortOptions(false, false);
+    }
+
+    /** Descending order: keep the row with the largest value. NULL loses. */
+    public static SortOptions descending() {
+      return new SortOptions(true, false);
+    }
+
+    public boolean descending() {
+      return descending;
+    }
+
+    public boolean nullsFirst() {
+      return nullsFirst;
+    }
+
+    @Override
+    public String toString() {
+      return MoreObjects.toStringHelper(this)
+          .add("descending", descending)
+          .add("nullsFirst", nullsFirst)
+          .toString();
+    }
   }
 
   public enum WhenMatched {

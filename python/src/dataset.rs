@@ -46,8 +46,8 @@ use lance::dataset::{
     progress::WriteFragmentProgress,
     scanner::Scanner as LanceScanner,
     transaction::{Operation, Transaction},
-    Dataset as LanceDataset, DedupeOrdering, DeleteBuilder,
-    MergeInsertBuilder as LanceMergeInsertBuilder, ReadParams, UncommittedMergeInsert,
+    Dataset as LanceDataset, DeleteBuilder,
+    MergeInsertBuilder as LanceMergeInsertBuilder, ReadParams, SortOptions, UncommittedMergeInsert,
     UpdateBuilder, Version, WhenMatched, WhenNotMatched, WhenNotMatchedBySource, WriteMode,
     WriteParams,
 };
@@ -241,24 +241,18 @@ impl MergeInsertBuilder {
         Ok(slf)
     }
 
-    /// Set the ordering for deduplication: "ascending" keeps the smallest value,
-    /// "descending" keeps the largest value.
-    #[pyo3(signature=(ordering = "ascending"))]
-    pub fn dedupe_ordering<'a>(
+    /// Set the sort options for deduplication.
+    ///
+    /// Args:
+    ///     descending: If True, keep the row with the largest value. Default False (smallest wins).
+    ///     nulls_first: If True, NULL values win over non-NULL. Default False (NULL loses).
+    #[pyo3(signature=(descending = false, nulls_first = false))]
+    pub fn dedupe_sort_options<'a>(
         mut slf: PyRefMut<'a, Self>,
-        ordering: &str,
+        descending: bool,
+        nulls_first: bool,
     ) -> PyResult<PyRefMut<'a, Self>> {
-        let ordering = match ordering.to_lowercase().as_str() {
-            "ascending" | "asc" => DedupeOrdering::Ascending,
-            "descending" | "desc" => DedupeOrdering::Descending,
-            _ => {
-                return Err(PyValueError::new_err(format!(
-                    "Invalid dedupe_ordering: '{}'. Must be 'ascending' or 'descending'",
-                    ordering
-                )))
-            }
-        };
-        slf.builder.dedupe_ordering(ordering);
+        slf.builder.dedupe_sort_options(SortOptions::new(descending, nulls_first));
         Ok(slf)
     }
 

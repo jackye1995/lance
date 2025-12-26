@@ -11,7 +11,7 @@ use jni::sys::jlong;
 use jni::JNIEnv;
 use lance::dataset::scanner::ExprFilter;
 use lance::dataset::{
-    DedupeOrdering, MergeInsertBuilder, MergeStats, WhenMatched, WhenNotMatched,
+    MergeInsertBuilder, MergeStats, SortOptions, WhenMatched, WhenNotMatched,
     WhenNotMatchedBySource,
 };
 use lance_core::datatypes::Schema;
@@ -50,7 +50,7 @@ fn inner_merge_insert<'local>(
     let retry_timeout_ms = extract_retry_timeout_ms(env, &jparam)?;
     let skip_auto_cleanup = extract_skip_auto_cleanup(env, &jparam)?;
     let dedupe_by = extract_dedupe_by(env, &jparam)?;
-    let dedupe_ordering = extract_dedupe_ordering(env, &jparam)?;
+    let dedupe_sort_options = extract_dedupe_sort_options(env, &jparam)?;
 
     let (new_ds, merge_stats) = unsafe {
         let dataset = env.get_rust_field::<_, _, BlockingDataset>(jdataset, NATIVE_DATASET)?;
@@ -69,7 +69,7 @@ fn inner_merge_insert<'local>(
             .conflict_retries(conflict_retries)
             .retry_timeout(Duration::from_millis(retry_timeout_ms))
             .skip_auto_cleanup(skip_auto_cleanup)
-            .dedupe_ordering(dedupe_ordering);
+            .dedupe_sort_options(dedupe_sort_options);
 
         if let Some(column) = dedupe_by {
             builder.dedupe_by(column);
@@ -245,23 +245,17 @@ fn extract_dedupe_by<'local>(env: &mut JNIEnv<'local>, jparam: &JObject) -> Resu
     env.get_string_opt(&dedupe_by)
 }
 
-fn extract_dedupe_ordering<'local>(
+fn extract_dedupe_sort_options<'local>(
     env: &mut JNIEnv<'local>,
     jparam: &JObject,
-) -> Result<DedupeOrdering> {
-    let ordering: JString = env
-        .call_method(jparam, "dedupeOrderingValue", "()Ljava/lang/String;", &[])?
-        .l()?
-        .into();
-    let ordering = ordering.extract(env)?;
-
-    match ordering.as_str() {
-        "Ascending" => Ok(DedupeOrdering::Ascending),
-        "Descending" => Ok(DedupeOrdering::Descending),
-        _ => Err(Error::input_error(format!(
-            "Illegal dedupe_ordering: {ordering}",
-        ))),
-    }
+) -> Result<SortOptions> {
+    let descending = env
+        .call_method(jparam, "dedupeDescending", "()Z", &[])?
+        .z()?;
+    let nulls_first = env
+        .call_method(jparam, "dedupeNullsFirst", "()Z", &[])?
+        .z()?;
+    Ok(SortOptions::new(descending, nulls_first))
 }
 
 const MERGE_STATS_CLASS: &str = "org/lance/merge/MergeInsertStats";

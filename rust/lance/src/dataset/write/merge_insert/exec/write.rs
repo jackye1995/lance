@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
-use arrow_array::{Array, RecordBatch, UInt64Array, UInt8Array};
+use arrow_array::{Array, ArrayRef, RecordBatch, UInt64Array, UInt8Array};
 use arrow_schema::Schema;
 use arrow_select;
 use datafusion::common::Result as DFResult;
@@ -20,6 +20,7 @@ use datafusion::{
 };
 use datafusion_physical_expr::{EquivalenceProperties, Partitioning};
 use futures::{stream, StreamExt};
+use lance_arrow::RecordBatchExt;
 use roaring::RoaringTreemap;
 
 use crate::dataset::transaction::UpdateMode::RewriteRows;
@@ -75,8 +76,6 @@ struct MergeState {
     dedupe_by: Option<String>,
     /// Dedupe ordering
     dedupe_ordering: DedupeOrdering,
-    /// Column index of dedupe_by in the batch schema (lazily computed)
-    dedupe_col_idx: Option<usize>,
     /// Accumulated best rows for deduplication: row_id -> AccumulatedUpdate
     accumulated_updates: BTreeMap<u64, AccumulatedUpdate>,
     /// Buffered batches for dedupe mode (contains only data columns, indexed by batch_idx)
@@ -103,7 +102,6 @@ impl MergeState {
             on_columns,
             dedupe_by,
             dedupe_ordering,
-            dedupe_col_idx: None,
             accumulated_updates: BTreeMap::new(),
             buffered_batches: Vec::new(),
             batch_ref_counts: Vec::new(),
@@ -118,23 +116,21 @@ impl MergeState {
         }
     }
 
-    /// Resolve the dedupe column index from the batch schema (lazily)
-    fn resolve_dedupe_col_idx(&mut self, batch: &RecordBatch) -> Option<usize> {
-        if self.dedupe_col_idx.is_some() {
-            return self.dedupe_col_idx;
+    /// Get the dedupe column array from a batch.
+    /// Handles both flat columns (e.g., "ts") and nested columns (e.g., "metrics.ts").
+    /// Tries both the original name and with "source." prefix.
+    fn get_dedupe_column<'a>(&self, batch: &'a RecordBatch) -> Option<&'a ArrayRef> {
+        let col_name = self.dedupe_by.as_ref()?;
+
+        // Try qualified name first (source.col_name or source.struct.col_name)
+        let qualified_name = format!("source.{}", col_name);
+        if let Some(col) = batch.column_by_qualified_name(&qualified_name) {
+            return Some(col);
         }
 
-        if let Some(ref col_name) = self.dedupe_by {
-            // Try to find the column - it may be qualified with "source." prefix
-            let idx = batch.schema().index_of(col_name).ok().or_else(|| {
-                let qualified_name = format!("source.{}", col_name);
-                batch.schema().index_of(&qualified_name).ok()
-            });
-            self.dedupe_col_idx = idx;
-            idx
-        } else {
-            None
-        }
+        // Try unqualified name (col_name or struct.col_name)
+        // This uses column_by_qualified_name which handles nested paths like "struct.field"
+        batch.column_by_qualified_name(col_name)
     }
 
     /// Process a single row based on its action, updating internal state
@@ -165,17 +161,9 @@ impl MergeState {
                     let row_addr = row_addr_array.value(row_idx);
                     let row_id = row_id_array.value(row_idx);
 
-                    if self.dedupe_by.is_some() {
+                    if let Some(dedupe_col) = self.get_dedupe_column(batch) {
                         // Running deduplication mode
-                        let dedupe_col_idx = self.dedupe_col_idx.ok_or_else(|| {
-                            datafusion::error::DataFusionError::Internal(format!(
-                                "dedupe_by column '{}' not found in batch schema",
-                                self.dedupe_by.as_ref().unwrap()
-                            ))
-                        })?;
-
-                        let dedupe_value =
-                            ScalarValue::try_from_array(batch.column(dedupe_col_idx), row_idx)?;
+                        let dedupe_value = ScalarValue::try_from_array(dedupe_col, row_idx)?;
 
                         let new_batch_idx = batch_idx.ok_or_else(|| {
                             datafusion::error::DataFusionError::Internal(
@@ -443,23 +431,15 @@ impl FullSchemaMergeInsertExec {
         let (_, rowaddr_idx, rowid_idx, action_idx, data_column_indices, output_schema) =
             self.prepare_stream_schema(input_stream.schema())?;
 
-        // Check if we're in dedupe mode and resolve the dedupe column index
+        // Check if we're in dedupe mode
         let is_dedupe_mode = {
-            let mut state = merge_state.lock().map_err(|e| {
+            let state = merge_state.lock().map_err(|e| {
                 datafusion::error::DataFusionError::Internal(format!(
                     "Failed to lock merge state: {}",
                     e
                 ))
             })?;
-            if state.is_dedupe_mode() {
-                // Resolve the dedupe column index from the input schema
-                // The dedupe column should be in the source columns
-                let input_schema = input_stream.schema();
-                state.resolve_dedupe_col_idx(&RecordBatch::new_empty(input_schema));
-                true
-            } else {
-                false
-            }
+            state.is_dedupe_mode()
         };
 
         let output_schema_clone = output_schema.clone();
@@ -480,11 +460,6 @@ impl FullSchemaMergeInsertExec {
                     e
                 ))
             })?;
-
-            // Resolve dedupe column index on first batch with data (if not already done)
-            if merge_state.is_dedupe_mode() && merge_state.dedupe_col_idx.is_none() {
-                merge_state.resolve_dedupe_col_idx(&batch);
-            }
 
             // In dedupe mode, buffer the data columns from this batch
             let batch_idx = if merge_state.is_dedupe_mode() {
@@ -620,6 +595,10 @@ impl FullSchemaMergeInsertExec {
                 ))
             })?;
 
+        // Check if we need to exclude the dedupe column from output
+        // (when it exists in source but not in target)
+        let exclude_dedupe_col = self.should_exclude_dedupe_column();
+
         // Find all data columns to write (everything except special columns)
         // The schema from DataFusion optimization may have collapsed duplicate columns
         // from the logical join, leaving us with the merged data columns plus special columns
@@ -631,12 +610,27 @@ impl FullSchemaMergeInsertExec {
             .filter(|&idx| {
                 let field = input_schema.field(idx);
                 let name = field.name();
-                // Skip special columns: _rowaddr and __action
-                idx != rowaddr_idx
-                    && idx != action_idx
-                    && name != ROW_ADDR
-                    && name != ROW_ID
-                    && name != MERGE_ACTION_COLUMN
+                // Skip special columns: _rowaddr, _rowid, __action
+                if idx == rowaddr_idx
+                    || idx == action_idx
+                    || name == ROW_ADDR
+                    || name == ROW_ID
+                    || name == MERGE_ACTION_COLUMN
+                {
+                    return false;
+                }
+                // Skip dedupe column if it should be excluded (not in target schema)
+                if let Some(ref dedupe_col) = exclude_dedupe_col {
+                    // Check if this field is the dedupe column
+                    // Field name is like "source.ts" or just "ts", dedupe_col is "ts"
+                    let base_name = name.strip_prefix("source.").unwrap_or(name);
+                    // Get top-level field name for nested paths
+                    let dedupe_top_level = dedupe_col.split('.').next().unwrap_or(dedupe_col);
+                    if base_name == dedupe_top_level {
+                        return false;
+                    }
+                }
+                true
             })
             .collect();
 
@@ -668,6 +662,25 @@ impl FullSchemaMergeInsertExec {
             data_column_indices,
             output_schema,
         ))
+    }
+
+    /// Check if the dedupe column should be excluded from output.
+    /// Returns Some(dedupe_col_name) if it should be excluded, None otherwise.
+    fn should_exclude_dedupe_column(&self) -> Option<String> {
+        let dedupe_col = self.params.dedupe_by.as_ref()?;
+
+        // Get the top-level field name from the dedupe column path
+        let dedupe_top_level = dedupe_col.split('.').next().unwrap_or(dedupe_col);
+
+        // Check if the dedupe column exists in target schema
+        let target_schema = self.dataset.schema();
+        if target_schema.field(dedupe_top_level).is_some() {
+            // Dedupe column exists in target, don't exclude
+            None
+        } else {
+            // Dedupe column doesn't exist in target, exclude it from output
+            Some(dedupe_col.clone())
+        }
     }
 
     /// Extract control arrays from batch
@@ -900,11 +913,6 @@ impl FullSchemaMergeInsertExec {
                     e
                 ))
             })?;
-
-            // Resolve dedupe column index on first batch if in dedupe mode
-            if merge_state.is_dedupe_mode() && merge_state.dedupe_col_idx.is_none() {
-                merge_state.resolve_dedupe_col_idx(batch);
-            }
 
             // In dedupe mode, buffer the data columns from this batch
             let batch_idx = if merge_state.is_dedupe_mode() {

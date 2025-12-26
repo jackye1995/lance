@@ -1459,7 +1459,8 @@ impl MergeInsertJob {
     /// The fast path is only available for specific conditions:
     /// - when_matched is UpdateAll or UpdateIf or Fail
     /// - Either use_index is false OR there's no scalar index on join key
-    /// - Source schema matches dataset schema exactly
+    /// - Source schema matches dataset schema exactly, OR source has one extra column
+    ///   that is the dedupe_by column (which won't be written to target)
     /// - when_not_matched_by_source is Keep
     async fn can_use_create_plan(&self, source_schema: &Schema) -> Result<bool> {
         // Convert to lance schema for comparison
@@ -1477,17 +1478,69 @@ impl MergeInsertJob {
             },
         );
 
+        // Check if source differs only in the dedupe column (which is allowed)
+        let is_valid_schema = if is_full_schema {
+            true
+        } else if let Some(ref dedupe_col) = self.params.dedupe_by {
+            // Check if source has all target columns plus only the dedupe column
+            self.is_schema_with_dedupe_column_only(&lance_schema, full_schema, dedupe_col)
+        } else {
+            false
+        };
+
         let has_scalar_index = self.join_key_as_scalar_index().await?.is_some();
 
         Ok(matches!(
             self.params.when_matched,
             WhenMatched::UpdateAll | WhenMatched::UpdateIf(_) | WhenMatched::Fail
         ) && (!self.params.use_index || !has_scalar_index)
-            && is_full_schema
+            && is_valid_schema
             && matches!(
                 self.params.delete_not_matched_by_source,
                 WhenNotMatchedBySource::Keep
             ))
+    }
+
+    /// Check if source schema contains all target columns plus only the dedupe column.
+    /// The dedupe column can be a nested path like "metrics.timestamp".
+    fn is_schema_with_dedupe_column_only(
+        &self,
+        source_schema: &lance_core::datatypes::Schema,
+        target_schema: &lance_core::datatypes::Schema,
+        dedupe_col: &str,
+    ) -> bool {
+        // Get the top-level field name from the dedupe column path
+        let dedupe_top_level = dedupe_col.split('.').next().unwrap_or(dedupe_col);
+
+        // Check that all target fields exist in source
+        for target_field in &target_schema.fields {
+            let source_field = source_schema.field(&target_field.name);
+            if source_field.is_none() {
+                return false;
+            }
+            // Compare field types (ignoring nullability and metadata)
+            let source_field = source_field.unwrap();
+            if source_field.data_type() != target_field.data_type() {
+                return false;
+            }
+        }
+
+        // Check that source has exactly one extra field which is the dedupe column
+        let source_field_names: std::collections::HashSet<_> = source_schema
+            .fields
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect();
+        let target_field_names: std::collections::HashSet<_> = target_schema
+            .fields
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect();
+
+        let extra_fields: Vec<_> = source_field_names.difference(&target_field_names).collect();
+
+        // Should have exactly one extra field which is the dedupe column (top-level)
+        extra_fields.len() == 1 && extra_fields[0] == &dedupe_top_level
     }
 
     async fn execute_uncommitted_impl(
@@ -5854,5 +5907,285 @@ MergeInsert: on=[id], when_matched=UpdateAll, when_not_matched=InsertAll, when_n
             "Expected NotSupported error, got: {}",
             err
         );
+    }
+
+    #[tokio::test]
+    async fn test_dedupe_nested_field() {
+        use arrow_array::types::Float64Type;
+        use arrow_array::Array;
+        use arrow_schema::{Field, Fields};
+
+        // Test deduplication using a nested struct field (e.g., "metrics.timestamp")
+        let test_dir = TempStrDir::default();
+
+        // Create schema with nested struct
+        let metrics_fields = Fields::from(vec![
+            Field::new("timestamp", DataType::Int64, false),
+            Field::new("count", DataType::Int32, false),
+        ]);
+        let schema = Arc::new(arrow_schema::Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("value", DataType::Float64, false),
+            Field::new("metrics", DataType::Struct(metrics_fields.clone()), false),
+        ]));
+
+        // Create initial dataset with nested struct data
+        let metrics_array = StructArray::from(vec![
+            (
+                Arc::new(Field::new("timestamp", DataType::Int64, false)),
+                Arc::new(Int64Array::from(vec![100, 200, 300])) as Arc<dyn Array>,
+            ),
+            (
+                Arc::new(Field::new("count", DataType::Int32, false)),
+                Arc::new(Int32Array::from(vec![1, 2, 3])) as Arc<dyn Array>,
+            ),
+        ]);
+
+        let data = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0])),
+                Arc::new(metrics_array),
+            ],
+        )
+        .unwrap();
+
+        let dataset = InsertBuilder::new(test_dir.as_str())
+            .execute(vec![data])
+            .await
+            .unwrap();
+
+        // Source data with duplicates, using nested field for deduplication
+        // For id=1: metrics.timestamp = 150 and 50 -> should keep 50 (ascending)
+        // For id=2: metrics.timestamp = 180 and 250 -> should keep 180 (ascending)
+        let source_metrics = StructArray::from(vec![
+            (
+                Arc::new(Field::new("timestamp", DataType::Int64, false)),
+                Arc::new(Int64Array::from(vec![150, 50, 180, 250, 400])) as Arc<dyn Array>,
+            ),
+            (
+                Arc::new(Field::new("count", DataType::Int32, false)),
+                Arc::new(Int32Array::from(vec![10, 11, 20, 21, 40])) as Arc<dyn Array>,
+            ),
+        ]);
+
+        let new_data = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 1, 2, 2, 4])),
+                Arc::new(Float64Array::from(vec![10.0, 11.0, 20.0, 21.0, 40.0])),
+                Arc::new(source_metrics),
+            ],
+        )
+        .unwrap();
+
+        // Use nested field path for deduplication
+        let (merged_dataset, stats) =
+            MergeInsertBuilder::try_new(dataset.into(), vec!["id".into()])
+                .unwrap()
+                .when_matched(WhenMatched::UpdateAll)
+                .when_not_matched(WhenNotMatched::InsertAll)
+                .dedupe_by("metrics.timestamp") // Nested field path
+                .dedupe_ordering(DedupeOrdering::Ascending)
+                .try_build()
+                .unwrap()
+                .execute_reader(Box::new(RecordBatchIterator::new(
+                    vec![Ok(new_data.clone())],
+                    new_data.schema(),
+                )))
+                .await
+                .unwrap();
+
+        assert_eq!(stats.num_inserted_rows, 1); // id=4
+        assert_eq!(stats.num_updated_rows, 2); // id=1 and id=2
+
+        let result = merged_dataset
+            .scan()
+            .order_by(Some(vec![ColumnOrdering::asc_nulls_first(
+                "id".to_string(),
+            )]))
+            .unwrap()
+            .try_into_batch()
+            .await
+            .unwrap();
+
+        // Check id=1 has timestamp=50 (smallest), id=2 has timestamp=180 (smallest)
+        let ids = result.column_by_name("id").unwrap();
+        let ids = ids.as_primitive::<Int32Type>();
+        assert_eq!(ids.values(), &[1, 2, 3, 4]);
+
+        let values = result.column_by_name("value").unwrap();
+        let values = values.as_primitive::<Float64Type>();
+        assert!((values.value(0) - 11.0).abs() < f64::EPSILON); // id=1: value should be 11.0 (from row with ts=50)
+        assert!((values.value(1) - 20.0).abs() < f64::EPSILON); // id=2: value should be 20.0 (from row with ts=180)
+    }
+
+    #[tokio::test]
+    async fn test_dedupe_source_only_column() {
+        use arrow_array::record_batch;
+        use arrow_array::types::Float64Type;
+
+        // Test that dedupe_by works when the dedupe column only exists in source
+        // but not in target. The dedupe column should be used for deduplication
+        // but excluded from the written output.
+        let test_dir = TempStrDir::default();
+
+        // Create initial dataset WITHOUT the dedupe column
+        let data = record_batch!(
+            ("id", Int32, [1, 2, 3]),
+            ("value", Float64, [1.0, 2.0, 3.0])
+        )
+        .unwrap();
+
+        let dataset = InsertBuilder::new(test_dir.as_str())
+            .execute(vec![data])
+            .await
+            .unwrap();
+
+        // Source data WITH an extra column (ts) that will be used for deduplication
+        // The source has a column that target doesn't have
+        let new_data = record_batch!(
+            ("id", Int32, [1, 1, 2, 2, 4]),
+            ("value", Float64, [10.0, 11.0, 20.0, 21.0, 40.0]),
+            ("ts", Int64, [150, 50, 180, 250, 400])
+        )
+        .unwrap();
+
+        // This should work - using ts column for deduplication even though
+        // ts doesn't exist in the target dataset
+        let (merged_dataset, stats) =
+            MergeInsertBuilder::try_new(dataset.into(), vec!["id".into()])
+                .unwrap()
+                .when_matched(WhenMatched::UpdateAll)
+                .when_not_matched(WhenNotMatched::InsertAll)
+                .dedupe_by("ts")
+                .dedupe_ordering(DedupeOrdering::Ascending)
+                .try_build()
+                .unwrap()
+                .execute_reader(Box::new(RecordBatchIterator::new(
+                    vec![Ok(new_data.clone())],
+                    new_data.schema(),
+                )))
+                .await
+                .unwrap();
+
+        assert_eq!(stats.num_inserted_rows, 1); // id=4
+        assert_eq!(stats.num_updated_rows, 2); // id=1 and id=2
+
+        let result = merged_dataset
+            .scan()
+            .order_by(Some(vec![ColumnOrdering::asc_nulls_first(
+                "id".to_string(),
+            )]))
+            .unwrap()
+            .try_into_batch()
+            .await
+            .unwrap();
+
+        // Check the values - should have picked rows with smallest ts values
+        let ids = result.column_by_name("id").unwrap();
+        let ids = ids.as_primitive::<Int32Type>();
+        assert_eq!(ids.values(), &[1, 2, 3, 4]);
+
+        let values = result.column_by_name("value").unwrap();
+        let values = values.as_primitive::<Float64Type>();
+        assert!((values.value(0) - 11.0).abs() < f64::EPSILON); // id=1: value=11.0 (from row with ts=50)
+        assert!((values.value(1) - 20.0).abs() < f64::EPSILON); // id=2: value=20.0 (from row with ts=180)
+        assert!((values.value(2) - 3.0).abs() < f64::EPSILON); // id=3: unchanged
+        assert!((values.value(3) - 40.0).abs() < f64::EPSILON); // id=4: new
+
+        // Verify that ts column is NOT in the result (it was excluded from output)
+        assert!(
+            result.column_by_name("ts").is_none(),
+            "ts column should not be in the output"
+        );
+
+        // Also verify that the dataset schema doesn't have the ts column
+        let schema = merged_dataset.schema();
+        assert!(
+            schema.field("ts").is_none(),
+            "ts column should not be in the dataset schema"
+        );
+
+        // Verify the schema only has the original columns
+        let field_names: Vec<&str> = schema.fields.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(
+            field_names,
+            vec!["id", "value"],
+            "Schema should only contain original target columns"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dedupe_column_in_both_schemas() {
+        use arrow_array::record_batch;
+        use arrow_array::types::Float64Type;
+
+        // Test that dedupe_by works when the column exists in both source and target
+        let test_dir = TempStrDir::default();
+
+        // Create initial dataset WITH the dedupe column
+        let data = record_batch!(
+            ("id", Int32, [1, 2, 3]),
+            ("value", Float64, [1.0, 2.0, 3.0]),
+            ("ts", Int64, [100, 200, 300])
+        )
+        .unwrap();
+
+        let dataset = InsertBuilder::new(test_dir.as_str())
+            .execute(vec![data])
+            .await
+            .unwrap();
+
+        // Source data with the same schema, including ts column for deduplication
+        let new_data = record_batch!(
+            ("id", Int32, [1, 1, 2, 2, 4]),
+            ("value", Float64, [10.0, 11.0, 20.0, 21.0, 40.0]),
+            ("ts", Int64, [150, 50, 180, 250, 400])
+        )
+        .unwrap();
+
+        // The merge should work - using ts column for deduplication
+        let (merged_dataset, stats) =
+            MergeInsertBuilder::try_new(dataset.into(), vec!["id".into()])
+                .unwrap()
+                .when_matched(WhenMatched::UpdateAll)
+                .when_not_matched(WhenNotMatched::InsertAll)
+                .dedupe_by("ts")
+                .dedupe_ordering(DedupeOrdering::Ascending)
+                .try_build()
+                .unwrap()
+                .execute_reader(Box::new(RecordBatchIterator::new(
+                    vec![Ok(new_data.clone())],
+                    new_data.schema(),
+                )))
+                .await
+                .unwrap();
+
+        assert_eq!(stats.num_inserted_rows, 1); // id=4
+        assert_eq!(stats.num_updated_rows, 2); // id=1 and id=2
+
+        let result = merged_dataset
+            .scan()
+            .order_by(Some(vec![ColumnOrdering::asc_nulls_first(
+                "id".to_string(),
+            )]))
+            .unwrap()
+            .try_into_batch()
+            .await
+            .unwrap();
+
+        // Check the values - should have picked rows with smallest ts values
+        let ids = result.column_by_name("id").unwrap();
+        let ids = ids.as_primitive::<Int32Type>();
+        assert_eq!(ids.values(), &[1, 2, 3, 4]);
+
+        let values = result.column_by_name("value").unwrap();
+        let values = values.as_primitive::<Float64Type>();
+        assert!((values.value(0) - 11.0).abs() < f64::EPSILON); // id=1: value=11.0 (from row with ts=50)
+        assert!((values.value(1) - 20.0).abs() < f64::EPSILON); // id=2: value=20.0 (from row with ts=180)
+        assert!((values.value(2) - 3.0).abs() < f64::EPSILON); // id=3: unchanged
+        assert!((values.value(3) - 40.0).abs() < f64::EPSILON); // id=4: new
     }
 }

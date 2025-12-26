@@ -1553,10 +1553,59 @@ impl MergeInsertJob {
         extra_fields.len() == 1 && extra_fields[0] == &dedupe_top_level
     }
 
+    /// Validate that the dedupe column exists in the source schema.
+    /// Handles both flat columns (e.g., "ts") and nested columns (e.g., "metrics.ts").
+    fn validate_dedupe_column(&self, source_schema: &Schema, dedupe_col: &str) -> Result<()> {
+        // For nested paths like "metrics.ts", we need to traverse the schema
+        let parts: Vec<&str> = dedupe_col.split('.').collect();
+
+        let mut current_fields: &arrow_schema::Fields = source_schema.fields();
+        for (i, part) in parts.iter().enumerate() {
+            let field = current_fields.iter().find(|f| f.name() == *part);
+            match field {
+                Some(f) => {
+                    if i < parts.len() - 1 {
+                        // Not the last part, so this should be a struct
+                        match f.data_type() {
+                            arrow_schema::DataType::Struct(nested_fields) => {
+                                current_fields = nested_fields;
+                            }
+                            _ => {
+                                return Err(Error::invalid_input(
+                                    format!(
+                                        "dedupe_by column '{}' not found in source schema: '{}' is not a struct",
+                                        dedupe_col, part
+                                    ),
+                                    location!(),
+                                ));
+                            }
+                        }
+                    }
+                    // If it's the last part, we found the column
+                }
+                None => {
+                    return Err(Error::invalid_input(
+                        format!(
+                            "dedupe_by column '{}' not found in source schema",
+                            dedupe_col
+                        ),
+                        location!(),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn execute_uncommitted_impl(
         self,
         source: SendableRecordBatchStream,
     ) -> Result<UncommittedMergeInsert> {
+        // Validate dedupe column exists in source schema if specified
+        if let Some(ref dedupe_col) = self.params.dedupe_by {
+            self.validate_dedupe_column(source.schema().as_ref(), dedupe_col)?;
+        }
+
         // Check if we can use the fast path
         let can_use_fast_path = self.can_use_create_plan(source.schema().as_ref()).await?;
 
@@ -6183,6 +6232,53 @@ MergeInsert: on=[id], when_matched=UpdateAll, when_not_matched=InsertAll, when_n
             err.to_string().contains("NotSupported")
                 || err.to_string().contains("dedupe_by is only supported"),
             "Expected NotSupported error, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dedupe_column_not_found() {
+        use arrow_array::record_batch;
+
+        // Test that dedupe_by returns an error when the column doesn't exist in source schema
+        let test_dir = TempStrDir::default();
+
+        // Create initial dataset
+        let data = record_batch!(
+            ("id", Int32, [1, 2, 3]),
+            ("value", Float64, [1.0, 2.0, 3.0])
+        )
+        .unwrap();
+
+        let dataset = InsertBuilder::new(test_dir.as_str())
+            .execute(vec![data])
+            .await
+            .unwrap();
+
+        // Source data without the dedupe column
+        let new_data =
+            record_batch!(("id", Int32, [1, 2]), ("value", Float64, [10.0, 20.0])).unwrap();
+
+        // Try to use dedupe_by with a non-existent column
+        let result = MergeInsertBuilder::try_new(dataset.into(), vec!["id".into()])
+            .unwrap()
+            .when_matched(WhenMatched::UpdateAll)
+            .when_not_matched(WhenNotMatched::InsertAll)
+            .dedupe_by("nonexistent_column")
+            .dedupe_ordering(DedupeOrdering::Ascending)
+            .try_build()
+            .unwrap()
+            .execute_reader(Box::new(RecordBatchIterator::new(
+                vec![Ok(new_data.clone())],
+                new_data.schema(),
+            )))
+            .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("not found in source schema"),
+            "Expected 'not found in source schema' error, got: {}",
             err
         );
     }

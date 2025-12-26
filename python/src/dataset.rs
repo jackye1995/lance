@@ -231,7 +231,7 @@ impl MergeInsertBuilder {
     /// Set the column to use for deduplication when source has duplicate keys.
     ///
     /// When the source data contains multiple rows with the same key, this column
-    /// determines which row to keep based on the dedupe_ordering.
+    /// determines which row to keep based on the sort options.
     pub fn dedupe_by<'a>(
         mut slf: PyRefMut<'a, Self>,
         column: &str,

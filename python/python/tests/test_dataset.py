@@ -2584,7 +2584,7 @@ def test_merge_insert_dedupe_ascending(tmp_path: Path):
         .when_matched_update_all()
         .when_not_matched_insert_all()
         .dedupe_by("ts")
-        .dedupe_ordering("ascending")
+        .dedupe_sort_options(descending=False)
         .execute(new_data)
     )
 
@@ -2627,7 +2627,7 @@ def test_merge_insert_dedupe_descending(tmp_path: Path):
         .when_matched_update_all()
         .when_not_matched_insert_all()
         .dedupe_by("ts")
-        .dedupe_ordering("descending")
+        .dedupe_sort_options(descending=True)
         .execute(new_data)
     )
 
@@ -2677,7 +2677,7 @@ def test_merge_insert_dedupe_large(tmp_path: Path):
         ds.merge_insert("id")
         .when_matched_update_all()
         .dedupe_by("ts")
-        .dedupe_ordering("descending")
+        .dedupe_sort_options(descending=True)
         .execute(new_data)
     )
 

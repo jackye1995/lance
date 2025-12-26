@@ -251,14 +251,13 @@ class MergeInsertBuilder(_MergeInsertBuilder):
 
         When the source data contains duplicate keys, this setting determines which
         row to keep based on the value of the specified column. Use with
-        `dedupe_ordering` to control whether to keep the row with the smallest
-        or largest value.
+        `dedupe_sort_options` to control sorting behavior.
 
         Parameters
         ----------
         column : str
             The name of the column to use for comparing duplicate rows.
-            The row with the best value (based on dedupe_ordering) will be kept.
+            The row with the best value (based on sort options) will be kept.
 
         Returns
         -------
@@ -269,35 +268,42 @@ class MergeInsertBuilder(_MergeInsertBuilder):
         --------
         Keep the row with the latest timestamp when duplicates exist::
 
-            builder.dedupe_by("timestamp").dedupe_ordering("descending")
+            builder.dedupe_by("timestamp").dedupe_sort_options(descending=True)
 
         Keep the row with the smallest version number when duplicates exist::
 
-            builder.dedupe_by("version").dedupe_ordering("ascending")
+            builder.dedupe_by("version").dedupe_sort_options(descending=False)
         """
         return super(MergeInsertBuilder, self).dedupe_by(column)
 
-    def dedupe_ordering(self, ordering: str = "ascending") -> "MergeInsertBuilder":
+    def dedupe_sort_options(
+        self, descending: bool = False, nulls_first: bool = False
+    ) -> "MergeInsertBuilder":
         """
-        Set the ordering for deduplication.
+        Set the sort options for deduplication.
 
         When source data has duplicate keys and `dedupe_by` is set, this controls
-        which row to keep:
-        - "ascending" (default): Keep the row with the smallest value
-        - "descending": Keep the row with the largest value
+        which row to keep.
+
+        If values are equal (including both NULL), the operation fails with an error.
 
         Parameters
         ----------
-        ordering : str, default "ascending"
-            Either "ascending" (or "asc") to keep the smallest value,
-            or "descending" (or "desc") to keep the largest value.
+        descending : bool, default False
+            If True, keep the row with the largest value.
+            If False, keep the row with the smallest value.
+        nulls_first : bool, default False
+            If True, NULL values win over non-NULL values.
+            If False, NULL values lose to non-NULL values.
 
         Returns
         -------
         MergeInsertBuilder
             The builder instance for method chaining.
         """
-        return super(MergeInsertBuilder, self).dedupe_ordering(ordering)
+        return super(MergeInsertBuilder, self).dedupe_sort_options(
+            descending, nulls_first
+        )
 
     def explain_plan(
         self, schema: Optional[pa.Schema] = None, verbose: bool = False

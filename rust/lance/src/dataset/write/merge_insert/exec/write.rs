@@ -114,8 +114,7 @@ impl MergeState {
     /// - ASC (NULLS LAST): NULL is considered larger than any non-NULL
     /// - DESC (NULLS FIRST): NULL is considered smaller than any non-NULL
     ///
-    /// For non-NULL values, uses ScalarValue's total ordering which handles
-    /// floats as: -Inf < normal values < Inf < NaN
+    /// For non-NULL values, uses ScalarValue's total ordering.
     fn is_better_value(&self, new: &ScalarValue, existing: &ScalarValue) -> bool {
         let new_is_null = new.is_null();
         let existing_is_null = existing.is_null();

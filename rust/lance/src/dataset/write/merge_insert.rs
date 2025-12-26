@@ -286,18 +286,15 @@ pub enum WhenNotMatched {
 /// - `Ascending`: Keep the row with the smallest value (NULLS LAST - NULL loses to non-NULL)
 /// - `Descending`: Keep the row with the largest value (NULLS FIRST - NULL loses to non-NULL)
 ///
-/// For floating-point values, NaN is treated as larger than all other values (including Infinity),
-/// consistent with Arrow's total ordering.
+/// When values are equal (including both NULL), the first encountered row is kept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Hash, Default)]
 pub enum DedupeOrdering {
     /// Keep the row with the smallest dedupe column value.
     /// NULL loses to any non-NULL value (NULLS LAST semantics).
-    /// For floats: -Inf < normal values < Inf < NaN
     #[default]
     Ascending,
     /// Keep the row with the largest dedupe column value.
     /// NULL loses to any non-NULL value (NULLS FIRST semantics).
-    /// For floats: NaN > Inf > normal values > -Inf
     Descending,
 }
 
@@ -522,6 +519,10 @@ impl MergeInsertBuilder {
     /// When `dedupe_by` is set and multiple source rows match the same target row:
     /// - `DedupeOrdering::Ascending`: Keep the row with the smallest `dedupe_by` value (default)
     /// - `DedupeOrdering::Descending`: Keep the row with the largest `dedupe_by` value
+    ///
+    /// NULL handling follows DataFusion/SQL semantics:
+    /// - NULL always loses to any non-NULL value (in both ascending and descending)
+    /// - When values are equal (including both NULL), the first encountered row is kept
     pub fn dedupe_ordering(&mut self, ordering: DedupeOrdering) -> &mut Self {
         self.params.dedupe_ordering = ordering;
         self
@@ -5496,6 +5497,274 @@ MergeInsert: on=[id], when_matched=UpdateAll, when_not_matched=InsertAll, when_n
         .unwrap();
 
         assert_eq!(result, expected);
+    }
+
+    #[tokio::test]
+    async fn test_dedupe_null_handling() {
+        use arrow_array::Array;
+
+        // Test that NULL values lose to non-NULL values in deduplication
+        // This follows DataFusion/SQL semantics: ASC = NULLS LAST, DESC = NULLS FIRST
+        // In both cases, NULL loses to any non-NULL value
+        let test_dir = TempStrDir::default();
+
+        // Create initial dataset with nullable ts column
+        let schema = Arc::new(arrow_schema::Schema::new(vec![
+            arrow_schema::Field::new("id", arrow_schema::DataType::Int32, false),
+            arrow_schema::Field::new("value", arrow_schema::DataType::Float64, false),
+            arrow_schema::Field::new("ts", arrow_schema::DataType::Int64, true), // nullable
+        ]));
+
+        let data = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0])),
+                Arc::new(Int64Array::from(vec![Some(100), Some(200), Some(300)])),
+            ],
+        )
+        .unwrap();
+
+        let dataset = InsertBuilder::new(test_dir.as_str())
+            .execute(vec![data])
+            .await
+            .unwrap();
+
+        // Test 1: Ascending - NULL should lose to non-NULL
+        // Source has: id=1 with ts=NULL and ts=50
+        // Expected: ts=50 wins (NULL loses in ascending)
+        let new_data = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 1, 2])),
+                Arc::new(Float64Array::from(vec![10.0, 11.0, 20.0])),
+                Arc::new(Int64Array::from(vec![None, Some(50), Some(180)])),
+            ],
+        )
+        .unwrap();
+
+        let (merged_dataset, stats) =
+            MergeInsertBuilder::try_new(dataset.into(), vec!["id".into()])
+                .unwrap()
+                .when_matched(WhenMatched::UpdateAll)
+                .when_not_matched(WhenNotMatched::InsertAll)
+                .dedupe_by("ts")
+                .dedupe_ordering(DedupeOrdering::Ascending)
+                .try_build()
+                .unwrap()
+                .execute_reader(Box::new(RecordBatchIterator::new(
+                    vec![Ok(new_data.clone())],
+                    new_data.schema(),
+                )))
+                .await
+                .unwrap();
+
+        assert_eq!(stats.num_updated_rows, 2); // id=1 and id=2
+
+        let result = merged_dataset
+            .scan()
+            .order_by(Some(vec![ColumnOrdering::asc_nulls_first(
+                "id".to_string(),
+            )]))
+            .unwrap()
+            .try_into_batch()
+            .await
+            .unwrap();
+
+        // id=1: ts=50 should win over ts=NULL (NULL loses)
+        // id=2: ts=180 (only one row)
+        // id=3: unchanged
+        let result_ts = result
+            .column(2)
+            .as_primitive::<arrow_array::types::Int64Type>();
+        assert_eq!(result_ts.value(0), 50, "id=1 should have ts=50, not NULL");
+        assert!(!result_ts.is_null(0), "id=1 ts should not be NULL");
+        assert_eq!(result_ts.value(1), 180);
+        assert_eq!(result_ts.value(2), 300);
+
+        // Test 2: Descending - NULL should also lose to non-NULL
+        let test_dir2 = TempStrDir::default();
+        let data2 = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])),
+                Arc::new(Float64Array::from(vec![1.0, 2.0])),
+                Arc::new(Int64Array::from(vec![Some(100), Some(200)])),
+            ],
+        )
+        .unwrap();
+
+        let dataset2 = InsertBuilder::new(test_dir2.as_str())
+            .execute(vec![data2])
+            .await
+            .unwrap();
+
+        // Source has: id=1 with ts=NULL and ts=150
+        // Expected: ts=150 wins (NULL loses in descending too)
+        let new_data2 = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 1])),
+                Arc::new(Float64Array::from(vec![10.0, 11.0])),
+                Arc::new(Int64Array::from(vec![None, Some(150)])),
+            ],
+        )
+        .unwrap();
+
+        let (merged_dataset2, _) = MergeInsertBuilder::try_new(dataset2.into(), vec!["id".into()])
+            .unwrap()
+            .when_matched(WhenMatched::UpdateAll)
+            .when_not_matched(WhenNotMatched::InsertAll)
+            .dedupe_by("ts")
+            .dedupe_ordering(DedupeOrdering::Descending)
+            .try_build()
+            .unwrap()
+            .execute_reader(Box::new(RecordBatchIterator::new(
+                vec![Ok(new_data2.clone())],
+                new_data2.schema(),
+            )))
+            .await
+            .unwrap();
+
+        let result2 = merged_dataset2
+            .scan()
+            .order_by(Some(vec![ColumnOrdering::asc_nulls_first(
+                "id".to_string(),
+            )]))
+            .unwrap()
+            .try_into_batch()
+            .await
+            .unwrap();
+
+        let result_ts2 = result2
+            .column(2)
+            .as_primitive::<arrow_array::types::Int64Type>();
+        assert_eq!(
+            result_ts2.value(0),
+            150,
+            "id=1 should have ts=150, not NULL (NULL loses in DESC too)"
+        );
+        assert!(!result_ts2.is_null(0), "id=1 ts should not be NULL");
+
+        // Test 3: Both NULL - first one encountered is kept
+        let test_dir3 = TempStrDir::default();
+        let data3 = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1])),
+                Arc::new(Float64Array::from(vec![1.0])),
+                Arc::new(Int64Array::from(vec![Some(100)])),
+            ],
+        )
+        .unwrap();
+
+        let dataset3 = InsertBuilder::new(test_dir3.as_str())
+            .execute(vec![data3])
+            .await
+            .unwrap();
+
+        // Source has: id=1 with two NULL ts values
+        // Expected: first NULL is kept (no improvement possible)
+        let new_data3 = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 1])),
+                Arc::new(Float64Array::from(vec![10.0, 11.0])),
+                Arc::new(Int64Array::from(vec![None, None])),
+            ],
+        )
+        .unwrap();
+
+        let (merged_dataset3, _) = MergeInsertBuilder::try_new(dataset3.into(), vec!["id".into()])
+            .unwrap()
+            .when_matched(WhenMatched::UpdateAll)
+            .when_not_matched(WhenNotMatched::InsertAll)
+            .dedupe_by("ts")
+            .dedupe_ordering(DedupeOrdering::Ascending)
+            .try_build()
+            .unwrap()
+            .execute_reader(Box::new(RecordBatchIterator::new(
+                vec![Ok(new_data3.clone())],
+                new_data3.schema(),
+            )))
+            .await
+            .unwrap();
+
+        let result3 = merged_dataset3.scan().try_into_batch().await.unwrap();
+
+        let result_ts3 = result3
+            .column(2)
+            .as_primitive::<arrow_array::types::Int64Type>();
+        // When both are NULL, the first one is kept (value=10.0)
+        assert!(
+            result_ts3.is_null(0),
+            "id=1 ts should be NULL when both source rows have NULL"
+        );
+        let result_values3 = result3
+            .column(1)
+            .as_primitive::<arrow_array::types::Float64Type>();
+        assert!(
+            (result_values3.value(0) - 10.0).abs() < 0.001,
+            "First NULL row (value=10.0) should be kept"
+        );
+
+        // Test 4: Equal non-NULL values - first one encountered is kept (no failure)
+        let test_dir4 = TempStrDir::default();
+        let data4 = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1])),
+                Arc::new(Float64Array::from(vec![1.0])),
+                Arc::new(Int64Array::from(vec![Some(100)])),
+            ],
+        )
+        .unwrap();
+
+        let dataset4 = InsertBuilder::new(test_dir4.as_str())
+            .execute(vec![data4])
+            .await
+            .unwrap();
+
+        // Source has: id=1 with two rows having the same ts=50
+        // Expected: first row (value=10.0) is kept since values are equal
+        let new_data4 = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 1])),
+                Arc::new(Float64Array::from(vec![10.0, 11.0])),
+                Arc::new(Int64Array::from(vec![Some(50), Some(50)])),
+            ],
+        )
+        .unwrap();
+
+        let (merged_dataset4, _) = MergeInsertBuilder::try_new(dataset4.into(), vec!["id".into()])
+            .unwrap()
+            .when_matched(WhenMatched::UpdateAll)
+            .when_not_matched(WhenNotMatched::InsertAll)
+            .dedupe_by("ts")
+            .dedupe_ordering(DedupeOrdering::Ascending)
+            .try_build()
+            .unwrap()
+            .execute_reader(Box::new(RecordBatchIterator::new(
+                vec![Ok(new_data4.clone())],
+                new_data4.schema(),
+            )))
+            .await
+            .unwrap();
+
+        let result4 = merged_dataset4.scan().try_into_batch().await.unwrap();
+
+        let result_ts4 = result4
+            .column(2)
+            .as_primitive::<arrow_array::types::Int64Type>();
+        assert_eq!(result_ts4.value(0), 50);
+        let result_values4 = result4
+            .column(1)
+            .as_primitive::<arrow_array::types::Float64Type>();
+        assert!(
+            (result_values4.value(0) - 10.0).abs() < 0.001,
+            "First row (value=10.0) should be kept when dedupe values are equal"
+        );
     }
 
     #[tokio::test]

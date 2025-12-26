@@ -292,6 +292,10 @@ public class MergeInsertParams {
    *   <li>{@link DedupeOrdering#Descending}: Keep the row with the largest value
    * </ul>
    *
+   * <p>NULL handling follows DataFusion/SQL semantics: NULL always loses to any non-NULL value (in
+   * both ascending and descending). When values are equal (including both NULL), the first
+   * encountered row is kept.
+   *
    * @param ordering The ordering to use for deduplication.
    * @return This MergeInsertParams instance
    */
@@ -335,12 +339,17 @@ public class MergeInsertParams {
         .toString();
   }
 
-  /** Ordering for deduplication when source data has duplicate keys. */
+  /**
+   * Ordering for deduplication when source data has duplicate keys.
+   *
+   * <p>NULL always loses to any non-NULL value. When values are equal (including both NULL), the
+   * first encountered row is kept.
+   */
   public enum DedupeOrdering {
-    /** Keep the row with the smallest dedupe column value. */
+    /** Keep the row with the smallest dedupe column value. NULL loses (NULLS LAST semantics). */
     Ascending,
 
-    /** Keep the row with the largest dedupe column value. */
+    /** Keep the row with the largest dedupe column value. NULL loses (NULLS FIRST semantics). */
     Descending,
   }
 

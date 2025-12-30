@@ -52,23 +52,24 @@
 //! ## Inner Join Hybrid (insert_not_matched = false)
 //!
 //! Used for update-only operations. Strategy:
-//! 1. **Indexed path**: Use `IndexedLookupExec` + `HashJoinExec` (Inner)
-//! 2. **Scan path**: `HashJoinExec` (Inner) with scan of unindexed fragments
-//! 3. **Union**: Combine both joined result streams
+//! 1. **Indexed path**: Use `IndexedLookupExec` to get matching target rows from indexed fragments
+//! 2. **Scan path**: Use `LanceScanExec` to scan unindexed fragments
+//! 3. **Union**: Combine both target row streams
+//! 4. **Final join**: Inner join with source using `HashJoinExec`
 //!
 //! ```text
-//!                   RepartitionExec
-//!                         |
-//!                    UnionExec
-//!                   /          \
-//!     HashJoinExec(Inner)     HashJoinExec(Inner)
-//!       /         \              /         \
-//!    Source   IndexedLookup   Source    LanceScan
-//! (ReplayExec) (indexed)    (ReplayExec) (unindexed)
+//!                    HashJoinExec (Inner, CollectLeft)
+//!                     /                    \
+//!       Source (ReplayExec)       CoalescePartitionsExec
+//!                                          |
+//!                                      UnionExec
+//!                                      /        \
+//!                           IndexedLookup    LanceScanExec
+//!                          (indexed frags)   (unindexed frags)
 //! ```
 //!
 //! The [`ReplayExec`] wrapper on source allows the source stream to be consumed
-//! multiple times (once per join path).
+//! multiple times (once for `IndexedLookupExec` key extraction).
 
 use std::cmp::Ordering;
 use std::sync::Arc;

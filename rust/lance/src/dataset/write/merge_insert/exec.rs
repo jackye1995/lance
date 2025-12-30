@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The Lance Authors
 
-mod indexed_join;
+mod indexed_lookup;
 mod write;
 
 use datafusion::physical_plan::metrics::{Count, ExecutionPlanMetricsSet, MetricBuilder};
-pub use indexed_join::IndexedLookupExec;
+pub use indexed_lookup::IndexedLookupExec;
 pub use write::FullSchemaMergeInsertExec;
 
 use super::MergeStats;

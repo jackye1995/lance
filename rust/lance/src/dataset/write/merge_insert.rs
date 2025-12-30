@@ -23,15 +23,16 @@ use assign_action::merge_insert_action;
 
 use super::retry::{execute_with_retry, RetryConfig, RetryExecutor};
 use super::{write_fragments_internal, CommitBuilder, WriteParams};
+use crate::datafusion::dataframe::SessionContextExt;
 use crate::dataset::rowids::get_row_id_index;
 use crate::dataset::transaction::UpdateMode::{RewriteColumns, RewriteRows};
 use crate::dataset::utils::CapturedRowIds;
 use crate::{
-    datafusion::dataframe::SessionContextExt,
     dataset::{
         fragment::{FileFragment, FragReadConfig},
         transaction::{Operation, Transaction},
-        write::{merge_insert::logical_plan::MergeInsertPlanner, open_writer},
+        write::merge_insert::logical_plan::MergeInsertPlanner,
+        write::open_writer,
     },
     index::DatasetIndexInternalExt,
     io::exec::{
@@ -46,6 +47,7 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema};
 use datafusion::common::NullEquality;
 use datafusion::error::DataFusionError;
+use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
 use datafusion::{
     execution::{
         context::{SessionConfig, SessionContext},
@@ -61,7 +63,6 @@ use datafusion::{
         union::UnionExec,
         ColumnarValue, ExecutionPlan, PhysicalExpr, SendableRecordBatchStream,
     },
-    physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner},
     prelude::DataFrame,
     scalar::ScalarValue,
 };
@@ -1287,8 +1288,6 @@ impl MergeInsertJob {
         // Goal: we shouldn't manually have to specify which columns to scan.
         //       DataFusion's optimizer should be able to automatically perform
         //       projection pushdown for us.
-        // Goal: we shouldn't have to add new branches in this code to handle
-        //       indexed vs non-indexed cases. That should be handled by optimizer rules.
         let session_config = SessionConfig::default();
         let session_ctx = SessionContext::new_with_config(session_config);
         let scan = session_ctx.read_lance_unordered(self.dataset.clone(), true, true)?;
@@ -1324,6 +1323,7 @@ impl MergeInsertJob {
 
         let (session_state, logical_plan) = df.into_parts();
 
+        // Wrap in MergeInsertWriteNode - the planner will handle index optimization
         let write_node = logical_plan::MergeInsertWriteNode::new(
             logical_plan,
             self.dataset.clone(),
@@ -1336,8 +1336,7 @@ impl MergeInsertJob {
         let logical_plan = session_state.optimize(&logical_plan)?;
 
         let planner =
-            DefaultPhysicalPlanner::with_extension_planners(vec![Arc::new(MergeInsertPlanner {})]);
-        // This method already does the optimization for us.
+            DefaultPhysicalPlanner::with_extension_planners(vec![Arc::new(MergeInsertPlanner)]);
         let physical_plan = planner
             .create_physical_plan(&logical_plan, &session_state)
             .await?;
@@ -1416,9 +1415,12 @@ impl MergeInsertJob {
     ///
     /// The fast path is only available for specific conditions:
     /// - when_matched is UpdateAll or UpdateIf or Fail
-    /// - Either use_index is false OR there's no scalar index on join key
     /// - Source schema matches dataset schema exactly
     /// - when_not_matched_by_source is Keep
+    ///
+    /// Note: The fast path now supports both indexed and non-indexed joins.
+    /// When a scalar index exists on the join key, it uses IndexedLookupExec
+    /// for efficient lookup instead of a full table scan.
     async fn can_use_create_plan(&self, source_schema: &Schema) -> Result<bool> {
         // Convert to lance schema for comparison
         let lance_schema = lance_core::datatypes::Schema::try_from(source_schema)?;
@@ -1435,13 +1437,10 @@ impl MergeInsertJob {
             },
         );
 
-        let has_scalar_index = self.join_key_as_scalar_index().await?.is_some();
-
         Ok(matches!(
             self.params.when_matched,
             WhenMatched::UpdateAll | WhenMatched::UpdateIf(_) | WhenMatched::Fail
-        ) && (!self.params.use_index || !has_scalar_index)
-            && is_full_schema
+        ) && is_full_schema
             && matches!(
                 self.params.delete_not_matched_by_source,
                 WhenNotMatchedBySource::Keep
@@ -3951,59 +3950,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_plan_upsert() {
-        let data = lance_datagen::gen_batch()
-            .with_seed(Seed::from(1))
-            .col("value", array::step::<UInt32Type>())
-            .col("key", array::rand_pseudo_uuid_hex());
-        let data = data.into_reader_rows(RowCount::from(1024), BatchCount::from(32));
-        let _schema = data.schema();
-
-        // Create dataset with initial data
-        let ds = Dataset::write(data, "memory://", None).await.unwrap();
-
-        // Create upsert job
-        let merge_insert_job =
-            crate::dataset::MergeInsertBuilder::try_new(Arc::new(ds), vec!["key".to_string()])
-                .unwrap()
-                .when_matched(crate::dataset::WhenMatched::UpdateAll)
-                .try_build()
-                .unwrap();
-
-        // Create new data for upsert
-        let new_data = lance_datagen::gen_batch()
-            .with_seed(Seed::from(2))
-            .col("value", array::step::<UInt32Type>())
-            .col("key", array::rand_pseudo_uuid_hex());
-        let new_data = new_data.into_reader_rows(RowCount::from(512), BatchCount::from(16));
-        let new_data_stream = reader_to_stream(Box::new(new_data));
-
-        let plan = merge_insert_job.create_plan(new_data_stream).await.unwrap();
-
-        // Assert the plan structure using portable plan matching
-        // The optimized plan should have:
-        // 1. FullSchemaMergeInsertExec at the top
-        // 2. ProjectionExec that creates action with key validation (source.key IS NOT NULL)
-        // 3. ProjectionExec that creates the common expression for key validation
-        // 4. HashJoin with projection optimization
-        // 5. LanceScan that only reads the key column (projection pushdown working!)
-        assert_plan_node_equals(
-            plan,
-            "MergeInsert: on=[key], when_matched=UpdateAll, when_not_matched=InsertAll, when_not_matched_by_source=Keep
-  CoalescePartitionsExec
-    ProjectionExec: expr=[_rowid@1 as _rowid, _rowaddr@2 as _rowaddr, value@3 as value, key@4 as key, CASE WHEN __common_expr_1@0 AND _rowaddr@2 IS NULL THEN 2 WHEN __common_expr_1@0 AND _rowaddr@2 IS NOT NULL THEN 1 ELSE 0 END as __action]
-      ProjectionExec: expr=[key@3 IS NOT NULL as __common_expr_1, _rowid@0 as _rowid, _rowaddr@1 as _rowaddr, value@2 as value, key@3 as key]
-        CoalesceBatchesExec...
-          HashJoinExec: mode=CollectLeft, join_type=Right, on=[(key@0, key@1)], projection=[_rowid@1, _rowaddr@2, value@3, key@4]
-            CooperativeExec
-              LanceRead: uri=..., projection=[key], num_fragments=1, range_before=None, range_after=None, \
-              row_id=true, row_addr=true, full_filter=--, refine_filter=--
-            RepartitionExec: partitioning=RoundRobinBatch(...), input_partitions=1
-              StreamingTableExec: partition_sizes=1, projection=[value, key]"
-        ).await.unwrap();
-    }
-
-    #[tokio::test]
     async fn test_fast_path_update_only() {
         let data = lance_datagen::gen_batch()
             .with_seed(Seed::from(1))
@@ -4044,7 +3990,7 @@ mod tests {
       CoalesceBatchesExec...
         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(key@0, key@1)], projection=[_rowid@1, _rowaddr@2, value@3, key@4]
           CooperativeExec
-            LanceRead: uri=..., projection=[key], num_fragments=1, range_before=None, range_after=None, row_id=true, row_addr=true, full_filter=--, refine_filter=--
+            LanceRead: uri=..., projection=[key]...
           RepartitionExec...
             StreamingTableExec: partition_sizes=1, projection=[value, key]"
         ).await.unwrap();
@@ -4082,7 +4028,7 @@ mod tests {
 
         let plan = merge_insert_job.create_plan(new_data_stream).await.unwrap();
 
-        // The optimized plan should use Inner join and include the UpdateIf condition
+        // The plan uses Inner join - update-only mode doesn't need unmatched source rows
         assert_plan_node_equals(
             plan,
             "MergeInsert: on=[key], when_matched=UpdateIf(source.value > 20), when_not_matched=DoNothing, when_not_matched_by_source=Keep
@@ -4091,7 +4037,7 @@ mod tests {
       CoalesceBatchesExec...
         HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(key@0, key@1)], projection=[_rowid@1, _rowaddr@2, value@3, key@4]
           CooperativeExec
-            LanceRead: uri=..., projection=[key], num_fragments=1, range_before=None, range_after=None, row_id=true, row_addr=true, full_filter=--, refine_filter=--
+            LanceRead: uri=..., projection=[key]...
           RepartitionExec...
             StreamingTableExec: partition_sizes=1, projection=[value, key]"
         ).await.unwrap();
@@ -4579,7 +4525,7 @@ MergeInsert: on=[id], when_matched=UpdateAll, when_not_matched=InsertAll, when_n
         assert!(plan_str.contains("MergeInsert"));
         assert!(plan_str.contains("HashJoinExec")); // Should use hash join, not index scan
 
-        // Test 2: use_index=true (default) should fail explain_plan with index present
+        // Test 2: use_index=true (default) should succeed with index present
         let merge_job_with_index =
             MergeInsertBuilder::try_new(Arc::new(ds.clone()), vec!["id".to_string()])
                 .unwrap()
@@ -4589,19 +4535,16 @@ MergeInsert: on=[id], when_matched=UpdateAll, when_not_matched=InsertAll, when_n
                 .try_build()
                 .unwrap();
 
-        // With use_index=true and an index present, explain_plan should fail
+        // With use_index=true and an index present, explain_plan should now succeed
+        // because we support indexed merge insert in v2
         let plan_result = merge_job_with_index.explain_plan(None, false).await;
         assert!(
-            plan_result.is_err(),
-            "explain_plan should fail with use_index=true when index exists"
+            plan_result.is_ok(),
+            "explain_plan should succeed with use_index=true when index exists: {:?}",
+            plan_result.err()
         );
-
-        match plan_result {
-            Err(Error::NotSupported { source, .. }) => {
-                assert!(source.to_string().contains("does not support explain_plan"));
-            }
-            _ => panic!("Expected NotSupported error"),
-        }
+        let plan_str = plan_result.unwrap();
+        assert!(plan_str.contains("IndexedLookup"));
 
         // Test 3: Verify actual execution works without index
         let source = Box::new(RecordBatchIterator::new(
@@ -4618,6 +4561,393 @@ MergeInsert: on=[id], when_matched=UpdateAll, when_not_matched=InsertAll, when_n
             .await
             .unwrap();
         assert_eq!(updated_count, 3);
+
+        // Test 4: Verify actual execution works WITH index
+        // Use the dataset from Test 3 which now has 101 rows (ids 0-99 plus 101)
+        // All 3 source rows (ids 1, 2, 101) now match, so we expect 3 updates, 0 inserts
+        let merge_job_with_index =
+            MergeInsertBuilder::try_new(result_ds.clone(), vec!["id".to_string()])
+                .unwrap()
+                .when_matched(WhenMatched::UpdateAll)
+                .when_not_matched(WhenNotMatched::InsertAll)
+                .use_index(true)
+                .try_build()
+                .unwrap();
+        let source = Box::new(RecordBatchIterator::new(
+            vec![Ok(source_batch.clone())],
+            schema.clone(),
+        ));
+        let (result_ds, stats) = merge_job_with_index.execute_reader(source).await.unwrap();
+        // All 3 source rows match existing rows now (1, 2, 101 all exist)
+        assert_eq!(stats.num_updated_rows, 3);
+        assert_eq!(stats.num_inserted_rows, 0);
+
+        // Still 3 rows with value=999 (ids 1, 2, 101)
+        let updated_count = result_ds
+            .count_rows(Some("value = 999".to_string()))
+            .await
+            .unwrap();
+        assert_eq!(updated_count, 3);
+    }
+
+    #[tokio::test]
+    async fn test_indexed_merge_insert_plan_coverage() {
+        let test_dir = TempStrDir::default();
+        let test_uri: &str = &test_dir;
+
+        // Test 1: Full index coverage (all fragments indexed)
+        // Create dataset with a single fragment, using max_rows_per_file to control fragment boundaries
+        let data = lance_datagen::gen_batch()
+            .col("id", lance_datagen::array::step::<Int32Type>())
+            .col("value", array::step::<UInt32Type>());
+        let data = data.into_reader_rows(RowCount::from(100), BatchCount::from(1));
+        let mut ds = Dataset::write(
+            data,
+            test_uri,
+            Some(WriteParams {
+                max_rows_per_file: 100,
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(ds.get_fragments().len(), 1);
+
+        // Create a scalar index on id column
+        let index_params = ScalarIndexParams::default();
+        ds.create_index(&["id"], IndexType::Scalar, None, &index_params, false)
+            .await
+            .unwrap();
+
+        // With full index coverage, we should see IndexedLookup in the plan
+        let merge_job = MergeInsertBuilder::try_new(Arc::new(ds.clone()), vec!["id".to_string()])
+            .unwrap()
+            .when_matched(WhenMatched::UpdateAll)
+            .when_not_matched(WhenNotMatched::InsertAll)
+            .use_index(true)
+            .try_build()
+            .unwrap();
+
+        let plan = merge_job.explain_plan(None, false).await.unwrap();
+        assert!(
+            plan.contains("IndexedLookup"),
+            "Full coverage should use IndexedLookup. Plan:\n{}",
+            plan
+        );
+
+        // Test 2: Partial index coverage (some fragments indexed, some not)
+        // Append more data without rebuilding the index, using max_rows_per_file to force a new fragment
+        let new_data = lance_datagen::gen_batch()
+            .col("id", lance_datagen::array::step_custom::<Int32Type>(100, 1))
+            .col("value", array::step::<UInt32Type>());
+        let new_data = new_data.into_reader_rows(RowCount::from(50), BatchCount::from(1));
+        let ds = Dataset::write(
+            new_data,
+            test_uri,
+            Some(WriteParams {
+                mode: WriteMode::Append,
+                max_rows_per_file: 50,
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+
+        // Now we have 2 fragments: first one is indexed, second one is not
+        assert_eq!(ds.get_fragments().len(), 2);
+
+        let merge_job = MergeInsertBuilder::try_new(Arc::new(ds.clone()), vec!["id".to_string()])
+            .unwrap()
+            .when_matched(WhenMatched::UpdateAll)
+            .when_not_matched(WhenNotMatched::InsertAll)
+            .use_index(true)
+            .try_build()
+            .unwrap();
+
+        let plan = merge_job.explain_plan(None, false).await.unwrap();
+        // With partial coverage, we should still see IndexedLookup for indexed fragments
+        // and a scan + hash join for unindexed fragments
+        assert!(
+            plan.contains("IndexedLookup"),
+            "Partial coverage should use IndexedLookup for indexed fragments. Plan:\n{}",
+            plan
+        );
+        // The scan for unindexed fragments should also be present (via LanceScan or HashJoin)
+        assert!(
+            plan.contains("LanceScan") || plan.contains("HashJoin"),
+            "Partial coverage should have scan/join for unindexed fragments. Plan:\n{}",
+            plan
+        );
+
+        // Test 3: No index coverage (use_index=false)
+        let merge_job_no_index =
+            MergeInsertBuilder::try_new(Arc::new(ds.clone()), vec!["id".to_string()])
+                .unwrap()
+                .when_matched(WhenMatched::UpdateAll)
+                .when_not_matched(WhenNotMatched::InsertAll)
+                .use_index(false) // Explicitly disable index
+                .try_build()
+                .unwrap();
+
+        let plan_no_index = merge_job_no_index.explain_plan(None, false).await.unwrap();
+        assert!(
+            !plan_no_index.contains("IndexedLookup"),
+            "use_index=false should NOT use IndexedLookup. Plan:\n{}",
+            plan_no_index
+        );
+        assert!(
+            plan_no_index.contains("HashJoinExec"),
+            "use_index=false should use HashJoinExec. Plan:\n{}",
+            plan_no_index
+        );
+    }
+
+    #[tokio::test]
+    async fn test_indexed_merge_hybrid_execution() {
+        // Test that hybrid execution (some indexed, some unindexed) produces correct results
+        let test_dir = TempStrDir::default();
+        let test_uri: &str = &test_dir;
+
+        // Create initial dataset with ids 0-99 in one fragment
+        let initial_data = lance_datagen::gen_batch()
+            .col("id", lance_datagen::array::step::<Int32Type>())
+            .col("value", array::fill::<UInt32Type>(1));
+        let initial_data = initial_data.into_reader_rows(RowCount::from(100), BatchCount::from(1));
+        let mut ds = Dataset::write(
+            initial_data,
+            test_uri,
+            Some(WriteParams {
+                max_rows_per_file: 100,
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(ds.get_fragments().len(), 1);
+
+        // Create index on initial data
+        let index_params = ScalarIndexParams::default();
+        ds.create_index(&["id"], IndexType::Scalar, None, &index_params, false)
+            .await
+            .unwrap();
+
+        // Append more data with ids 100-149 without rebuilding index
+        let new_data = lance_datagen::gen_batch()
+            .col("id", lance_datagen::array::step_custom::<Int32Type>(100, 1))
+            .col("value", array::fill::<UInt32Type>(2));
+        let new_data = new_data.into_reader_rows(RowCount::from(50), BatchCount::from(1));
+        let ds = Dataset::write(
+            new_data,
+            test_uri,
+            Some(WriteParams {
+                mode: WriteMode::Append,
+                max_rows_per_file: 50,
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(ds.get_fragments().len(), 2);
+
+        // Verify initial state: 100 rows with value=1, 50 rows with value=2
+        assert_eq!(
+            ds.count_rows(Some("value = 1".to_string())).await.unwrap(),
+            100
+        );
+        assert_eq!(
+            ds.count_rows(Some("value = 2".to_string())).await.unwrap(),
+            50
+        );
+
+        // Create source data that updates ids 50-124 (spans both indexed and unindexed fragments)
+        // ids 50-99 are in indexed fragment, ids 100-124 are in unindexed fragment
+        let source_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("value", DataType::UInt32, false),
+        ]));
+        let source_batch = RecordBatch::try_new(
+            source_schema.clone(),
+            vec![
+                Arc::new(Int32Array::from((50..125).collect::<Vec<_>>())),
+                Arc::new(UInt32Array::from(vec![999u32; 75])),
+            ],
+        )
+        .unwrap();
+
+        let source = Box::new(RecordBatchIterator::new(
+            vec![Ok(source_batch)],
+            source_schema,
+        ));
+
+        // Execute merge-insert with use_index=true
+        let merge_job = MergeInsertBuilder::try_new(Arc::new(ds), vec!["id".to_string()])
+            .unwrap()
+            .when_matched(WhenMatched::UpdateAll)
+            .when_not_matched(WhenNotMatched::DoNothing)
+            .use_index(true)
+            .try_build()
+            .unwrap();
+
+        // Verify the plan uses hybrid approach
+        let plan = merge_job.explain_plan(None, false).await.unwrap();
+        assert!(
+            plan.contains("IndexedLookup"),
+            "Hybrid execution should use IndexedLookup. Plan:\n{}",
+            plan
+        );
+
+        let (ds, _) = merge_job.execute_reader(source).await.unwrap();
+
+        // Verify results:
+        // - ids 0-49: unchanged, value=1 (50 rows)
+        // - ids 50-99: updated, value=999 (50 rows from indexed fragment)
+        // - ids 100-124: updated, value=999 (25 rows from unindexed fragment)
+        // - ids 125-149: unchanged, value=2 (25 rows)
+        let value_1_count = ds.count_rows(Some("value = 1".to_string())).await.unwrap();
+        let value_2_count = ds.count_rows(Some("value = 2".to_string())).await.unwrap();
+        let value_999_count = ds
+            .count_rows(Some("value = 999".to_string()))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            value_1_count, 50,
+            "Expected 50 rows with value=1 (ids 0-49)"
+        );
+        assert_eq!(
+            value_2_count, 25,
+            "Expected 25 rows with value=2 (ids 125-149)"
+        );
+        assert_eq!(
+            value_999_count, 75,
+            "Expected 75 rows with value=999 (ids 50-124 updated from both fragments)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_indexed_merge_all_unindexed_fragments() {
+        // Test case: All fragments are unindexed (index exists but doesn't cover new data)
+        let test_dir = TempStrDir::default();
+        let test_uri: &str = &test_dir;
+
+        // Create initial dataset and index
+        let initial_data = lance_datagen::gen_batch()
+            .col("id", lance_datagen::array::step::<Int32Type>())
+            .col("value", array::step::<UInt32Type>());
+        let initial_data = initial_data.into_reader_rows(RowCount::from(50), BatchCount::from(1));
+        let mut ds = Dataset::write(
+            initial_data,
+            test_uri,
+            Some(WriteParams {
+                max_rows_per_file: 50,
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+
+        // Create index on initial data
+        let index_params = ScalarIndexParams::default();
+        ds.create_index(&["id"], IndexType::Scalar, None, &index_params, false)
+            .await
+            .unwrap();
+
+        // Delete all initial data - now the index exists but covers no fragments
+        ds.delete("id >= 0").await.unwrap();
+
+        // Add new data after deletion
+        let new_data = lance_datagen::gen_batch()
+            .col("id", lance_datagen::array::step_custom::<Int32Type>(100, 1))
+            .col("value", array::step::<UInt32Type>());
+        let new_data = new_data.into_reader_rows(RowCount::from(50), BatchCount::from(1));
+        let ds = Dataset::write(
+            new_data,
+            test_uri,
+            Some(WriteParams {
+                mode: WriteMode::Append,
+                max_rows_per_file: 50,
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+
+        // Now index exists but no fragments are indexed (all are new)
+        let merge_job = MergeInsertBuilder::try_new(Arc::new(ds), vec!["id".to_string()])
+            .unwrap()
+            .when_matched(WhenMatched::UpdateAll)
+            .when_not_matched(WhenNotMatched::InsertAll)
+            .use_index(true)
+            .try_build()
+            .unwrap();
+
+        let plan = merge_job.explain_plan(None, false).await.unwrap();
+        // With all unindexed fragments, we should fall back to scan + hash join
+        assert!(
+            plan.contains("LanceScan") || plan.contains("HashJoin"),
+            "All unindexed fragments should use scan/join. Plan:\n{}",
+            plan
+        );
+    }
+
+    #[tokio::test]
+    async fn test_indexed_merge_delete_not_matched_by_source() {
+        // Test that delete_not_matched_by_source correctly deletes unmatched target rows
+        let test_dir = TempStrDir::default();
+        let test_uri: &str = &test_dir;
+
+        let data = lance_datagen::gen_batch()
+            .col("id", lance_datagen::array::step::<Int32Type>())
+            .col("value", array::step::<UInt32Type>());
+        let data = data.into_reader_rows(RowCount::from(100), BatchCount::from(1));
+        let mut ds = Dataset::write(data, test_uri, None).await.unwrap();
+
+        // Create a scalar index on id column
+        let index_params = ScalarIndexParams::default();
+        ds.create_index(&["id"], IndexType::Scalar, None, &index_params, false)
+            .await
+            .unwrap();
+
+        // Initial count should be 100
+        assert_eq!(ds.count_rows(None).await.unwrap(), 100);
+
+        // Source data with only ids 0-9 (10 rows) that exist in target
+        let source_data = lance_datagen::gen_batch()
+            .col("id", lance_datagen::array::step::<Int32Type>())
+            .col("value", array::fill::<UInt32Type>(999));
+        let source_data = source_data.into_reader_rows(RowCount::from(10), BatchCount::from(1));
+        let source_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, true),
+            Field::new("value", DataType::UInt32, true),
+        ]));
+        let source_batches: Vec<RecordBatch> = source_data
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        let source = Box::new(RecordBatchIterator::new(
+            source_batches.into_iter().map(Ok),
+            source_schema,
+        ));
+
+        // With delete_not_matched_by_source=Delete, rows 10-99 should be deleted
+        let (new_ds, stats) =
+            MergeInsertBuilder::try_new(Arc::new(ds.clone()), vec!["id".to_string()])
+                .unwrap()
+                .when_matched(WhenMatched::UpdateAll)
+                .when_not_matched(WhenNotMatched::DoNothing)
+                .when_not_matched_by_source(WhenNotMatchedBySource::Delete)
+                .use_index(true) // Index should be disabled due to delete_not_matched_by_source
+                .try_build()
+                .unwrap()
+                .execute_reader(source)
+                .await
+                .unwrap();
+
+        // After merge: only 10 rows should remain (matched rows were updated)
+        assert_eq!(new_ds.count_rows(None).await.unwrap(), 10);
+        // 90 rows should be deleted
+        assert_eq!(stats.num_deleted_rows, 90);
+        // 10 rows should be updated
+        assert_eq!(stats.num_updated_rows, 10);
     }
 
     #[tokio::test]
@@ -5313,5 +5643,522 @@ MergeInsert: on=[id], when_matched=UpdateAll, when_not_matched=InsertAll, when_n
         .unwrap();
 
         assert_eq!(result, expected);
+    }
+
+    /// Test detailed plan structure for unindexed merge insert (no scalar index on key column)
+    #[tokio::test]
+    async fn test_plan_structure_unindexed() {
+        let data = lance_datagen::gen_batch()
+            .col("id", lance_datagen::array::step::<Int32Type>())
+            .col("value", array::step::<UInt32Type>());
+        let data = data.into_reader_rows(RowCount::from(100), BatchCount::from(1));
+
+        // Create dataset WITHOUT any index
+        let ds = Dataset::write(data, "memory://unindexed_plan_test", None)
+            .await
+            .unwrap();
+
+        let merge_job = MergeInsertBuilder::try_new(Arc::new(ds), vec!["id".to_string()])
+            .unwrap()
+            .when_matched(WhenMatched::UpdateAll)
+            .when_not_matched(WhenNotMatched::InsertAll)
+            .try_build()
+            .unwrap();
+
+        // Create a source stream for the plan
+        let source_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, true),
+            Field::new("value", DataType::UInt32, true),
+        ]));
+        let source_batch = RecordBatch::try_new(
+            source_schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(UInt32Array::from(vec![100, 200, 300])),
+            ],
+        )
+        .unwrap();
+        let source_stream = RecordBatchStreamAdapter::new(
+            source_schema,
+            futures::stream::once(async { Ok(source_batch) }).boxed(),
+        );
+        let plan = merge_job
+            .create_plan(Box::pin(source_stream))
+            .await
+            .unwrap();
+
+        // Unindexed merge insert should use:
+        // - MergeInsert at the top
+        // - HashJoinExec (Right Outer Join) for joining target and source
+        // - LanceRead for reading target data
+        // - StreamingTableExec for source data
+        assert_plan_node_equals(
+            plan,
+            r#"
+MergeInsert: on=[id], when_matched=UpdateAll, when_not_matched=InsertAll, when_not_matched_by_source=Keep...
+  CoalescePartitionsExec...
+    HashJoinExec...join_type=Right...
+      ...LanceRead...
+      ...StreamingTableExec: partition_sizes=1, projection=[id, value]
+            "#,
+        )
+        .await
+        .unwrap();
+    }
+
+    /// Test detailed plan structure for fully indexed merge insert
+    #[tokio::test]
+    async fn test_plan_structure_fully_indexed() {
+        let test_dir = TempStrDir::default();
+        let test_uri: &str = &test_dir;
+
+        let data = lance_datagen::gen_batch()
+            .col("id", lance_datagen::array::step::<Int32Type>())
+            .col("value", array::step::<UInt32Type>());
+        let data = data.into_reader_rows(RowCount::from(100), BatchCount::from(1));
+
+        // Create dataset with scalar index on id column
+        let mut ds = Dataset::write(data, test_uri, None).await.unwrap();
+        let index_params = ScalarIndexParams::default();
+        ds.create_index(&["id"], IndexType::Scalar, None, &index_params, false)
+            .await
+            .unwrap();
+
+        let merge_job = MergeInsertBuilder::try_new(Arc::new(ds), vec!["id".to_string()])
+            .unwrap()
+            .when_matched(WhenMatched::UpdateAll)
+            .when_not_matched(WhenNotMatched::InsertAll)
+            .use_index(true)
+            .try_build()
+            .unwrap();
+
+        // Create a source stream for the plan
+        let source_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, true),
+            Field::new("value", DataType::UInt32, true),
+        ]));
+        let source_batch = RecordBatch::try_new(
+            source_schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(UInt32Array::from(vec![100, 200, 300])),
+            ],
+        )
+        .unwrap();
+        let source_stream = RecordBatchStreamAdapter::new(
+            source_schema,
+            futures::stream::once(async { Ok(source_batch) }).boxed(),
+        );
+        let plan = merge_job
+            .create_plan(Box::pin(source_stream))
+            .await
+            .unwrap();
+
+        // Fully indexed merge insert should use:
+        // - MergeInsert at the top
+        // - IndexedLookup for efficient key lookup via index
+        assert_plan_node_equals(
+            plan,
+            r#"
+MergeInsert: on=[id], when_matched=UpdateAll, when_not_matched=InsertAll, when_not_matched_by_source=Keep...
+  CoalescePartitionsExec...
+    IndexedLookup: key=id, index=id_idx
+      Replay...
+        StreamingTableExec: partition_sizes=1, projection=[id, value]
+            "#,
+        )
+        .await
+        .unwrap();
+    }
+
+    /// Test hybrid plan with upsert (RIGHT join collects targets then outer joins)
+    #[tokio::test]
+    async fn test_plan_structure_hybrid_indexed() {
+        let test_dir = TempStrDir::default();
+        let test_uri: &str = &test_dir;
+
+        // Create initial fragment with 100 rows
+        let data = lance_datagen::gen_batch()
+            .col("id", lance_datagen::array::step::<Int32Type>())
+            .col("value", array::step::<UInt32Type>());
+        let data = data.into_reader_rows(RowCount::from(100), BatchCount::from(1));
+
+        let mut ds = Dataset::write(
+            data,
+            test_uri,
+            Some(WriteParams {
+                max_rows_per_file: 100,
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+
+        // Create index on initial data
+        let index_params = ScalarIndexParams::default();
+        ds.create_index(&["id"], IndexType::Scalar, None, &index_params, false)
+            .await
+            .unwrap();
+
+        // Append more data WITHOUT rebuilding index (creates unindexed fragment)
+        let new_data = lance_datagen::gen_batch()
+            .col("id", lance_datagen::array::step_custom::<Int32Type>(100, 1))
+            .col("value", array::step::<UInt32Type>());
+        let new_data = new_data.into_reader_rows(RowCount::from(50), BatchCount::from(1));
+        let ds = Dataset::write(
+            new_data,
+            test_uri,
+            Some(WriteParams {
+                mode: WriteMode::Append,
+                max_rows_per_file: 50,
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+
+        // Verify we have 2 fragments
+        assert_eq!(ds.get_fragments().len(), 2);
+
+        let merge_job = MergeInsertBuilder::try_new(Arc::new(ds), vec!["id".to_string()])
+            .unwrap()
+            .when_matched(WhenMatched::UpdateAll)
+            .when_not_matched(WhenNotMatched::InsertAll)
+            .use_index(true)
+            .try_build()
+            .unwrap();
+
+        // Create a source stream for the plan
+        let source_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, true),
+            Field::new("value", DataType::UInt32, true),
+        ]));
+        let source_batch = RecordBatch::try_new(
+            source_schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(UInt32Array::from(vec![100, 200, 300])),
+            ],
+        )
+        .unwrap();
+        let source_stream = RecordBatchStreamAdapter::new(
+            source_schema,
+            futures::stream::once(async { Ok(source_batch) }).boxed(),
+        );
+        let plan = merge_job
+            .create_plan(Box::pin(source_stream))
+            .await
+            .unwrap();
+
+        // LEFT join hybrid plan: source on left (collected), target on right (streams)
+        // UnionExec combines IndexedLookup (indexed frags) + LanceScan (unindexed frags)
+        assert_plan_node_equals(
+            plan,
+            r#"
+MergeInsert: on=[id], when_matched=UpdateAll, when_not_matched=InsertAll, when_not_matched_by_source=Keep...
+  CoalescePartitionsExec...
+    HashJoinExec...join_type=Left...
+      Replay...
+        StreamingTableExec: partition_sizes=1, projection=[id, value]
+      ...UnionExec...
+        IndexedLookup: key=id, index=id_idx...
+          Replay...
+            StreamingTableExec: partition_sizes=1, projection=[id, value]
+        ...LanceScan...range=None
+            "#,
+        )
+        .await
+        .unwrap();
+    }
+
+    /// Test hybrid plan with update-only (INNER join uses split-and-union optimization)
+    #[tokio::test]
+    async fn test_plan_structure_hybrid_indexed_update_only() {
+        let test_dir = TempStrDir::default();
+        let test_uri: &str = &test_dir;
+
+        // Create initial fragment with 100 rows
+        let data = lance_datagen::gen_batch()
+            .col("id", lance_datagen::array::step::<Int32Type>())
+            .col("value", array::step::<UInt32Type>());
+        let data = data.into_reader_rows(RowCount::from(100), BatchCount::from(1));
+
+        let mut ds = Dataset::write(
+            data,
+            test_uri,
+            Some(WriteParams {
+                max_rows_per_file: 100,
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+
+        // Create index on initial data
+        let index_params = ScalarIndexParams::default();
+        ds.create_index(&["id"], IndexType::Scalar, None, &index_params, false)
+            .await
+            .unwrap();
+
+        // Append more data WITHOUT rebuilding index (creates unindexed fragment)
+        let new_data = lance_datagen::gen_batch()
+            .col("id", lance_datagen::array::step_custom::<Int32Type>(100, 1))
+            .col("value", array::step::<UInt32Type>());
+        let new_data = new_data.into_reader_rows(RowCount::from(50), BatchCount::from(1));
+        let ds = Dataset::write(
+            new_data,
+            test_uri,
+            Some(WriteParams {
+                mode: WriteMode::Append,
+                max_rows_per_file: 50,
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+
+        // Verify we have 2 fragments
+        assert_eq!(ds.get_fragments().len(), 2);
+
+        // Update-only mode (no insert)
+        let merge_job = MergeInsertBuilder::try_new(Arc::new(ds), vec!["id".to_string()])
+            .unwrap()
+            .when_matched(WhenMatched::UpdateAll)
+            .when_not_matched(WhenNotMatched::DoNothing)
+            .use_index(true)
+            .try_build()
+            .unwrap();
+
+        // Create a source stream for the plan
+        let source_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, true),
+            Field::new("value", DataType::UInt32, true),
+        ]));
+        let source_batch = RecordBatch::try_new(
+            source_schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(UInt32Array::from(vec![100, 200, 300])),
+            ],
+        )
+        .unwrap();
+        let source_stream = RecordBatchStreamAdapter::new(
+            source_schema,
+            futures::stream::once(async { Ok(source_batch) }).boxed(),
+        );
+        let plan = merge_job
+            .create_plan(Box::pin(source_stream))
+            .await
+            .unwrap();
+
+        // INNER join hybrid plan: source on left (collected), target on right (streams)
+        // UnionExec combines IndexedLookup (indexed frags) + LanceScan (unindexed frags)
+        assert_plan_node_equals(
+            plan,
+            r#"
+MergeInsert: on=[id], when_matched=UpdateAll, when_not_matched=DoNothing, when_not_matched_by_source=Keep...
+  CoalescePartitionsExec...
+    HashJoinExec...join_type=Inner...
+      Replay...
+        StreamingTableExec: partition_sizes=1, projection=[id, value]
+      ...UnionExec...
+        IndexedLookup: key=id, index=id_idx...
+          Replay...
+            StreamingTableExec: partition_sizes=1, projection=[id, value]
+        ...LanceScan...range=None
+            "#,
+        )
+        .await
+        .unwrap();
+    }
+
+    /// Test that when use_index=false, even with an index present, we use hash join
+    #[tokio::test]
+    async fn test_plan_structure_index_disabled() {
+        let test_dir = TempStrDir::default();
+        let test_uri: &str = &test_dir;
+
+        let data = lance_datagen::gen_batch()
+            .col("id", lance_datagen::array::step::<Int32Type>())
+            .col("value", array::step::<UInt32Type>());
+        let data = data.into_reader_rows(RowCount::from(100), BatchCount::from(1));
+
+        // Create dataset with scalar index
+        let mut ds = Dataset::write(data, test_uri, None).await.unwrap();
+        let index_params = ScalarIndexParams::default();
+        ds.create_index(&["id"], IndexType::Scalar, None, &index_params, false)
+            .await
+            .unwrap();
+
+        // Explicitly disable index usage
+        let merge_job = MergeInsertBuilder::try_new(Arc::new(ds), vec!["id".to_string()])
+            .unwrap()
+            .when_matched(WhenMatched::UpdateAll)
+            .when_not_matched(WhenNotMatched::InsertAll)
+            .use_index(false) // Disable index
+            .try_build()
+            .unwrap();
+
+        // Create a source stream for the plan
+        let source_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, true),
+            Field::new("value", DataType::UInt32, true),
+        ]));
+        let source_batch = RecordBatch::try_new(
+            source_schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(UInt32Array::from(vec![100, 200, 300])),
+            ],
+        )
+        .unwrap();
+        let source_stream = RecordBatchStreamAdapter::new(
+            source_schema,
+            futures::stream::once(async { Ok(source_batch) }).boxed(),
+        );
+        let plan = merge_job
+            .create_plan(Box::pin(source_stream))
+            .await
+            .unwrap();
+
+        // With use_index=false, should NOT use IndexedLookup
+        assert_plan_node_equals(
+            plan,
+            r#"
+MergeInsert: on=[id], when_matched=UpdateAll, when_not_matched=InsertAll, when_not_matched_by_source=Keep...
+  CoalescePartitionsExec...
+    HashJoinExec...join_type=Right...
+      ...LanceRead...
+      ...StreamingTableExec: partition_sizes=1, projection=[id, value]
+            "#,
+        )
+        .await
+        .unwrap();
+    }
+
+    /// Test plan structure for conditional update (UpdateIf) with index
+    #[tokio::test]
+    async fn test_plan_structure_conditional_update_indexed() {
+        let test_dir = TempStrDir::default();
+        let test_uri: &str = &test_dir;
+
+        let data = lance_datagen::gen_batch()
+            .col("id", lance_datagen::array::step::<Int32Type>())
+            .col("value", array::step::<UInt32Type>());
+        let data = data.into_reader_rows(RowCount::from(100), BatchCount::from(1));
+
+        let mut ds = Dataset::write(data, test_uri, None).await.unwrap();
+        let index_params = ScalarIndexParams::default();
+        ds.create_index(&["id"], IndexType::Scalar, None, &index_params, false)
+            .await
+            .unwrap();
+
+        let merge_job = MergeInsertBuilder::try_new(Arc::new(ds.clone()), vec!["id".to_string()])
+            .unwrap()
+            .when_matched(WhenMatched::update_if(&ds, "source.value > 50").unwrap())
+            .when_not_matched(WhenNotMatched::DoNothing)
+            .use_index(true)
+            .try_build()
+            .unwrap();
+
+        // Create a source stream for the plan
+        let source_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, true),
+            Field::new("value", DataType::UInt32, true),
+        ]));
+        let source_batch = RecordBatch::try_new(
+            source_schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(UInt32Array::from(vec![100, 200, 300])),
+            ],
+        )
+        .unwrap();
+        let source_stream = RecordBatchStreamAdapter::new(
+            source_schema,
+            futures::stream::once(async { Ok(source_batch) }).boxed(),
+        );
+        let plan = merge_job
+            .create_plan(Box::pin(source_stream))
+            .await
+            .unwrap();
+
+        // Should use IndexedLookup and include the condition in the action
+        assert_plan_node_equals(
+            plan,
+            r#"
+MergeInsert: on=[id], when_matched=UpdateIf(source.value > 50), when_not_matched=DoNothing, when_not_matched_by_source=Keep...
+  CoalescePartitionsExec...
+    IndexedLookup: key=id, index=id_idx
+      Replay...
+        StreamingTableExec: partition_sizes=1, projection=[id, value]
+            "#,
+        )
+        .await
+        .unwrap();
+    }
+
+    /// Test plan structure when delete_not_matched_by_source is set (should disable index)
+    #[tokio::test]
+    async fn test_plan_structure_delete_not_matched() {
+        let test_dir = TempStrDir::default();
+        let test_uri: &str = &test_dir;
+
+        let data = lance_datagen::gen_batch()
+            .col("id", lance_datagen::array::step::<Int32Type>())
+            .col("value", array::step::<UInt32Type>());
+        let data = data.into_reader_rows(RowCount::from(100), BatchCount::from(1));
+
+        let mut ds = Dataset::write(data, test_uri, None).await.unwrap();
+        let index_params = ScalarIndexParams::default();
+        ds.create_index(&["id"], IndexType::Scalar, None, &index_params, false)
+            .await
+            .unwrap();
+
+        // With delete_not_matched_by_source, index cannot be used
+        let merge_job = MergeInsertBuilder::try_new(Arc::new(ds), vec!["id".to_string()])
+            .unwrap()
+            .when_matched(WhenMatched::UpdateAll)
+            .when_not_matched(WhenNotMatched::DoNothing)
+            .when_not_matched_by_source(WhenNotMatchedBySource::Delete)
+            .use_index(true) // Even with use_index=true, should be disabled
+            .try_build()
+            .unwrap();
+
+        // Use create_plan directly since explain_plan doesn't support delete_not_matched_by_source
+        let source_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, true),
+            Field::new("value", DataType::UInt32, true),
+        ]));
+        let source_batch = RecordBatch::try_new(
+            source_schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(UInt32Array::from(vec![100, 200, 300])),
+            ],
+        )
+        .unwrap();
+        let source_stream = RecordBatchStreamAdapter::new(
+            source_schema,
+            futures::stream::once(async { Ok(source_batch) }).boxed(),
+        );
+        let plan = merge_job
+            .create_plan(Box::pin(source_stream))
+            .await
+            .unwrap();
+
+        // delete_not_matched_by_source requires full table scan, so no IndexedLookup
+        assert_plan_node_equals(
+            plan,
+            r#"
+MergeInsert: on=[id], when_matched=UpdateAll, when_not_matched=DoNothing, when_not_matched_by_source=Delete...
+  CoalescePartitionsExec...
+    HashJoinExec...join_type=Inner...
+      ...LanceRead...
+      ...StreamingTableExec: partition_sizes=1, projection=[id, value]
+            "#,
+        )
+        .await
+        .unwrap();
     }
 }

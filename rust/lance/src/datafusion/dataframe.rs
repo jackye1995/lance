@@ -159,7 +159,7 @@ impl TableProvider for LanceTableProvider {
 }
 
 pub trait SessionContextExt {
-    /// Creates a DataFrame for reading a Lance dataset
+    /// Creates a DataFrame for reading a Lance dataset with ordering preserved
     fn read_lance(
         &self,
         dataset: Arc<Dataset>,

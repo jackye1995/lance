@@ -326,9 +326,20 @@ impl ExecutionPlan for ReplayExec {
 
     fn with_new_children(
         self: Arc<Self>,
-        _: Vec<Arc<dyn ExecutionPlan>>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
-        unimplemented!()
+        if children.len() != 1 {
+            return Err(datafusion::error::DataFusionError::Internal(
+                "ReplayExec requires exactly one child".to_string(),
+            ));
+        }
+        // Preserve the inner_state so all copies share the same buffer.
+        // This is critical for plans where multiple branches share the same ReplayExec.
+        Ok(Arc::new(Self {
+            capacity: self.capacity,
+            input: children[0].clone(),
+            inner_state: self.inner_state.clone(),
+        }))
     }
 
     fn benefits_from_input_partitioning(&self) -> Vec<bool> {

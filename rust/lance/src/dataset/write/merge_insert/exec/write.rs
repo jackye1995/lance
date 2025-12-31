@@ -989,7 +989,8 @@ mod tests {
     #[test]
     fn test_merge_state_duplicate_rowid_detection_fail() {
         let metrics = MergeInsertMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
-        let mut merge_state = MergeState::new(metrics, false, Vec::new(), Vec::new(), DedupeBehavior::Fail);
+        let mut merge_state =
+            MergeState::new(metrics, false, Vec::new(), Vec::new(), DedupeBehavior::Fail);
 
         let row_addr_array = UInt64Array::from(vec![1000, 2000, 3000]);
         let row_id_array = UInt64Array::from(vec![100, 100, 300]); // Duplicate row_id 100
@@ -1039,8 +1040,13 @@ mod tests {
     #[test]
     fn test_merge_state_duplicate_rowid_first_seen() {
         let metrics = MergeInsertMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
-        let mut merge_state =
-            MergeState::new(metrics, false, Vec::new(), Vec::new(), DedupeBehavior::FirstSeen);
+        let mut merge_state = MergeState::new(
+            metrics,
+            false,
+            Vec::new(),
+            Vec::new(),
+            DedupeBehavior::FirstSeen,
+        );
 
         let row_addr_array = UInt64Array::from(vec![1000, 2000, 3000]);
         let row_id_array = UInt64Array::from(vec![100, 100, 300]); // Duplicate row_id 100

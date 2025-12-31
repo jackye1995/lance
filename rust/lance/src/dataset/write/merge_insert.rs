@@ -2128,8 +2128,9 @@ impl Merger {
                     merge_statistics.num_updated_rows -= duplicate_indices.len() as u64;
 
                     // Create a boolean mask to keep non-duplicate rows
+                    let duplicate_set: HashSet<usize> = duplicate_indices.into_iter().collect();
                     let keep_mask: BooleanArray = (0..matched.num_rows())
-                        .map(|i| Some(!duplicate_indices.contains(&i)))
+                        .map(|i| Some(!duplicate_set.contains(&i)))
                         .collect();
                     matched = arrow::compute::filter_record_batch(&matched, &keep_mask)?;
                 }

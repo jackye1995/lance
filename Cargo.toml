@@ -73,7 +73,7 @@ arrow = { version = "56.1", optional = false, features = ["prettyprint"] }
 arrow-arith = "56.1"
 arrow-array = "56.1"
 arrow-buffer = "56.1"
-darrow-cast = "56.1"
+arrow-cast = "56.1"
 arrow-data = "56.1"
 arrow-ipc = { version = "56.1", features = ["zstd"] }
 arrow-ord = "56.1"

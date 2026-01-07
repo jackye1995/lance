@@ -386,19 +386,31 @@ impl Sbbf {
     /// Returns an error if the bitmaps have different sizes, as bloom filters with
     /// different configurations cannot be reliably compared.
     pub fn might_intersect_bytes(&self, other_bytes: &[u8]) -> Result<bool> {
-        let self_bytes = self.to_bytes();
-        if self_bytes.len() != other_bytes.len() {
+        Self::bytes_might_intersect(&self.to_bytes(), other_bytes)
+    }
+
+    /// Check if two raw bloom filter bitmaps might intersect.
+    /// Returns true if there's at least one bit position where both filters have a 1.
+    ///
+    /// This is a fast probabilistic check: if it returns false, the filters definitely
+    /// have no common elements. If it returns true, they might have common elements
+    /// (with possible false positives).
+    ///
+    /// Returns an error if the bitmaps have different sizes, as bloom filters with
+    /// different configurations cannot be reliably compared.
+    pub fn bytes_might_intersect(a: &[u8], b: &[u8]) -> Result<bool> {
+        if a.len() != b.len() {
             return Err(SbbfError::InvalidData {
                 message: format!(
                     "Cannot compare bloom filters with different sizes: {} bytes vs {} bytes. \
                      Both filters must use the same configuration.",
-                    self_bytes.len(),
-                    other_bytes.len()
+                    a.len(),
+                    b.len()
                 ),
             });
         }
-        for i in 0..self_bytes.len() {
-            if (self_bytes[i] & other_bytes[i]) != 0 {
+        for i in 0..a.len() {
+            if (a[i] & b[i]) != 0 {
                 return Ok(true);
             }
         }
@@ -468,39 +480,6 @@ impl Default for SbbfBuilder {
     fn default() -> Self {
         Self::new()
     }
-}
-
-// ============================================================================
-// Bloom Filter helper functions for raw bitmap operations
-// ============================================================================
-
-/// Check if two serialized bloom filter bitmaps might contain overlapping elements.
-/// Returns true if there's at least one bit position where both filters have a 1,
-/// indicating a potential intersection of the sets they represent.
-///
-/// This is a fast probabilistic check: if it returns false, the filters definitely
-/// have no common elements. If it returns true, they might have common elements
-/// (with possible false positives).
-///
-/// Returns an error if the bitmaps have different sizes, as bloom filters with
-/// different configurations cannot be reliably compared.
-pub fn bloom_filters_might_overlap(a: &[u8], b: &[u8]) -> Result<bool> {
-    if a.len() != b.len() {
-        return Err(SbbfError::InvalidData {
-            message: format!(
-                "Cannot compare bloom filters with different sizes: {} bytes vs {} bytes. \
-                 Both filters must use the same configuration.",
-                a.len(),
-                b.len()
-            ),
-        });
-    }
-    for i in 0..a.len() {
-        if (a[i] & b[i]) != 0 {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }
 
 #[cfg(test)]

@@ -1639,7 +1639,6 @@ impl MergeInsertJob {
                     .map(|f| f.id as u32)
                     .collect(),
                 update_mode: Some(RewriteRows),
-                // Slow path doesn't track inserted keys - conflict detection not available
                 inserted_rows_filter: None, // not implemented for v1
             };
 
@@ -4357,6 +4356,9 @@ mod tests {
         }
     }
 
+    /// Test that two merge insert operations on the same existing key conflict.
+    /// First merge insert commits successfully, second one fails with conflict error
+    /// because both operations updated the same key (detected via bloom filter).
     #[tokio::test]
     async fn test_inserted_rows_filter_bloom_conflict_detection_concurrent() {
         // Create schema with unenforced primary key on "id" column
@@ -4380,24 +4382,7 @@ mod tests {
         )
         .unwrap();
 
-        // Throttle to increase contention
-        let throttled = Arc::new(ThrottledStoreWrapper {
-            config: ThrottleConfig {
-                wait_put_per_call: Duration::from_millis(5),
-                wait_get_per_call: Duration::from_millis(5),
-                wait_list_per_call: Duration::from_millis(5),
-                ..Default::default()
-            },
-        });
-
         let dataset = InsertBuilder::new("memory://")
-            .with_params(&WriteParams {
-                store_params: Some(ObjectStoreParams {
-                    object_store_wrapper: Some(throttled.clone()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            })
             .execute(vec![initial])
             .await
             .unwrap();
@@ -4416,67 +4401,52 @@ mod tests {
             schema.clone(),
             vec![
                 Arc::new(UInt32Array::from(vec![2])),
-                Arc::new(UInt32Array::from(vec![1])),
+                Arc::new(UInt32Array::from(vec![2])),
             ],
         )
         .unwrap();
 
+        // Create second merge insert job based on version 1 with 0 retries
+        let b2 = MergeInsertBuilder::try_new(dataset.clone(), vec!["id".to_string()])
+            .unwrap()
+            .when_matched(WhenMatched::UpdateAll)
+            .when_not_matched(WhenNotMatched::InsertAll)
+            .conflict_retries(0)
+            .try_build()
+            .unwrap();
+
+        // First merge insert commits (creates version 2)
         let s1 = RecordBatchStreamAdapter::new(
             schema.clone(),
             futures::stream::iter(vec![Ok(batch1.clone())]),
         );
-        let s2 = RecordBatchStreamAdapter::new(
-            schema.clone(),
-            futures::stream::iter(vec![Ok(batch2.clone())]),
-        );
-
         let b1 = MergeInsertBuilder::try_new(dataset.clone(), vec!["id".to_string()])
             .unwrap()
             .when_matched(WhenMatched::UpdateAll)
             .when_not_matched(WhenNotMatched::InsertAll)
             .try_build()
             .unwrap();
-        let b2 = MergeInsertBuilder::try_new(dataset.clone(), vec!["id".to_string()])
-            .unwrap()
-            .when_matched(WhenMatched::UpdateAll)
-            .when_not_matched(WhenNotMatched::InsertAll)
-            .try_build()
-            .unwrap();
+        let result1 = b1.execute(Box::pin(s1) as SendableRecordBatchStream).await;
+        assert!(result1.is_ok(), "First merge insert should succeed");
 
-        let t1 = tokio::spawn(async move {
-            b1.execute(Box::pin(s1) as SendableRecordBatchStream)
-                .await
-                .unwrap()
-                .1
-        });
-        let t2 = tokio::spawn(async move {
-            b2.execute(Box::pin(s2) as SendableRecordBatchStream)
-                .await
-                .unwrap()
-                .1
-        });
+        // Second merge insert tries to commit based on version 1, needs to rebase against version 2
+        let s2 = RecordBatchStreamAdapter::new(
+            schema.clone(),
+            futures::stream::iter(vec![Ok(batch2.clone())]),
+        );
+        let result2 = b2.execute(Box::pin(s2) as SendableRecordBatchStream).await;
 
-        let s1 = t1.await.unwrap();
-        let s2 = t2.await.unwrap();
-        // At least one attempt should include a retry under contention
-        assert!(s1.num_attempts >= 1);
-        assert!(s2.num_attempts >= 1);
-
-        // Validate final dataset has id=2 updated to 1, without duplicates
-        let mut ds_latest = dataset.as_ref().clone();
-        ds_latest.checkout_latest().await.unwrap();
-        let batch = ds_latest.scan().try_into_batch().await.unwrap();
-        let ids = batch["id"].as_primitive::<UInt32Type>().values();
-        let vals = batch["value"].as_primitive::<UInt32Type>().values();
-        // find index of id==2
-        let pos = ids.iter().position(|&x| x == 2).unwrap();
-        assert_eq!(vals[pos], 1);
+        // Second merge insert should fail because bloom filters show both updated key 2
+        assert!(
+            matches!(result2, Err(crate::Error::TooMuchWriteContention { .. })),
+            "Expected TooMuchWriteContention (retryable conflict exhausted), got: {:?}",
+            result2
+        );
     }
 
-    /// Test concurrent INSERT of the same NEW key (key doesn't exist in initial data)
-    /// Both transactions try to INSERT a row with id=100, which doesn't exist.
-    /// This tests the bloom filter conflict detection for INSERT operations,
-    /// as opposed to UPDATE operations on existing keys.
+    /// Test that two merge insert operations inserting the same NEW key conflict.
+    /// First merge insert commits successfully (inserts id=100), second one fails
+    /// with conflict error because both inserted the same new key (detected via bloom filter).
     #[tokio::test]
     async fn test_concurrent_insert_same_new_key() {
         // Create schema with unenforced primary key on "id" column
@@ -4501,24 +4471,7 @@ mod tests {
         )
         .unwrap();
 
-        // Throttle to increase contention
-        let throttled = Arc::new(ThrottledStoreWrapper {
-            config: ThrottleConfig {
-                wait_put_per_call: Duration::from_millis(5),
-                wait_get_per_call: Duration::from_millis(5),
-                wait_list_per_call: Duration::from_millis(5),
-                ..Default::default()
-            },
-        });
-
         let dataset = InsertBuilder::new("memory://")
-            .with_params(&WriteParams {
-                store_params: Some(ObjectStoreParams {
-                    object_store_wrapper: Some(throttled.clone()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            })
             .execute(vec![initial])
             .await
             .unwrap();
@@ -4542,69 +4495,41 @@ mod tests {
         )
         .unwrap();
 
+        // Create second merge insert job based on version 1 with 0 retries
+        let b2 = MergeInsertBuilder::try_new(dataset.clone(), vec!["id".to_string()])
+            .unwrap()
+            .when_matched(WhenMatched::UpdateAll)
+            .when_not_matched(WhenNotMatched::InsertAll)
+            .conflict_retries(0)
+            .try_build()
+            .unwrap();
+
+        // First merge insert commits (creates version 2, inserts id=100)
         let s1 = RecordBatchStreamAdapter::new(
             schema.clone(),
             futures::stream::iter(vec![Ok(batch1.clone())]),
         );
-        let s2 = RecordBatchStreamAdapter::new(
-            schema.clone(),
-            futures::stream::iter(vec![Ok(batch2.clone())]),
-        );
-
-        // Both use InsertAll for when_not_matched, so both will try to INSERT id=100
         let b1 = MergeInsertBuilder::try_new(dataset.clone(), vec!["id".to_string()])
             .unwrap()
             .when_matched(WhenMatched::UpdateAll)
             .when_not_matched(WhenNotMatched::InsertAll)
             .try_build()
             .unwrap();
-        let b2 = MergeInsertBuilder::try_new(dataset.clone(), vec!["id".to_string()])
-            .unwrap()
-            .when_matched(WhenMatched::UpdateAll)
-            .when_not_matched(WhenNotMatched::InsertAll)
-            .try_build()
-            .unwrap();
+        let result1 = b1.execute(Box::pin(s1) as SendableRecordBatchStream).await;
+        assert!(result1.is_ok(), "First merge insert should succeed");
 
-        let t1 = tokio::spawn(async move {
-            b1.execute(Box::pin(s1) as SendableRecordBatchStream)
-                .await
-                .unwrap()
-                .1
-        });
-        let t2 = tokio::spawn(async move {
-            b2.execute(Box::pin(s2) as SendableRecordBatchStream)
-                .await
-                .unwrap()
-                .1
-        });
-
-        let s1 = t1.await.unwrap();
-        let s2 = t2.await.unwrap();
-        // At least one attempt should include a retry under contention
-        // because both transactions tried to insert the same new key
-        assert!(s1.num_attempts >= 1);
-        assert!(s2.num_attempts >= 1);
-
-        // Validate final dataset has exactly one row with id=100
-        let mut ds_latest = dataset.as_ref().clone();
-        ds_latest.checkout_latest().await.unwrap();
-        let batch = ds_latest.scan().try_into_batch().await.unwrap();
-        let ids = batch["id"].as_primitive::<UInt32Type>().values();
-
-        // Count occurrences of id=100 - should be exactly 1 (no duplicates)
-        let count_100 = ids.iter().filter(|&&x| x == 100).count();
-        assert_eq!(
-            count_100, 1,
-            "Expected exactly one row with id=100, but found {}",
-            count_100
+        // Second merge insert tries to commit based on version 1, needs to rebase against version 2
+        let s2 = RecordBatchStreamAdapter::new(
+            schema.clone(),
+            futures::stream::iter(vec![Ok(batch2.clone())]),
         );
+        let result2 = b2.execute(Box::pin(s2) as SendableRecordBatchStream).await;
 
-        // Should have 5 total rows: original 4 + 1 new row with id=100
-        assert_eq!(
-            batch.num_rows(),
-            5,
-            "Expected 5 rows, but found {}",
-            batch.num_rows()
+        // Second merge insert should fail because bloom filters show both inserted key 100
+        assert!(
+            matches!(result2, Err(crate::Error::TooMuchWriteContention { .. })),
+            "Expected TooMuchWriteContention (retryable conflict exhausted), got: {:?}",
+            result2
         );
     }
 

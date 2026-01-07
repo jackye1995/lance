@@ -2,10 +2,6 @@
 // SPDX-FileCopyrightText: Copyright The Lance Authors
 
 //! Key existence tracking for merge insert conflict detection.
-//!
-//! This module provides data structures for tracking keys of newly inserted rows
-//! during merge insert operations. This is used for detecting conflicts when
-//! concurrent transactions attempt to insert rows with the same key.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
@@ -16,38 +12,15 @@ use arrow_array::{BinaryArray, LargeBinaryArray, LargeStringArray, RecordBatch, 
 use arrow_schema::DataType;
 use deepsize::DeepSizeOf;
 use lance_core::Result;
-use lance_index::scalar::bloomfilter::sbbf::{bloom_filters_might_overlap, Sbbf, SbbfBuilder};
+use lance_index::scalar::bloomfilter::sbbf::{Sbbf, SbbfBuilder};
 use lance_table::format::pb;
 use snafu::location;
 
-// ============================================================================
-// Constants for Bloom Filter configuration
-// ============================================================================
-
-// IMPORTANT: All bloom filters for conflict detection MUST use the same size.
-// Different sized filters cannot be correctly compared for intersection.
-// These values are fixed to ensure all filters have identical dimensions.
-//
-// These values match the defaults in lance-index bloomfilter.rs:
-// NumberOfItems: 8192 + Probability: 0.00057(1 in 1754) -> NumberOfBytes: 16384(16KiB)
+// Default bloom filter config: 8192 items @ 0.00057 fpp -> 16KiB filter
 pub const BLOOM_FILTER_DEFAULT_NUMBER_OF_ITEMS: u64 = 8192;
 pub const BLOOM_FILTER_DEFAULT_PROBABILITY: f64 = 0.00057;
 
-/// Create a BloomFilter protobuf message with default configuration
-fn create_bloom_filter_pb(bitmap: Vec<u8>, num_bits: u32) -> pb::transaction::BloomFilter {
-    pb::transaction::BloomFilter {
-        bitmap,
-        num_bits,
-        number_of_items: BLOOM_FILTER_DEFAULT_NUMBER_OF_ITEMS,
-        probability: BLOOM_FILTER_DEFAULT_PROBABILITY,
-    }
-}
-
-// ============================================================================
-// Key types for conflict detection
-// ============================================================================
-
-/// Key value that can be used in conflict detection for inserted rows
+/// Key value for conflict detection.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum KeyValue {
     String(String),
@@ -58,7 +31,6 @@ pub enum KeyValue {
 }
 
 impl KeyValue {
-    /// Convert the key value to bytes for hashing
     pub fn to_bytes(&self) -> Vec<u8> {
         match self {
             Self::String(s) => s.as_bytes().to_vec(),
@@ -69,14 +41,13 @@ impl KeyValue {
                 let mut result = Vec::new();
                 for value in values {
                     result.extend_from_slice(&value.to_bytes());
-                    result.push(0); // separator
+                    result.push(0);
                 }
                 result
             }
         }
     }
 
-    /// Get a hash of the key value
     pub fn hash_value(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
         self.to_bytes().hash(&mut hasher);
@@ -84,29 +55,21 @@ impl KeyValue {
     }
 }
 
-// ============================================================================
-// Bloom Filter Builder for tracking inserted rows
-// ============================================================================
-
-/// Builder for KeyExistenceFilter using a Split Block Bloom Filter (SBBF).
-/// Used to track keys of inserted rows for conflict detection.
+/// Builder for KeyExistenceFilter using Split Block Bloom Filter.
 #[derive(Debug, Clone)]
 pub struct KeyExistenceFilterBuilder {
     sbbf: Sbbf,
-    /// Field IDs of columns that form the key (must match unenforced primary key)
     field_ids: Vec<i32>,
-    /// Number of items inserted (for len())
     item_count: usize,
 }
 
 impl KeyExistenceFilterBuilder {
-    /// Create a new KeyExistenceFilterBuilder using SBBF with default parameters.
     pub fn new(field_ids: Vec<i32>) -> Self {
         let sbbf = SbbfBuilder::new()
             .expected_items(BLOOM_FILTER_DEFAULT_NUMBER_OF_ITEMS)
             .false_positive_probability(BLOOM_FILTER_DEFAULT_PROBABILITY)
             .build()
-            .expect("Failed to build SBBF for KeyExistenceFilterBuilder");
+            .expect("Failed to build SBBF");
         Self {
             sbbf,
             field_ids,
@@ -114,76 +77,44 @@ impl KeyExistenceFilterBuilder {
         }
     }
 
-    /// Add a key to the filter
     pub fn insert(&mut self, key: KeyValue) -> Result<()> {
-        let bytes = key.to_bytes();
-        self.sbbf.insert(&bytes[..]);
+        self.sbbf.insert(&key.to_bytes()[..]);
         self.item_count += 1;
         Ok(())
     }
 
-    /// Check if a key might be present
     pub fn contains(&self, key: &KeyValue) -> bool {
-        let bytes = key.to_bytes();
-        self.sbbf.check(&bytes[..])
+        self.sbbf.check(&key.to_bytes()[..])
     }
 
-    /// Check if this filter might intersect with another filter.
-    /// This is probabilistic - may return true for non-overlapping sets (false positive).
-    ///
-    /// Returns an error if the filters have different sizes/configurations.
     pub fn might_intersect(&self, other: &Self) -> Result<bool> {
         self.sbbf
             .might_intersect(&other.sbbf)
             .map_err(|e| lance_core::Error::invalid_input(e.to_string(), location!()))
     }
 
-    /// Get the key field IDs
     pub fn field_ids(&self) -> &[i32] {
         &self.field_ids
     }
 
-    /// Get the estimated size in bytes
     pub fn estimated_size_bytes(&self) -> usize {
         self.sbbf.size_bytes()
     }
 
-    /// Convert to typed protobuf KeyExistenceFilter (Bloom variant)
-    pub fn to_pb(&self) -> pb::transaction::KeyExistenceFilter {
-        let bitmap = self.sbbf.to_bytes();
-        let num_bits = (self.sbbf.size_bytes() as u32) * 8;
-        pb::transaction::KeyExistenceFilter {
-            field_ids: self.field_ids.clone(),
-            data: Some(pb::transaction::key_existence_filter::Data::Bloom(
-                create_bloom_filter_pb(bitmap, num_bits),
-            )),
-        }
-    }
-
-    /// Get the number of items
     pub fn len(&self) -> usize {
         self.item_count
     }
 
-    /// Check if empty
     pub fn is_empty(&self) -> bool {
         self.item_count == 0
     }
 
-    /// Check if this filter might produce false positives (Bloom filters are probabilistic)
-    pub fn might_have_false_positives(&self) -> bool {
-        true
-    }
-
-    /// Build a KeyExistenceFilter from this builder
     pub fn build(&self) -> KeyExistenceFilter {
-        let bitmap = self.sbbf.to_bytes();
-        let num_bits = (self.sbbf.size_bytes() as u32) * 8;
         KeyExistenceFilter {
             field_ids: self.field_ids.clone(),
             filter: FilterType::Bloom {
-                bitmap,
-                num_bits,
+                bitmap: self.sbbf.to_bytes(),
+                num_bits: (self.sbbf.size_bytes() as u32) * 8,
                 number_of_items: BLOOM_FILTER_DEFAULT_NUMBER_OF_ITEMS,
                 probability: BLOOM_FILTER_DEFAULT_PROBABILITY,
             },
@@ -191,28 +122,36 @@ impl KeyExistenceFilterBuilder {
     }
 }
 
-// ============================================================================
-// KeyExistenceFilter metadata for conflict detection
-// ============================================================================
+impl From<&KeyExistenceFilterBuilder> for pb::transaction::KeyExistenceFilter {
+    fn from(builder: &KeyExistenceFilterBuilder) -> Self {
+        Self {
+            field_ids: builder.field_ids.clone(),
+            data: Some(pb::transaction::key_existence_filter::Data::Bloom(
+                pb::transaction::BloomFilter {
+                    bitmap: builder.sbbf.to_bytes(),
+                    num_bits: (builder.sbbf.size_bytes() as u32) * 8,
+                    number_of_items: BLOOM_FILTER_DEFAULT_NUMBER_OF_ITEMS,
+                    probability: BLOOM_FILTER_DEFAULT_PROBABILITY,
+                },
+            )),
+        }
+    }
+}
 
-/// Type of filter used for storing key existence data
+/// Filter type for key existence data.
 #[derive(Debug, Clone, DeepSizeOf, PartialEq)]
 pub enum FilterType {
     ExactSet(HashSet<u64>),
     Bloom {
         bitmap: Vec<u8>,
         num_bits: u32,
-        /// Number of items the filter was sized for
         number_of_items: u64,
-        /// False positive probability the filter was sized for
         probability: f64,
     },
 }
 
-/// Metadata about keys of newly inserted rows, used for conflict detection.
-/// Only created when the merge insert's ON columns match the schema's unenforced primary key.
-/// The presence of this filter indicates strict primary key conflict detection should be used.
-/// Only tracks keys from INSERT operations, not UPDATE operations.
+/// Tracks keys of inserted rows for conflict detection.
+/// Only created when ON columns match the schema's unenforced primary key.
 #[derive(Debug, Clone, DeepSizeOf, PartialEq)]
 pub struct KeyExistenceFilter {
     pub field_ids: Vec<i32>,
@@ -220,15 +159,58 @@ pub struct KeyExistenceFilter {
 }
 
 impl KeyExistenceFilter {
-    /// Create KeyExistenceFilter from a bloom filter builder
     pub fn from_bloom_filter(bloom: &KeyExistenceFilterBuilder) -> Self {
         bloom.build()
     }
 
-    pub fn to_pb(&self) -> pb::transaction::KeyExistenceFilter {
-        match &self.filter {
-            FilterType::ExactSet(hashes) => pb::transaction::KeyExistenceFilter {
-                field_ids: self.field_ids.clone(),
+    /// Check if two filters intersect. Returns (has_intersection, might_be_false_positive).
+    /// Errors if bloom filter configs don't match.
+    pub fn intersects(&self, other: &Self) -> Result<(bool, bool)> {
+        match (&self.filter, &other.filter) {
+            (FilterType::ExactSet(a), FilterType::ExactSet(b)) => {
+                Ok((a.iter().any(|h| b.contains(h)), false))
+            }
+            (FilterType::ExactSet(_), FilterType::Bloom { .. })
+            | (FilterType::Bloom { .. }, FilterType::ExactSet(_)) => {
+                // Can't compare different hash schemes, assume intersection
+                Ok((true, true))
+            }
+            (
+                FilterType::Bloom {
+                    bitmap: a_bits,
+                    number_of_items: a_num_items,
+                    probability: a_prob,
+                    ..
+                },
+                FilterType::Bloom {
+                    bitmap: b_bits,
+                    number_of_items: b_num_items,
+                    probability: b_prob,
+                    ..
+                },
+            ) => {
+                if a_num_items != b_num_items || (a_prob - b_prob).abs() > f64::EPSILON {
+                    return Err(lance_core::Error::invalid_input(
+                        format!(
+                            "Bloom filter config mismatch: ({}, {}) vs ({}, {})",
+                            a_num_items, a_prob, b_num_items, b_prob
+                        ),
+                        location!(),
+                    ));
+                }
+                let has = Sbbf::bytes_might_intersect(a_bits, b_bits)
+                    .map_err(|e| lance_core::Error::invalid_input(e.to_string(), location!()))?;
+                Ok((has, has))
+            }
+        }
+    }
+}
+
+impl From<&KeyExistenceFilter> for pb::transaction::KeyExistenceFilter {
+    fn from(filter: &KeyExistenceFilter) -> Self {
+        match &filter.filter {
+            FilterType::ExactSet(hashes) => Self {
+                field_ids: filter.field_ids.clone(),
                 data: Some(pb::transaction::key_existence_filter::Data::Exact(
                     pb::transaction::ExactKeySetFilter {
                         key_hashes: hashes.iter().copied().collect(),
@@ -240,8 +222,8 @@ impl KeyExistenceFilter {
                 num_bits,
                 number_of_items,
                 probability,
-            } => pb::transaction::KeyExistenceFilter {
-                field_ids: self.field_ids.clone(),
+            } => Self {
+                field_ids: filter.field_ids.clone(),
                 data: Some(pb::transaction::key_existence_filter::Data::Bloom(
                     pb::transaction::BloomFilter {
                         bitmap: bitmap.clone(),
@@ -253,16 +235,18 @@ impl KeyExistenceFilter {
             },
         }
     }
+}
 
-    pub fn from_pb(message: &pb::transaction::KeyExistenceFilter) -> Result<Self> {
-        let field_ids = message.field_ids.clone();
+impl TryFrom<&pb::transaction::KeyExistenceFilter> for KeyExistenceFilter {
+    type Error = lance_core::Error;
+
+    fn try_from(message: &pb::transaction::KeyExistenceFilter) -> Result<Self> {
         let filter = match message.data.as_ref() {
             Some(pb::transaction::key_existence_filter::Data::Exact(exact)) => {
                 FilterType::ExactSet(exact.key_hashes.iter().copied().collect())
             }
             Some(pb::transaction::key_existence_filter::Data::Bloom(b)) => {
-                // Use defaults for backwards compatibility with older filters
-                // that don't have number_of_items/probability set (they will be 0)
+                // Use defaults for backwards compatibility
                 let number_of_items = if b.number_of_items == 0 {
                     BLOOM_FILTER_DEFAULT_NUMBER_OF_ITEMS
                 } else {
@@ -280,75 +264,16 @@ impl KeyExistenceFilter {
                     probability,
                 }
             }
-            None => {
-                // Treat missing data as empty exact set
-                FilterType::ExactSet(HashSet::new())
-            }
+            None => FilterType::ExactSet(HashSet::new()),
         };
-        Ok(Self { field_ids, filter })
-    }
-
-    /// Determine if 2 filters intersect, and whether it might be a false positive.
-    ///
-    /// Returns `Err` if the bloom filter configs don't match (different expected_items or fpp),
-    /// since bloom filters with different sizes cannot be reliably compared.
-    ///
-    /// Returns `Ok((has_intersection, might_be_false_positive))` on success.
-    pub fn intersects(&self, other: &Self) -> Result<(bool, bool)> {
-        match (&self.filter, &other.filter) {
-            (FilterType::ExactSet(a), FilterType::ExactSet(b)) => {
-                let has = a.iter().any(|h| b.contains(h));
-                Ok((has, false))
-            }
-            (FilterType::ExactSet(_), FilterType::Bloom { .. })
-            | (FilterType::Bloom { .. }, FilterType::ExactSet(_)) => {
-                // ExactSet stores hashes from an unknown scheme, while Bloom uses XxHash64.
-                // Since we can't reliably compare them, we conservatively assume
-                // there might be an intersection to avoid missing conflicts.
-                Ok((true, true))
-            }
-            (
-                FilterType::Bloom {
-                    bitmap: a_bits,
-                    number_of_items: a_num_items,
-                    probability: a_prob,
-                    ..
-                },
-                FilterType::Bloom {
-                    bitmap: b_bits,
-                    number_of_items: b_num_items,
-                    probability: b_prob,
-                    ..
-                },
-            ) => {
-                // Bloom filters with different configurations cannot be reliably compared
-                // because they have different sizes and bit patterns
-                if a_num_items != b_num_items || (a_prob - b_prob).abs() > f64::EPSILON {
-                    return Err(lance_core::Error::invalid_input(
-                        format!(
-                            "Cannot compare bloom filters with different configurations: \
-                             self(number_of_items={}, probability={}) vs other(number_of_items={}, probability={}). \
-                             Both filters must use the same parameters for reliable intersection checking.",
-                            a_num_items, a_prob, b_num_items, b_prob
-                        ),
-                        location!(),
-                    ));
-                }
-                // Since configs are validated above, this should not fail
-                let has = bloom_filters_might_overlap(a_bits, b_bits)
-                    .map_err(|e| lance_core::Error::invalid_input(e.to_string(), location!()))?;
-                Ok((has, has))
-            }
-        }
+        Ok(Self {
+            field_ids: message.field_ids.clone(),
+            filter,
+        })
     }
 }
 
-// ============================================================================
-// Utility functions for extracting key values from batches
-// ============================================================================
-
-/// Extract key value from a batch row for conflict detection bloom filter.
-/// Returns None if any ON column is null or has an unsupported type.
+/// Extract key value from a batch row. Returns None if null or unsupported type.
 pub fn extract_key_value_from_batch(
     batch: &RecordBatch,
     row_idx: usize,
@@ -361,7 +286,7 @@ pub fn extract_key_value_from_batch(
         let column = batch.column(col_idx);
 
         if column.is_null(row_idx) {
-            return None; // Skip rows with null key values
+            return None;
         }
 
         let key_part = match column.data_type() {
@@ -397,7 +322,7 @@ pub fn extract_key_value_from_batch(
                 let arr = column.as_any().downcast_ref::<LargeBinaryArray>()?;
                 KeyValue::Binary(arr.value(row_idx).to_vec())
             }
-            _ => return None, // Unsupported type
+            _ => return None,
         };
         parts.push(key_part);
     }

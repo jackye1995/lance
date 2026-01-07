@@ -2916,7 +2916,7 @@ impl TryFrom<pb::Transaction> for Transaction {
                     _ => Some(UpdateMode::RewriteRows),
                 },
                 inserted_rows_filter: inserted_rows
-                    .map(|ik| KeyExistenceFilter::from_pb(&ik))
+                    .map(|ik| KeyExistenceFilter::try_from(&ik))
                     .transpose()?,
             },
             Some(pb::transaction::Operation::Project(pb::transaction::Project { schema })) => {
@@ -3246,7 +3246,7 @@ impl From<&Transaction> for pb::Transaction {
                         UpdateMode::RewriteColumns => 1,
                     })
                     .unwrap_or(0),
-                inserted_rows: inserted_rows_filter.as_ref().map(|ik| ik.to_pb()),
+                inserted_rows: inserted_rows_filter.as_ref().map(|ik| ik.into()),
             }),
             Operation::Project { schema } => {
                 pb::transaction::Operation::Project(pb::transaction::Project {

@@ -966,7 +966,20 @@ impl LanceNamespace for DirectoryNamespace {
     async fn describe_table(&self, request: DescribeTableRequest) -> Result<DescribeTableResponse> {
         if let Some(ref manifest_ns) = self.manifest_ns {
             match manifest_ns.describe_table(request.clone()).await {
-                Ok(response) => return Ok(response),
+                Ok(mut response) => {
+                    // Only apply identity-based credential vending when explicitly requested
+                    if request.vend_credentials == Some(true) && self.credential_vendor.is_some() {
+                        if let Some(ref table_uri) = response.table_uri {
+                            let identity = request.identity.as_deref();
+                            response.storage_options = self
+                                .get_storage_options_for_table(table_uri, identity)
+                                .await?;
+                        }
+                    } else if request.vend_credentials == Some(false) {
+                        response.storage_options = None;
+                    }
+                    return Ok(response);
+                }
                 Err(_)
                     if self.dir_listing_enabled
                         && request.id.as_ref().is_some_and(|id| id.len() == 1) =>
@@ -1239,7 +1252,19 @@ impl LanceNamespace for DirectoryNamespace {
     ) -> Result<CreateEmptyTableResponse> {
         if let Some(ref manifest_ns) = self.manifest_ns {
             #[allow(deprecated)]
-            return manifest_ns.create_empty_table(request).await;
+            let mut response = manifest_ns.create_empty_table(request.clone()).await?;
+            // Only apply identity-based credential vending when explicitly requested
+            if request.vend_credentials == Some(true) && self.credential_vendor.is_some() {
+                if let Some(ref location) = response.location {
+                    let identity = request.identity.as_deref();
+                    response.storage_options = self
+                        .get_storage_options_for_table(location, identity)
+                        .await?;
+                }
+            } else if request.vend_credentials == Some(false) {
+                response.storage_options = None;
+            }
+            return Ok(response);
         }
 
         let table_name = Self::table_name_from_id(&request.id)?;
@@ -1290,7 +1315,19 @@ impl LanceNamespace for DirectoryNamespace {
 
     async fn declare_table(&self, request: DeclareTableRequest) -> Result<DeclareTableResponse> {
         if let Some(ref manifest_ns) = self.manifest_ns {
-            return manifest_ns.declare_table(request).await;
+            let mut response = manifest_ns.declare_table(request.clone()).await?;
+            // Only apply identity-based credential vending when explicitly requested
+            if request.vend_credentials == Some(true) && self.credential_vendor.is_some() {
+                if let Some(ref location) = response.location {
+                    let identity = request.identity.as_deref();
+                    response.storage_options = self
+                        .get_storage_options_for_table(location, identity)
+                        .await?;
+                }
+            } else if request.vend_credentials == Some(false) {
+                response.storage_options = None;
+            }
+            return Ok(response);
         }
 
         let table_name = Self::table_name_from_id(&request.id)?;

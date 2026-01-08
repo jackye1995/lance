@@ -30,7 +30,7 @@ use crate::dataset::write::merge_insert::inserted_rows::{
     extract_key_value_from_batch, KeyExistenceFilter, KeyExistenceFilterBuilder,
 };
 use crate::dataset::write::merge_insert::{
-    create_duplicate_row_error, format_key_values_on_columns, DedupeBehavior,
+    create_duplicate_row_error, format_key_values_on_columns, SourceDedupeBehavior,
 };
 use crate::{
     dataset::{
@@ -65,7 +65,7 @@ struct MergeState {
     /// The "on" column names for merge operation
     on_columns: Vec<String>,
     /// How to handle duplicate source rows
-    dedupe_behavior: DedupeBehavior,
+    source_dedupe_behavior: SourceDedupeBehavior,
 }
 
 impl MergeState {
@@ -74,7 +74,7 @@ impl MergeState {
         stable_row_ids: bool,
         on_columns: Vec<String>,
         field_ids: Vec<i32>,
-        dedupe_behavior: DedupeBehavior,
+        source_dedupe_behavior: SourceDedupeBehavior,
     ) -> Self {
         Self {
             delete_row_addrs: RoaringTreemap::new(),
@@ -84,7 +84,7 @@ impl MergeState {
             stable_row_ids,
             processed_row_ids: HashSet::new(),
             on_columns,
-            dedupe_behavior,
+            source_dedupe_behavior,
         }
     }
 
@@ -115,15 +115,15 @@ impl MergeState {
 
                     // Check for duplicate _rowid in the current merge operation
                     if !self.processed_row_ids.insert(row_id) {
-                        match self.dedupe_behavior {
-                            DedupeBehavior::Fail => {
+                        match self.source_dedupe_behavior {
+                            SourceDedupeBehavior::Fail => {
                                 return Err(create_duplicate_row_error(
                                     batch,
                                     row_idx,
                                     &self.on_columns,
                                 ));
                             }
-                            DedupeBehavior::FirstSeen => {
+                            SourceDedupeBehavior::FirstSeen => {
                                 self.metrics.num_skipped_duplicates.add(1);
                                 return Ok(None); // Skip this duplicate row
                             }
@@ -845,7 +845,7 @@ impl ExecutionPlan for FullSchemaMergeInsertExec {
             self.dataset.manifest.uses_stable_row_ids(),
             self.params.on.clone(),
             field_ids,
-            self.params.dedupe_behavior,
+            self.params.source_dedupe_behavior,
         )));
         let write_data_stream =
             self.create_filtered_write_stream(input_stream, merge_state.clone())?;
@@ -989,8 +989,13 @@ mod tests {
     #[test]
     fn test_merge_state_duplicate_rowid_detection_fail() {
         let metrics = MergeInsertMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
-        let mut merge_state =
-            MergeState::new(metrics, false, Vec::new(), Vec::new(), DedupeBehavior::Fail);
+        let mut merge_state = MergeState::new(
+            metrics,
+            false,
+            Vec::new(),
+            Vec::new(),
+            SourceDedupeBehavior::Fail,
+        );
 
         let row_addr_array = UInt64Array::from(vec![1000, 2000, 3000]);
         let row_id_array = UInt64Array::from(vec![100, 100, 300]); // Duplicate row_id 100
@@ -1045,7 +1050,7 @@ mod tests {
             false,
             Vec::new(),
             Vec::new(),
-            DedupeBehavior::FirstSeen,
+            SourceDedupeBehavior::FirstSeen,
         );
 
         let row_addr_array = UInt64Array::from(vec![1000, 2000, 3000]);

@@ -287,9 +287,12 @@ pub enum WhenNotMatched {
     DoNothing,
 }
 
-/// Describes how to handle duplicate source rows that match the same target row
+/// Describes how to handle duplicate source rows that match the same target row.
+///
+/// If the source contains duplicates and `FirstSeen` behavior doesn't match your needs,
+/// sort the source data before passing it to the merge insert operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
-pub enum DedupeBehavior {
+pub enum SourceDedupeBehavior {
     /// Fail the operation if duplicates are found (default)
     #[default]
     Fail,
@@ -321,7 +324,7 @@ struct MergeInsertParams {
     // Setting to false forces a full table scan even if an index exists.
     use_index: bool,
     // Controls how to handle duplicate source rows that match the same target row.
-    dedupe_behavior: DedupeBehavior,
+    source_dedupe_behavior: SourceDedupeBehavior,
 }
 
 /// A MergeInsertJob inserts new rows, deletes old rows, and updates existing rows all as
@@ -425,7 +428,7 @@ impl MergeInsertBuilder {
                 mem_wal_to_merge: None,
                 skip_auto_cleanup: false,
                 use_index: true,
-                dedupe_behavior: DedupeBehavior::Fail,
+                source_dedupe_behavior: SourceDedupeBehavior::Fail,
             },
         })
     }
@@ -501,8 +504,11 @@ impl MergeInsertBuilder {
     ///
     /// Default is `Fail` which errors on duplicates.
     /// Use `FirstSeen` to keep the first encountered row and skip duplicates.
-    pub fn dedupe_behavior(&mut self, behavior: DedupeBehavior) -> &mut Self {
-        self.params.dedupe_behavior = behavior;
+    ///
+    /// If the source contains duplicates and `FirstSeen` behavior doesn't match your needs,
+    /// sort the source data before passing it to the merge insert operation.
+    pub fn source_dedupe_behavior(&mut self, behavior: SourceDedupeBehavior) -> &mut Self {
+        self.params.source_dedupe_behavior = behavior;
         self
     }
 
@@ -1844,7 +1850,7 @@ pub struct MergeStats {
     pub bytes_written: u64,
     /// Number of data files written. This currently only includes data files.
     pub num_files_written: u64,
-    /// Number of duplicate source rows skipped (when DedupeBehavior::FirstSeen)
+    /// Number of duplicate source rows skipped (when SourceDedupeBehavior::FirstSeen)
     pub num_skipped_duplicates: u64,
 }
 
@@ -2106,15 +2112,15 @@ impl Merger {
                 let mut duplicate_indices = Vec::new();
                 for (row_idx, &row_id) in row_ids.values().iter().enumerate() {
                     if !processed_row_ids.insert(row_id) {
-                        match self.params.dedupe_behavior {
-                            DedupeBehavior::Fail => {
+                        match self.params.source_dedupe_behavior {
+                            SourceDedupeBehavior::Fail => {
                                 return Err(create_duplicate_row_error(
                                     &matched,
                                     row_idx,
                                     &self.params.on,
                                 ));
                             }
-                            DedupeBehavior::FirstSeen => {
+                            SourceDedupeBehavior::FirstSeen => {
                                 duplicate_indices.push(row_idx);
                             }
                         }
@@ -5064,7 +5070,7 @@ MergeInsert: on=[id], when_matched=UpdateAll, when_not_matched=InsertAll, when_n
 
     #[tokio::test]
     #[rstest::rstest]
-    async fn test_dedupe_behavior_first_seen(
+    async fn test_source_dedupe_behavior_first_seen(
         #[values(false, true)] is_full_schema: bool,
         #[values(true, false)] enable_stable_row_ids: bool,
         #[values(LanceFileVersion::V2_0, LanceFileVersion::V2_1)]
@@ -5143,7 +5149,7 @@ MergeInsert: on=[id], when_matched=UpdateAll, when_not_matched=InsertAll, when_n
             .unwrap()
             .when_matched(WhenMatched::UpdateAll)
             .when_not_matched(WhenNotMatched::InsertAll)
-            .dedupe_behavior(DedupeBehavior::FirstSeen)
+            .source_dedupe_behavior(SourceDedupeBehavior::FirstSeen)
             .try_build()
             .unwrap();
 

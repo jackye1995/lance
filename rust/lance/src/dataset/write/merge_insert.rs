@@ -44,9 +44,10 @@ use crate::{
 };
 use arrow_array::{
     cast::AsArray, types::UInt64Type, BooleanArray, RecordBatch, RecordBatchIterator, StructArray,
-    UInt64Array,
+    UInt32Array, UInt64Array,
 };
 use arrow_schema::{DataType, Field, Schema};
+use arrow_select::take::take_record_batch;
 use datafusion::common::NullEquality;
 use datafusion::error::DataFusionError;
 use datafusion::{
@@ -2109,9 +2110,11 @@ impl Merger {
                 let row_ids = matched.column(row_id_col).as_primitive::<UInt64Type>();
 
                 let mut processed_row_ids = self.processed_row_ids.lock().unwrap();
-                let mut duplicate_indices = Vec::new();
+                let mut keep_indices: Vec<u32> = Vec::with_capacity(matched.num_rows());
                 for (row_idx, &row_id) in row_ids.values().iter().enumerate() {
-                    if !processed_row_ids.insert(row_id) {
+                    if processed_row_ids.insert(row_id) {
+                        keep_indices.push(row_idx as u32);
+                    } else {
                         match self.params.source_dedupe_behavior {
                             SourceDedupeBehavior::Fail => {
                                 return Err(create_duplicate_row_error(
@@ -2121,24 +2124,21 @@ impl Merger {
                                 ));
                             }
                             SourceDedupeBehavior::FirstSeen => {
-                                duplicate_indices.push(row_idx);
+                                // Skip this duplicate row (don't add to keep_indices)
                             }
                         }
                     }
                 }
                 drop(processed_row_ids);
 
-                // Filter out duplicate rows if any
-                if !duplicate_indices.is_empty() {
-                    merge_statistics.num_skipped_duplicates += duplicate_indices.len() as u64;
-                    merge_statistics.num_updated_rows -= duplicate_indices.len() as u64;
+                // Filter out duplicate rows if any were skipped
+                let num_skipped = matched.num_rows() - keep_indices.len();
+                if num_skipped > 0 {
+                    merge_statistics.num_skipped_duplicates += num_skipped as u64;
+                    merge_statistics.num_updated_rows -= num_skipped as u64;
 
-                    // Create a boolean mask to keep non-duplicate rows
-                    let duplicate_set: HashSet<usize> = duplicate_indices.into_iter().collect();
-                    let keep_mask: BooleanArray = (0..matched.num_rows())
-                        .map(|i| Some(!duplicate_set.contains(&i)))
-                        .collect();
-                    matched = arrow::compute::filter_record_batch(&matched, &keep_mask)?;
+                    let indices = UInt32Array::from(keep_indices);
+                    matched = take_record_batch(&matched, &indices)?;
                 }
 
                 // Only process and write if there are remaining rows after filtering duplicates

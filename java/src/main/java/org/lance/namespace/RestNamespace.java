@@ -74,11 +74,48 @@ public class RestNamespace implements LanceNamespace, Closeable {
 
   @Override
   public void initialize(Map<String, String> configProperties, BufferAllocator allocator) {
+    initialize(configProperties, allocator, null);
+  }
+
+  /**
+   * Initialize with a dynamic context provider.
+   *
+   * <p>The context provider is called before each namespace operation and can return per-request
+   * context (e.g., authentication headers). Context keys that start with {@code headers.} are
+   * converted to HTTP headers by stripping the prefix.
+   *
+   * <p>If contextProvider is null and the properties contain {@code dynamic_context_provider.impl},
+   * the provider will be created from the registered factory. See {@link
+   * DynamicContextProviderRegistry} for details.
+   *
+   * @param configProperties Configuration properties for the namespace
+   * @param allocator Arrow buffer allocator
+   * @param contextProvider Optional provider for per-request context (e.g., dynamic auth headers)
+   */
+  public void initialize(
+      Map<String, String> configProperties,
+      BufferAllocator allocator,
+      DynamicContextProvider contextProvider) {
     if (this.nativeRestNamespaceHandle != 0) {
       throw new IllegalStateException("RestNamespace already initialized");
     }
     this.allocator = allocator;
-    this.nativeRestNamespaceHandle = createNative(configProperties);
+
+    // If no explicit provider, try to create from properties
+    DynamicContextProvider provider = contextProvider;
+    if (provider == null) {
+      provider = DynamicContextProviderRegistry.createFromProperties(configProperties).orElse(null);
+    }
+
+    // Filter out provider properties before passing to native layer
+    Map<String, String> filteredProperties =
+        DynamicContextProviderRegistry.filterProviderProperties(configProperties);
+
+    if (provider != null) {
+      this.nativeRestNamespaceHandle = createNativeWithProvider(filteredProperties, provider);
+    } else {
+      this.nativeRestNamespaceHandle = createNative(filteredProperties);
+    }
   }
 
   @Override
@@ -320,6 +357,9 @@ public class RestNamespace implements LanceNamespace, Closeable {
 
   // Native methods
   private native long createNative(Map<String, String> properties);
+
+  private native long createNativeWithProvider(
+      Map<String, String> properties, DynamicContextProvider contextProvider);
 
   private native void releaseNative(long handle);
 

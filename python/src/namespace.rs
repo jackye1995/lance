@@ -30,7 +30,7 @@ pub struct PyDynamicContextProvider {
 
 impl Clone for PyDynamicContextProvider {
     fn clone(&self) -> Self {
-        Python::with_gil(|py| Self {
+        Python::attach(|py| Self {
             provider: self.provider.clone_ref(py),
         })
     }
@@ -51,7 +51,7 @@ impl std::fmt::Debug for PyDynamicContextProvider {
 
 impl DynamicContextProvider for PyDynamicContextProvider {
     fn provide_context(&self, info: &OperationInfo) -> HashMap<String, String> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             // Create Python dict for operation info
             let py_info = PyDict::new(py);
             if py_info.set_item("operation", &info.operation).is_err() {

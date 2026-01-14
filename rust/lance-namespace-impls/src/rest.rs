@@ -872,7 +872,7 @@ impl LanceNamespace for RestNamespace {
     ) -> Result<CreateEmptyTableResponse> {
         let id = object_id_str(&request.id, &self.delimiter)?;
         let encoded_id = urlencode(&id);
-        let path = format!("/v1/table/{}/create_empty", encoded_id);
+        let path = format!("/v1/table/{}/create-empty", encoded_id);
         let query = [("delimiter", self.delimiter.as_str())];
         self.post_json(&path, &query, &request, "create_empty_table", &id)
             .await
@@ -924,8 +924,8 @@ impl LanceNamespace for RestNamespace {
             location: snafu::location!(),
         })?;
 
-        let path = format!("/v1/table/{}/merge_insert/{}", encoded_id, urlencode(on));
-        let mut query = vec![("delimiter", self.delimiter.as_str())];
+        let path = format!("/v1/table/{}/merge_insert", encoded_id);
+        let mut query = vec![("delimiter", self.delimiter.as_str()), ("on", on)];
 
         let when_matched_update_all_str;
         if let Some(v) = request.when_matched_update_all {
@@ -1044,7 +1044,7 @@ impl LanceNamespace for RestNamespace {
     ) -> Result<CreateTableIndexResponse> {
         let id = object_id_str(&request.id, &self.delimiter)?;
         let encoded_id = urlencode(&id);
-        let path = format!("/v1/table/{}/index/create", encoded_id);
+        let path = format!("/v1/table/{}/create_index", encoded_id);
         let query = [("delimiter", self.delimiter.as_str())];
         self.post_json(&path, &query, &request, "create_table_index", &id)
             .await
@@ -1085,7 +1085,7 @@ impl LanceNamespace for RestNamespace {
     ) -> Result<DescribeTransactionResponse> {
         let id = object_id_str(&request.id, &self.delimiter)?;
         let encoded_id = urlencode(&id);
-        let path = format!("/v1/table/{}/transaction/describe", encoded_id);
+        let path = format!("/v1/transaction/{}/describe", encoded_id);
         let query = [("delimiter", self.delimiter.as_str())];
         self.post_json(&path, &query, &request, "describe_transaction", &id)
             .await
@@ -1097,7 +1097,7 @@ impl LanceNamespace for RestNamespace {
     ) -> Result<AlterTransactionResponse> {
         let id = object_id_str(&request.id, &self.delimiter)?;
         let encoded_id = urlencode(&id);
-        let path = format!("/v1/table/{}/transaction/alter", encoded_id);
+        let path = format!("/v1/transaction/{}/alter", encoded_id);
         let query = [("delimiter", self.delimiter.as_str())];
         self.post_json(&path, &query, &request, "alter_transaction", &id)
             .await
@@ -1109,7 +1109,7 @@ impl LanceNamespace for RestNamespace {
     ) -> Result<CreateTableScalarIndexResponse> {
         let id = object_id_str(&request.id, &self.delimiter)?;
         let encoded_id = urlencode(&id);
-        let path = format!("/v1/table/{}/index/create_scalar", encoded_id);
+        let path = format!("/v1/table/{}/create_scalar_index", encoded_id);
         let query = [("delimiter", self.delimiter.as_str())];
         self.post_json(&path, &query, &request, "create_table_scalar_index", &id)
             .await
@@ -1133,7 +1133,7 @@ impl LanceNamespace for RestNamespace {
     }
 
     async fn list_all_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
-        let path = "/v1/table/list";
+        let path = "/v1/table";
         let mut query = vec![("delimiter", self.delimiter.as_str())];
         let page_token_str;
         if let Some(ref pt) = request.page_token {
@@ -1194,7 +1194,7 @@ impl LanceNamespace for RestNamespace {
     ) -> Result<UpdateTableSchemaMetadataResponse> {
         let id = object_id_str(&request.id, &self.delimiter)?;
         let encoded_id = urlencode(&id);
-        let path = format!("/v1/table/{}/schema/metadata", encoded_id);
+        let path = format!("/v1/table/{}/schema_metadata/update", encoded_id);
         let query = [("delimiter", self.delimiter.as_str())];
         let metadata = request.metadata.unwrap_or_default();
         let result: HashMap<String, String> = self
@@ -1230,7 +1230,7 @@ impl LanceNamespace for RestNamespace {
     ) -> Result<String> {
         let id = object_id_str(&request.id, &self.delimiter)?;
         let encoded_id = urlencode(&id);
-        let path = format!("/v1/table/{}/query/explain", encoded_id);
+        let path = format!("/v1/table/{}/explain_plan", encoded_id);
         let query = [("delimiter", self.delimiter.as_str())];
         self.post_json(&path, &query, &request, "explain_table_query_plan", &id)
             .await
@@ -1242,7 +1242,7 @@ impl LanceNamespace for RestNamespace {
     ) -> Result<String> {
         let id = object_id_str(&request.id, &self.delimiter)?;
         let encoded_id = urlencode(&id);
-        let path = format!("/v1/table/{}/query/analyze", encoded_id);
+        let path = format!("/v1/table/{}/analyze_plan", encoded_id);
         let query = [("delimiter", self.delimiter.as_str())];
         self.post_json(&path, &query, &request, "analyze_table_query_plan", &id)
             .await
@@ -1254,7 +1254,7 @@ impl LanceNamespace for RestNamespace {
     ) -> Result<AlterTableAddColumnsResponse> {
         let id = object_id_str(&request.id, &self.delimiter)?;
         let encoded_id = urlencode(&id);
-        let path = format!("/v1/table/{}/alter/add_columns", encoded_id);
+        let path = format!("/v1/table/{}/add_columns", encoded_id);
         let query = [("delimiter", self.delimiter.as_str())];
         self.post_json(&path, &query, &request, "alter_table_add_columns", &id)
             .await
@@ -1266,7 +1266,7 @@ impl LanceNamespace for RestNamespace {
     ) -> Result<AlterTableAlterColumnsResponse> {
         let id = object_id_str(&request.id, &self.delimiter)?;
         let encoded_id = urlencode(&id);
-        let path = format!("/v1/table/{}/alter/alter_columns", encoded_id);
+        let path = format!("/v1/table/{}/alter_columns", encoded_id);
         let query = [("delimiter", self.delimiter.as_str())];
         self.post_json(&path, &query, &request, "alter_table_alter_columns", &id)
             .await
@@ -1278,7 +1278,7 @@ impl LanceNamespace for RestNamespace {
     ) -> Result<AlterTableDropColumnsResponse> {
         let id = object_id_str(&request.id, &self.delimiter)?;
         let encoded_id = urlencode(&id);
-        let path = format!("/v1/table/{}/alter/drop_columns", encoded_id);
+        let path = format!("/v1/table/{}/drop_columns", encoded_id);
         let query = [("delimiter", self.delimiter.as_str())];
         self.post_json(&path, &query, &request, "alter_table_drop_columns", &id)
             .await
@@ -1290,7 +1290,7 @@ impl LanceNamespace for RestNamespace {
     ) -> Result<ListTableTagsResponse> {
         let id = object_id_str(&request.id, &self.delimiter)?;
         let encoded_id = urlencode(&id);
-        let path = format!("/v1/table/{}/tag/list", encoded_id);
+        let path = format!("/v1/table/{}/tags/list", encoded_id);
         let mut query = vec![("delimiter", self.delimiter.as_str())];
         let page_token_str;
         if let Some(ref pt) = request.page_token {
@@ -1311,7 +1311,7 @@ impl LanceNamespace for RestNamespace {
     ) -> Result<GetTableTagVersionResponse> {
         let id = object_id_str(&request.id, &self.delimiter)?;
         let encoded_id = urlencode(&id);
-        let path = format!("/v1/table/{}/tag/get", encoded_id);
+        let path = format!("/v1/table/{}/tags/version", encoded_id);
         let query = [("delimiter", self.delimiter.as_str())];
         self.post_json(&path, &query, &request, "get_table_tag_version", &id)
             .await
@@ -1323,7 +1323,7 @@ impl LanceNamespace for RestNamespace {
     ) -> Result<CreateTableTagResponse> {
         let id = object_id_str(&request.id, &self.delimiter)?;
         let encoded_id = urlencode(&id);
-        let path = format!("/v1/table/{}/tag/create", encoded_id);
+        let path = format!("/v1/table/{}/tags/create", encoded_id);
         let query = [("delimiter", self.delimiter.as_str())];
         self.post_json(&path, &query, &request, "create_table_tag", &id)
             .await
@@ -1335,7 +1335,7 @@ impl LanceNamespace for RestNamespace {
     ) -> Result<DeleteTableTagResponse> {
         let id = object_id_str(&request.id, &self.delimiter)?;
         let encoded_id = urlencode(&id);
-        let path = format!("/v1/table/{}/tag/delete", encoded_id);
+        let path = format!("/v1/table/{}/tags/delete", encoded_id);
         let query = [("delimiter", self.delimiter.as_str())];
         self.post_json(&path, &query, &request, "delete_table_tag", &id)
             .await
@@ -1347,7 +1347,7 @@ impl LanceNamespace for RestNamespace {
     ) -> Result<UpdateTableTagResponse> {
         let id = object_id_str(&request.id, &self.delimiter)?;
         let encoded_id = urlencode(&id);
-        let path = format!("/v1/table/{}/tag/update", encoded_id);
+        let path = format!("/v1/table/{}/tags/update", encoded_id);
         let query = [("delimiter", self.delimiter.as_str())];
         self.post_json(&path, &query, &request, "update_table_tag", &id)
             .await

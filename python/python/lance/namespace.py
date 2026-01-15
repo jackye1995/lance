@@ -85,7 +85,7 @@ class DynamicContextProvider(ABC):
 
     Example
     -------
-    >>> # Define a provider class (e.g., in my_module.py)
+    >>> # Define a provider class
     >>> class MyProvider(DynamicContextProvider):
     ...     def __init__(self, api_key: str):
     ...         self.api_key = api_key
@@ -93,15 +93,12 @@ class DynamicContextProvider(ABC):
     ...     def provide_context(self, info: dict) -> dict:
     ...         return {
     ...             "headers.Authorization": f"Bearer {self.api_key}",
-    ...             "headers.X-Request-Id": str(uuid.uuid4()),
     ...         }
     ...
-    >>> # Use via properties with full class path
-    >>> ns = DirectoryNamespace(**{
-    ...     "root": "/path/to/data",
-    ...     "dynamic_context_provider.impl": "my_module.MyProvider",
-    ...     "dynamic_context_provider.api_key": "secret",
-    ... })
+    >>> # Create provider instance and use directly
+    >>> provider = MyProvider(api_key="secret")
+    >>> provider.provide_context({"operation": "list_tables", "object_id": "ns"})
+    {'headers.Authorization': 'Bearer secret'}
     """
 
     @abstractmethod
@@ -285,21 +282,22 @@ class DirectoryNamespace(LanceNamespace):
     ...     "credential_vendor.aws_duration_millis": "3600000",
     ... })
 
-    With dynamic context provider (via properties):
+    With dynamic context provider:
 
-    >>> # Define provider class in your module (e.g., my_module.py):
-    >>> # class MyProvider(DynamicContextProvider):
-    >>> #     def __init__(self, token: str):
-    >>> #         self.token = token
-    >>> #     def provide_context(self, info: dict) -> dict:
-    >>> #         return {"headers.Authorization": f"Bearer {self.token}"}
-    >>>
-    >>> # Use via properties with full class path
-    >>> ns = lance.namespace.DirectoryNamespace(**{
-    ...     "root": "/path/to/data",
-    ...     "dynamic_context_provider.impl": "my_module.MyProvider",
-    ...     "dynamic_context_provider.token": "secret-token",
-    ... })
+    >>> import tempfile
+    >>> class MyProvider(DynamicContextProvider):
+    ...     def __init__(self, token: str):
+    ...         self.token = token
+    ...     def provide_context(self, info: dict) -> dict:
+    ...         return {"headers.Authorization": f"Bearer {self.token}"}
+    ...
+    >>> provider = MyProvider(token="secret-token")
+    >>> with tempfile.TemporaryDirectory() as tmpdir:
+    ...     ns = lance.namespace.DirectoryNamespace(
+    ...         root=tmpdir,
+    ...         context_provider=provider,
+    ...     )
+    ...     _ = ns.namespace_id()  # verify it works
     """
 
     def __init__(self, session=None, context_provider=None, **properties):
@@ -424,21 +422,21 @@ class RestNamespace(LanceNamespace):
     >>> import lance_namespace
     >>> ns = lance_namespace.connect("rest", {"uri": "http://localhost:4099"})
 
-    With dynamic context provider (via properties):
+    With dynamic context provider:
 
-    >>> # Define provider class in your module (e.g., my_module.py):
-    >>> # class AuthProvider(DynamicContextProvider):
-    >>> #     def __init__(self, api_key: str):
-    >>> #         self.api_key = api_key
-    >>> #     def provide_context(self, info: dict) -> dict:
-    >>> #         return {"headers.Authorization": f"Bearer {self.api_key}"}
-    >>>
-    >>> # Use via properties with full class path
-    >>> ns = lance.namespace.RestNamespace(**{
-    ...     "uri": "http://localhost:4099",
-    ...     "dynamic_context_provider.impl": "my_module.AuthProvider",
-    ...     "dynamic_context_provider.api_key": "my-secret-key",
-    ... })
+    >>> class AuthProvider(DynamicContextProvider):
+    ...     def __init__(self, api_key: str):
+    ...         self.api_key = api_key
+    ...     def provide_context(self, info: dict) -> dict:
+    ...         return {"headers.Authorization": f"Bearer {self.api_key}"}
+    ...
+    >>> provider = AuthProvider(api_key="my-secret-key")
+    >>> ns = lance.namespace.RestNamespace(
+    ...     uri="http://localhost:4099",
+    ...     context_provider=provider,
+    ... )
+    >>> ns.namespace_id()  # verify it works
+    'rest://localhost:4099'
     """
 
     def __init__(self, context_provider=None, **properties):

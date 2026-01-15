@@ -304,22 +304,4 @@ public class DynamicContextProviderTest {
       assertNotNull(namespace.namespaceId());
     }
   }
-
-  @Test
-  void testFilterProviderProperties() {
-    Map<String, String> properties = new HashMap<>();
-    properties.put("root", "/path/to/data");
-    properties.put("storage.region", "us-west-2");
-    properties.put("dynamic_context_provider.impl", "org.lance.namespace.TestContextProvider");
-    properties.put("dynamic_context_provider.token", "secret");
-
-    Map<String, String> filtered =
-        DynamicContextProviderRegistry.filterProviderProperties(properties);
-
-    assertEquals(2, filtered.size());
-    assertEquals("/path/to/data", filtered.get("root"));
-    assertEquals("us-west-2", filtered.get("storage.region"));
-    assertFalse(filtered.containsKey("dynamic_context_provider.impl"));
-    assertFalse(filtered.containsKey("dynamic_context_provider.token"));
-  }
 }

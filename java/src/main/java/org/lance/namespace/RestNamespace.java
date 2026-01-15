@@ -21,7 +21,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.arrow.memory.BufferAllocator;
 
 import java.io.Closeable;
+import java.lang.reflect.Constructor;
+import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * RestNamespace implementation that provides Lance namespace functionality via REST API endpoints.
@@ -85,8 +88,8 @@ public class RestNamespace implements LanceNamespace, Closeable {
    * converted to HTTP headers by stripping the prefix.
    *
    * <p>If contextProvider is null and the properties contain {@code dynamic_context_provider.impl},
-   * the provider will be created from the registered factory. See {@link
-   * DynamicContextProviderRegistry} for details.
+   * the provider will be loaded from the class path. The class must implement {@link
+   * DynamicContextProvider} and have a constructor accepting {@code Map<String, String>}.
    *
    * @param configProperties Configuration properties for the namespace
    * @param allocator Arrow buffer allocator
@@ -104,12 +107,11 @@ public class RestNamespace implements LanceNamespace, Closeable {
     // If no explicit provider, try to create from properties
     DynamicContextProvider provider = contextProvider;
     if (provider == null) {
-      provider = DynamicContextProviderRegistry.createFromProperties(configProperties).orElse(null);
+      provider = createProviderFromProperties(configProperties).orElse(null);
     }
 
     // Filter out provider properties before passing to native layer
-    Map<String, String> filteredProperties =
-        DynamicContextProviderRegistry.filterProviderProperties(configProperties);
+    Map<String, String> filteredProperties = filterProviderProperties(configProperties);
 
     if (provider != null) {
       this.nativeRestNamespaceHandle = createNativeWithProvider(filteredProperties, provider);
@@ -415,4 +417,77 @@ public class RestNamespace implements LanceNamespace, Closeable {
   private native String describeTransactionNative(long handle, String requestJson);
 
   private native String alterTransactionNative(long handle, String requestJson);
+
+  // ==========================================================================
+  // Provider loading helpers
+  // ==========================================================================
+
+  private static final String PROVIDER_PREFIX = "dynamic_context_provider.";
+  private static final String IMPL_KEY = "dynamic_context_provider.impl";
+
+  /**
+   * Create a context provider from properties if configured.
+   *
+   * <p>Loads the class specified by {@code dynamic_context_provider.impl} from the class path and
+   * instantiates it with the extracted provider properties.
+   */
+  private static Optional<DynamicContextProvider> createProviderFromProperties(
+      Map<String, String> properties) {
+    String className = properties.get(IMPL_KEY);
+    if (className == null || className.isEmpty()) {
+      return Optional.empty();
+    }
+
+    // Extract provider-specific properties (strip prefix, exclude impl key)
+    Map<String, String> providerProps = new HashMap<>();
+    for (Map.Entry<String, String> entry : properties.entrySet()) {
+      String key = entry.getKey();
+      if (key.startsWith(PROVIDER_PREFIX) && !key.equals(IMPL_KEY)) {
+        String propName = key.substring(PROVIDER_PREFIX.length());
+        providerProps.put(propName, entry.getValue());
+      }
+    }
+
+    try {
+      Class<?> providerClass = Class.forName(className);
+      if (!DynamicContextProvider.class.isAssignableFrom(providerClass)) {
+        throw new IllegalArgumentException(
+            String.format(
+                "Class '%s' does not implement DynamicContextProvider interface", className));
+      }
+
+      @SuppressWarnings("unchecked")
+      Class<? extends DynamicContextProvider> typedClass =
+          (Class<? extends DynamicContextProvider>) providerClass;
+
+      Constructor<? extends DynamicContextProvider> constructor =
+          typedClass.getConstructor(Map.class);
+      return Optional.of(constructor.newInstance(providerProps));
+
+    } catch (ClassNotFoundException e) {
+      throw new IllegalArgumentException(
+          String.format("Failed to load context provider class '%s': %s", className, e), e);
+    } catch (NoSuchMethodException e) {
+      throw new IllegalArgumentException(
+          String.format(
+              "Context provider class '%s' must have a public constructor "
+                  + "that accepts Map<String, String>",
+              className),
+          e);
+    } catch (ReflectiveOperationException e) {
+      throw new IllegalArgumentException(
+          String.format("Failed to instantiate context provider '%s': %s", className, e), e);
+    }
+  }
+
+  /** Filter out dynamic_context_provider.* properties from the map. */
+  private static Map<String, String> filterProviderProperties(Map<String, String> properties) {
+    Map<String, String> filtered = new HashMap<>();
+    for (Map.Entry<String, String> entry : properties.entrySet()) {
+      if (!entry.getKey().startsWith(PROVIDER_PREFIX)) {
+        filtered.put(entry.getKey(), entry.getValue());
+      }
+    }
+    return filtered;
+  }
 }

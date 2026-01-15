@@ -436,7 +436,7 @@ class RestNamespace(LanceNamespace):
     ...     context_provider=provider,
     ... )
     >>> ns.namespace_id()  # verify it works
-    'rest://localhost:4099'
+    'RestNamespace { endpoint: "http://localhost:4099", delimiter: "$" }'
     """
 
     def __init__(self, context_provider=None, **properties):

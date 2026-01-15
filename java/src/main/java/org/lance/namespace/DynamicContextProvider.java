@@ -28,35 +28,35 @@ import java.util.Map;
  *
  * <p>Example implementation:
  *
- * <pre>{@code
+ * <pre>
  * public class MyContextProvider implements DynamicContextProvider {
- *   @Override
- *   public Map<String, String> provideContext(String operation, String objectId) {
- *     Map<String, String> context = new HashMap<>();
+ *   &#64;Override
+ *   public Map&lt;String, String&gt; provideContext(String operation, String objectId) {
+ *     Map&lt;String, String&gt; context = new HashMap&lt;&gt;();
  *     context.put("headers.Authorization", "Bearer " + getAuthToken());
  *     context.put("headers.X-Request-Id", UUID.randomUUID().toString());
  *     return context;
  *   }
  * }
- * }</pre>
+ * </pre>
  *
  * <p>Usage with DirectoryNamespace:
  *
- * <pre>{@code
+ * <pre>
  * DynamicContextProvider provider = new MyContextProvider();
- * Map<String, String> properties = Map.of("root", "/path/to/data");
+ * Map&lt;String, String&gt; properties = Map.of("root", "/path/to/data");
  * DirectoryNamespace namespace = new DirectoryNamespace();
  * namespace.initialize(properties, allocator, provider);
- * }</pre>
+ * </pre>
  *
  * <p>Usage with RestNamespace:
  *
- * <pre>{@code
+ * <pre>
  * DynamicContextProvider provider = new MyContextProvider();
- * Map<String, String> properties = Map.of("uri", "https://api.example.com");
+ * Map&lt;String, String&gt; properties = Map.of("uri", "https://api.example.com");
  * RestNamespace namespace = new RestNamespace();
  * namespace.initialize(properties, provider);
- * }</pre>
+ * </pre>
  */
 public interface DynamicContextProvider {
 

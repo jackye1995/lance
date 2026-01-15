@@ -29,32 +29,32 @@ import java.util.Optional;
  *
  * <p>Example usage:
  *
- * <pre>{@code
+ * <pre>
  * // Define a provider class
  * public class MyAuthProvider implements DynamicContextProvider {
  *   private final String token;
  *
- *   public MyAuthProvider(Map<String, String> properties) {
+ *   public MyAuthProvider(Map&lt;String, String&gt; properties) {
  *     this.token = properties.get("token");
  *   }
  *
- *   @Override
- *   public Map<String, String> provideContext(String operation, String objectId) {
- *     Map<String, String> context = new HashMap<>();
+ *   &#64;Override
+ *   public Map&lt;String, String&gt; provideContext(String operation, String objectId) {
+ *     Map&lt;String, String&gt; context = new HashMap&lt;&gt;();
  *     context.put("headers.Authorization", "Bearer " + token);
  *     return context;
  *   }
  * }
  *
  * // Use via namespace properties with full class path
- * Map<String, String> properties = new HashMap<>();
+ * Map&lt;String, String&gt; properties = new HashMap&lt;&gt;();
  * properties.put("root", "/path/to/data");
  * properties.put("dynamic_context_provider.impl", "com.example.MyAuthProvider");
  * properties.put("dynamic_context_provider.token", "secret-token");
  *
  * DirectoryNamespace namespace = new DirectoryNamespace();
  * namespace.initialize(properties, allocator);
- * }</pre>
+ * </pre>
  */
 public final class DynamicContextProviderRegistry {
 

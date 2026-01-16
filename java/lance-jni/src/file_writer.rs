@@ -95,7 +95,7 @@ fn inner_open<'local>(
     let writer = RT.block_on(async move {
         let object_params = ObjectStoreParams {
             storage_options_accessor: Some(Arc::new(
-                lance::io::StorageOptionsAccessor::static_options(storage_options),
+                lance::io::StorageOptionsAccessor::with_static_options(storage_options),
             )),
             ..Default::default()
         };

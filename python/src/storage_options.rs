@@ -191,9 +191,9 @@ impl PyStorageOptionsAccessor {
 impl PyStorageOptionsAccessor {
     /// Create an accessor with only static options (no refresh capability)
     #[staticmethod]
-    fn static_options(options: HashMap<String, String>) -> Self {
+    fn with_static_options(options: HashMap<String, String>) -> Self {
         Self {
-            inner: Arc::new(StorageOptionsAccessor::static_options(options)),
+            inner: Arc::new(StorageOptionsAccessor::with_static_options(options)),
         }
     }
 
@@ -285,7 +285,9 @@ pub fn create_accessor_from_python(
                 rust_provider,
             ))))
         }
-        (Some(opts), None) => Ok(Some(Arc::new(StorageOptionsAccessor::static_options(opts)))),
+        (Some(opts), None) => Ok(Some(Arc::new(StorageOptionsAccessor::with_static_options(
+            opts,
+        )))),
         (None, None) => Ok(None),
     }
 }

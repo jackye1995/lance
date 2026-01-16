@@ -163,7 +163,7 @@ mod tests {
         use std::sync::Arc;
         let url = Url::parse("hf://datasets/acme/repo/data/file").unwrap();
         let params = ObjectStoreParams {
-            storage_options_accessor: Some(Arc::new(StorageOptionsAccessor::static_options(
+            storage_options_accessor: Some(Arc::new(StorageOptionsAccessor::with_static_options(
                 HashMap::from([(String::from("hf_revision"), String::from("stable"))]),
             ))),
             ..Default::default()

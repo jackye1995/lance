@@ -1565,7 +1565,7 @@ impl Dataset {
         // `storage_options` will be forwarded to the object store params for the new dataset.
         let store_params = storage_options.as_ref().map(|opts| ObjectStoreParams {
             storage_options_accessor: Some(Arc::new(
-                lance::io::StorageOptionsAccessor::static_options(opts.clone()),
+                lance::io::StorageOptionsAccessor::with_static_options(opts.clone()),
             )),
             ..Default::default()
         });
@@ -1746,7 +1746,7 @@ impl Dataset {
         let reference = self.transform_ref(reference)?;
         let store_params = storage_options.map(|opts| ObjectStoreParams {
             storage_options_accessor: Some(Arc::new(
-                lance::io::StorageOptionsAccessor::static_options(opts),
+                lance::io::StorageOptionsAccessor::with_static_options(opts),
             )),
             ..Default::default()
         });

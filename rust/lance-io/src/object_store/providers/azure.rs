@@ -236,7 +236,7 @@ mod tests {
         let provider = AzureBlobStoreProvider;
         let url = Url::parse("az://test-container/path").unwrap();
         let params_with_flag = ObjectStoreParams {
-            storage_options_accessor: Some(Arc::new(StorageOptionsAccessor::static_options(
+            storage_options_accessor: Some(Arc::new(StorageOptionsAccessor::with_static_options(
                 HashMap::from([
                     ("use_opendal".to_string(), "true".to_string()),
                     ("account_name".to_string(), "test_account".to_string()),

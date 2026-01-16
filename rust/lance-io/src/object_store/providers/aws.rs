@@ -446,7 +446,7 @@ impl ObjectStoreParams {
         let storage_options_accessor = region.map(|region| {
             let opts: HashMap<String, String> =
                 [("region".into(), region)].iter().cloned().collect();
-            Arc::new(StorageOptionsAccessor::static_options(opts))
+            Arc::new(StorageOptionsAccessor::with_static_options(opts))
         });
         Self {
             aws_credentials,
@@ -675,7 +675,7 @@ mod tests {
         let provider = AwsStoreProvider;
         let url = Url::parse("s3://test-bucket/path").unwrap();
         let params_with_flag = ObjectStoreParams {
-            storage_options_accessor: Some(Arc::new(StorageOptionsAccessor::static_options(
+            storage_options_accessor: Some(Arc::new(StorageOptionsAccessor::with_static_options(
                 HashMap::from([
                     ("use_opendal".to_string(), "true".to_string()),
                     ("region".to_string(), "us-west-2".to_string()),

@@ -218,7 +218,7 @@ impl StorageOptionsAccessor {
     ///
     /// The returned accessor will always return the provided options.
     /// This is useful when credentials don't expire or are managed externally.
-    pub fn static_options(options: HashMap<String, String>) -> Self {
+    pub fn with_static_options(options: HashMap<String, String>) -> Self {
         let expires_at_millis = options
             .get(EXPIRES_AT_MILLIS_KEY)
             .and_then(|s| s.parse::<u64>().ok());
@@ -537,7 +537,7 @@ mod tests {
             ("key1".to_string(), "value1".to_string()),
             ("key2".to_string(), "value2".to_string()),
         ]);
-        let accessor = StorageOptionsAccessor::static_options(options.clone());
+        let accessor = StorageOptionsAccessor::with_static_options(options.clone());
 
         let result = accessor.get_storage_options().await.unwrap();
         assert_eq!(result.0, options);
@@ -649,7 +649,7 @@ mod tests {
     #[tokio::test]
     async fn test_accessor_id_static() {
         let options = HashMap::from([("key".to_string(), "value".to_string())]);
-        let accessor = StorageOptionsAccessor::static_options(options);
+        let accessor = StorageOptionsAccessor::with_static_options(options);
 
         let id = accessor.accessor_id();
         assert!(id.starts_with("static_options_"));

@@ -288,12 +288,13 @@ impl DatasetBuilder {
                     StorageOptionsAccessor::with_initial_and_provider(merged, provider),
                 ));
             } else {
-                self.options.storage_options_accessor =
-                    Some(Arc::new(StorageOptionsAccessor::static_options(merged)));
+                self.options.storage_options_accessor = Some(Arc::new(
+                    StorageOptionsAccessor::with_static_options(merged),
+                ));
             }
         } else {
             self.options.storage_options_accessor = Some(Arc::new(
-                StorageOptionsAccessor::static_options(storage_options),
+                StorageOptionsAccessor::with_static_options(storage_options),
             ));
         }
         self
@@ -318,12 +319,12 @@ impl DatasetBuilder {
                 ));
             } else {
                 self.options.storage_options_accessor = Some(Arc::new(
-                    StorageOptionsAccessor::static_options(storage_options),
+                    StorageOptionsAccessor::with_static_options(storage_options),
                 ));
             }
         } else {
             self.options.storage_options_accessor = Some(Arc::new(
-                StorageOptionsAccessor::static_options(storage_options),
+                StorageOptionsAccessor::with_static_options(storage_options),
             ));
         }
         self
@@ -558,12 +559,12 @@ impl DatasetBuilder {
                     ));
                 } else {
                     self.options.storage_options_accessor = Some(Arc::new(
-                        StorageOptionsAccessor::static_options(merged_opts),
+                        StorageOptionsAccessor::with_static_options(merged_opts),
                     ));
                 }
             } else {
                 self.options.storage_options_accessor = Some(Arc::new(
-                    StorageOptionsAccessor::static_options(merged_opts),
+                    StorageOptionsAccessor::with_static_options(merged_opts),
                 ));
             }
         }

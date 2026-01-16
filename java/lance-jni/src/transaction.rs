@@ -777,16 +777,16 @@ fn inner_commit_transaction<'local>(
                         ),
                     ))
                 } else {
-                    Some(Arc::new(lance::io::StorageOptionsAccessor::static_options(
-                        merged,
-                    )))
+                    Some(Arc::new(
+                        lance::io::StorageOptionsAccessor::with_static_options(merged),
+                    ))
                 }
             }
             None => {
                 if !write_param.is_empty() {
-                    Some(Arc::new(lance::io::StorageOptionsAccessor::static_options(
-                        write_param,
-                    )))
+                    Some(Arc::new(
+                        lance::io::StorageOptionsAccessor::with_static_options(write_param),
+                    ))
                 } else {
                     None
                 }

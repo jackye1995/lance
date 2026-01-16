@@ -110,9 +110,9 @@ pub fn extract_write_params(
         (false, Some(provider)) => Some(Arc::new(
             lance::io::StorageOptionsAccessor::with_initial_and_provider(storage_options, provider),
         )),
-        (false, None) => Some(Arc::new(lance::io::StorageOptionsAccessor::static_options(
-            storage_options,
-        ))),
+        (false, None) => Some(Arc::new(
+            lance::io::StorageOptionsAccessor::with_static_options(storage_options),
+        )),
         (true, Some(provider)) => Some(Arc::new(lance::io::StorageOptionsAccessor::with_provider(
             provider,
         ))),

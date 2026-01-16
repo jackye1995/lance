@@ -100,7 +100,7 @@ impl BlockingDataset {
             let registry = Arc::new(ObjectStoreRegistry::default());
             let object_store_params = ObjectStoreParams {
                 storage_options_accessor: Some(Arc::new(
-                    lance::io::StorageOptionsAccessor::static_options(storage_options),
+                    lance::io::StorageOptionsAccessor::with_static_options(storage_options),
                 )),
                 ..Default::default()
             };
@@ -142,9 +142,9 @@ impl BlockingDataset {
                     provider,
                 ),
             )),
-            (false, None) => Some(Arc::new(lance::io::StorageOptionsAccessor::static_options(
-                storage_options,
-            ))),
+            (false, None) => Some(Arc::new(
+                lance::io::StorageOptionsAccessor::with_static_options(storage_options),
+            )),
             (true, Some(provider)) => Some(Arc::new(
                 lance::io::StorageOptionsAccessor::with_provider(provider),
             )),
@@ -186,9 +186,9 @@ impl BlockingDataset {
         let accessor = if storage_options.is_empty() {
             None
         } else {
-            Some(Arc::new(lance::io::StorageOptionsAccessor::static_options(
-                storage_options,
-            )))
+            Some(Arc::new(
+                lance::io::StorageOptionsAccessor::with_static_options(storage_options),
+            ))
         };
         let inner = RT.block_on(Dataset::commit(
             uri,
@@ -2234,7 +2234,7 @@ fn transform_jstorage_options(
         .map(|options| {
             Some(ObjectStoreParams {
                 storage_options_accessor: Some(Arc::new(
-                    lance::io::StorageOptionsAccessor::static_options(options),
+                    lance::io::StorageOptionsAccessor::with_static_options(options),
                 )),
                 ..Default::default()
             })

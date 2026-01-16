@@ -197,7 +197,7 @@ pub struct ObjectStoreParams {
     /// Unified storage options accessor with caching and automatic refresh
     ///
     /// Provides storage options and optionally a dynamic provider for automatic
-    /// credential refresh. Use `StorageOptionsAccessor::static_options()` for static
+    /// credential refresh. Use `StorageOptionsAccessor::with_static_options()` for static
     /// options or `StorageOptionsAccessor::with_initial_and_provider()` for dynamic refresh.
     pub storage_options_accessor: Option<Arc<StorageOptionsAccessor>>,
     /// Use constant size upload parts for multipart uploads. Only necessary
@@ -1000,7 +1000,7 @@ mod tests {
         let registry = Arc::new(ObjectStoreRegistry::default());
         let accessor = storage_options
             .clone()
-            .map(|opts| Arc::new(StorageOptionsAccessor::static_options(opts)));
+            .map(|opts| Arc::new(StorageOptionsAccessor::with_static_options(opts)));
         let params = ObjectStoreParams {
             storage_options_accessor: accessor.clone(),
             ..ObjectStoreParams::default()

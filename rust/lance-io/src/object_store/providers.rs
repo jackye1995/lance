@@ -423,7 +423,7 @@ mod tests {
 
         let params1 = ObjectStoreParams::default();
         let params2 = ObjectStoreParams {
-            storage_options_accessor: Some(Arc::new(StorageOptionsAccessor::static_options(
+            storage_options_accessor: Some(Arc::new(StorageOptionsAccessor::with_static_options(
                 HashMap::from([("k".into(), "v".into())]),
             ))),
             ..Default::default()

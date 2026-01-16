@@ -186,7 +186,7 @@ async fn test_concurrent_writers() {
     // Create a table
     let store_params = ObjectStoreParams {
         object_store_wrapper: Some(io_tracker.clone()),
-        storage_options_accessor: Some(Arc::new(StorageOptionsAccessor::static_options(
+        storage_options_accessor: Some(Arc::new(StorageOptionsAccessor::with_static_options(
             CONFIG
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -270,7 +270,7 @@ async fn test_ddb_open_iops() {
     // Create a table
     let store_params = ObjectStoreParams {
         object_store_wrapper: Some(io_tracker.clone()),
-        storage_options_accessor: Some(Arc::new(StorageOptionsAccessor::static_options(
+        storage_options_accessor: Some(Arc::new(StorageOptionsAccessor::with_static_options(
             CONFIG
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))

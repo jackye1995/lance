@@ -186,7 +186,7 @@ mod tests {
         let provider = GcsStoreProvider;
         let url = Url::parse("gs://test-bucket/path").unwrap();
         let params_with_flag = ObjectStoreParams {
-            storage_options_accessor: Some(Arc::new(StorageOptionsAccessor::static_options(
+            storage_options_accessor: Some(Arc::new(StorageOptionsAccessor::with_static_options(
                 HashMap::from([
                     ("use_opendal".to_string(), "true".to_string()),
                     (

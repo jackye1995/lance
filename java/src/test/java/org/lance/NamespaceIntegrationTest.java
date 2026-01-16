@@ -203,6 +203,8 @@ public class NamespaceIntegrationTest {
 
       long expiresAtMillis = System.currentTimeMillis() + (credentialExpiresInSeconds * 1000L);
       modified.put("expires_at_millis", String.valueOf(expiresAtMillis));
+      // Set refresh offset to 1 second (1000ms) for short-lived credential tests
+      modified.put("refresh_offset_millis", "1000");
 
       return modified;
     }

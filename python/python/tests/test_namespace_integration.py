@@ -128,6 +128,8 @@ class TrackingNamespace(LanceNamespace):
             (time.time() + self.credential_expires_in_seconds) * 1000
         )
         modified["expires_at_millis"] = str(expires_at_millis)
+        # Set refresh offset to 1 second (1000ms) for short-lived credential tests
+        modified["refresh_offset_millis"] = "1000"
 
         return modified
 

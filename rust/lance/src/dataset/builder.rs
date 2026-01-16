@@ -335,11 +335,6 @@ impl DatasetBuilder {
     ///     .with_s3_credentials_refresh_offset(Duration::from_secs(600))
     ///     .load()
     ///     .await?;
-    #[deprecated(
-        since = "0.25.0",
-        note = "Use with_storage_options_accessor() instead for unified access to storage options"
-    )]
-    #[allow(deprecated)]
     pub fn with_storage_options_provider(
         mut self,
         provider: Arc<dyn lance_io::object_store::StorageOptionsProvider>,

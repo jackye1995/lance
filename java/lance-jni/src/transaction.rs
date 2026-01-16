@@ -756,18 +756,17 @@ fn inner_commit_transaction<'local>(
     let write_param_jmap = JMap::from_env(env, &write_param_jobj)?;
     let write_param = to_rust_map(env, &write_param_jmap)?;
 
-    // Get the Dataset's storage_options_provider
-    let storage_options_provider = {
+    // Get the Dataset's storage_options_accessor
+    let storage_options_accessor = {
         let dataset_guard =
             unsafe { env.get_rust_field::<_, _, BlockingDataset>(&java_dataset, NATIVE_DATASET) }?;
-        #[allow(deprecated)]
-        dataset_guard.get_storage_options_provider()
+        dataset_guard.inner.storage_options_accessor()
     };
 
-    // Build ObjectStoreParams using write_param for storage_options and provider from Dataset
+    // Build ObjectStoreParams using write_param for storage_options and accessor from Dataset
     let store_params = ObjectStoreParams {
         storage_options: Some(write_param),
-        storage_options_provider,
+        storage_options_accessor,
         ..Default::default()
     };
 

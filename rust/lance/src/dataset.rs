@@ -1617,11 +1617,6 @@ impl Dataset {
     }
 
     /// Returns the storage options provider used when opening this dataset, if any.
-    #[deprecated(
-        since = "0.25.0",
-        note = "Use storage_options_accessor() instead for unified access to storage options"
-    )]
-    #[allow(deprecated)]
     pub fn storage_options_provider(
         &self,
     ) -> Option<Arc<dyn lance_io::object_store::StorageOptionsProvider>> {

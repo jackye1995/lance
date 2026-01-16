@@ -197,11 +197,10 @@ pub struct ObjectStoreParams {
     pub aws_credentials: Option<AwsCredentialProvider>,
     pub object_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
     pub storage_options: Option<HashMap<String, String>>,
-    /// Dynamic storage options provider for automatic credential refresh
-    #[deprecated(
-        since = "0.25.0",
-        note = "Use storage_options_accessor instead for unified access to storage options"
-    )]
+    /// Dynamic storage options provider for automatic credential refresh.
+    ///
+    /// When set, the provider will be called to refresh storage options when they expire.
+    /// The `expires_at_millis` key in the returned options controls when refresh occurs.
     pub storage_options_provider: Option<Arc<dyn StorageOptionsProvider>>,
     /// Unified storage options accessor with caching and automatic refresh
     ///

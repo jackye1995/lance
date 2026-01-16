@@ -76,13 +76,6 @@ pub struct BlockingDataset {
 }
 
 impl BlockingDataset {
-    /// Get the storage options provider that was used when opening this dataset
-    #[deprecated(note = "Use storage_options_accessor() instead")]
-    pub fn get_storage_options_provider(&self) -> Option<Arc<dyn StorageOptionsProvider>> {
-        #[allow(deprecated)]
-        self.inner.storage_options_provider()
-    }
-
     /// Get the initial storage options used to open this dataset.
     ///
     /// Returns the options that were provided when the dataset was opened,
@@ -100,16 +93,6 @@ impl BlockingDataset {
         RT.block_on(async { self.inner.latest_storage_options().await })
             .map(|opt| opt.map(|opts| opts.0))
             .map_err(|e| Error::io_error(e.to_string()))
-    }
-
-    /// Get the storage options accessor for this dataset.
-    ///
-    /// The accessor bundles static storage options and optional dynamic provider,
-    /// handling caching and refresh logic internally.
-    pub fn storage_options_accessor(
-        &self,
-    ) -> Option<Arc<lance_io::object_store::StorageOptionsAccessor>> {
-        self.inner.storage_options_accessor()
     }
 
     pub fn drop(uri: &str, storage_options: HashMap<String, String>) -> Result<()> {
@@ -149,14 +132,12 @@ impl BlockingDataset {
         serialized_manifest: Option<&[u8]>,
         storage_options_provider: Option<Arc<dyn StorageOptionsProvider>>,
     ) -> Result<Self> {
-        let mut store_params = ObjectStoreParams {
+        let store_params = ObjectStoreParams {
             block_size: block_size.map(|size| size as usize),
-            storage_options: Some(storage_options.clone()),
+            storage_options: Some(storage_options),
+            storage_options_provider,
             ..Default::default()
         };
-        if let Some(provider) = storage_options_provider.clone() {
-            store_params.storage_options_provider = Some(provider);
-        }
         let params = ReadParams {
             index_cache_size_bytes: index_cache_size_bytes as usize,
             metadata_cache_size_bytes: metadata_cache_size_bytes as usize,
@@ -168,10 +149,6 @@ impl BlockingDataset {
 
         if let Some(ver) = version {
             builder = builder.with_version(ver as u64);
-        }
-        builder = builder.with_storage_options(storage_options);
-        if let Some(provider) = storage_options_provider.clone() {
-            builder = builder.with_storage_options_provider(provider)
         }
 
         if let Some(serialized_manifest) = serialized_manifest {

@@ -89,13 +89,11 @@ pub fn extract_write_params(
         extract_storage_options(env, storage_options_obj)?;
 
     // Extract storage options provider if present
-    let storage_options_provider = env
+    let storage_options_provider: Option<Arc<dyn StorageOptionsProvider>> = env
         .get_optional(storage_options_provider_obj, |env, provider_obj| {
             JavaStorageOptionsProvider::new(env, provider_obj)
-        })?;
-
-    let storage_options_provider_arc: Option<Arc<dyn StorageOptionsProvider>> =
-        storage_options_provider.map(|v| Arc::new(v) as Arc<dyn StorageOptionsProvider>);
+        })?
+        .map(|p| Arc::new(p) as Arc<dyn StorageOptionsProvider>);
 
     if let Some(initial_bases) =
         env.get_list_opt(initial_bases, |env, elem| elem.extract_object(env))?
@@ -109,7 +107,7 @@ pub fn extract_write_params(
 
     write_params.store_params = Some(ObjectStoreParams {
         storage_options: Some(storage_options),
-        storage_options_provider: storage_options_provider_arc,
+        storage_options_provider,
         ..Default::default()
     });
     Ok(write_params)

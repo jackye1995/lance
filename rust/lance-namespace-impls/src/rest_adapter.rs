@@ -2700,7 +2700,6 @@ mod tests {
                 namespace.clone(),
                 table_id.clone(),
                 None,
-                false,
             )
             .await
             .unwrap();
@@ -2729,7 +2728,6 @@ mod tests {
                 namespace.clone(),
                 table_id.clone(),
                 Some(params_append),
-                false,
             )
             .await
             .unwrap();
@@ -2758,7 +2756,6 @@ mod tests {
                 namespace.clone(),
                 table_id.clone(),
                 Some(params_overwrite),
-                false,
             )
             .await
             .unwrap();

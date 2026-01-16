@@ -393,14 +393,12 @@ pub async fn object_store_from_uri_or_path_with_provider(
         (Some(opts), Some(provider)) => Some(Arc::new(
             lance::io::StorageOptionsAccessor::with_initial_and_provider(opts, provider),
         )),
-        (None, Some(provider)) => {
-            Some(Arc::new(lance::io::StorageOptionsAccessor::with_provider(
-                provider,
-            )))
-        }
-        (Some(opts), None) => Some(Arc::new(
-            lance::io::StorageOptionsAccessor::static_options(opts),
-        )),
+        (None, Some(provider)) => Some(Arc::new(lance::io::StorageOptionsAccessor::with_provider(
+            provider,
+        ))),
+        (Some(opts), None) => Some(Arc::new(lance::io::StorageOptionsAccessor::static_options(
+            opts,
+        ))),
         (None, None) => None,
     };
 

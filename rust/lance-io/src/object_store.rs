@@ -66,6 +66,7 @@ pub const DEFAULT_DOWNLOAD_RETRY_COUNT: usize = 3;
 pub use providers::{ObjectStoreProvider, ObjectStoreRegistry};
 pub use storage_options::{
     LanceNamespaceStorageOptionsProvider, StorageOptionsProvider, EXPIRES_AT_MILLIS_KEY,
+    REFRESH_OFFSET_MILLIS_KEY,
 };
 pub use storage_options_accessor::StorageOptionsAccessor;
 
@@ -189,6 +190,8 @@ pub struct ObjectStoreParams {
     pub block_size: Option<usize>,
     #[deprecated(note = "Implement an ObjectStoreProvider instead")]
     pub object_store: Option<(Arc<DynObjectStore>, Url)>,
+    /// Refresh offset for AWS credentials when using the legacy AWS credentials path.
+    /// For StorageOptionsAccessor, use `refresh_offset_millis` storage option instead.
     pub s3_credentials_refresh_offset: Duration,
     #[cfg(feature = "aws")]
     pub aws_credentials: Option<AwsCredentialProvider>,
@@ -246,16 +249,11 @@ impl ObjectStoreParams {
 
         // Create accessor from legacy fields
         match (&self.storage_options, &self.storage_options_provider) {
-            (Some(opts), Some(provider)) => {
-                Some(Arc::new(StorageOptionsAccessor::with_initial_and_provider(
-                    opts.clone(),
-                    provider.clone(),
-                    self.s3_credentials_refresh_offset,
-                )))
-            }
+            (Some(opts), Some(provider)) => Some(Arc::new(
+                StorageOptionsAccessor::with_initial_and_provider(opts.clone(), provider.clone()),
+            )),
             (None, Some(provider)) => Some(Arc::new(StorageOptionsAccessor::with_provider(
                 provider.clone(),
-                self.s3_credentials_refresh_offset,
             ))),
             (Some(opts), None) => Some(Arc::new(StorageOptionsAccessor::static_options(
                 opts.clone(),

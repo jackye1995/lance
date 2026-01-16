@@ -235,7 +235,6 @@ def test_namespace_with_refresh(s3_bucket: str):
         namespace=namespace,
         table_id=table_id,
         mode="create",
-        s3_credentials_refresh_offset_seconds=1,
     )
     assert ds.count_rows() == 2
     assert namespace.get_create_call_count() == 1
@@ -243,7 +242,6 @@ def test_namespace_with_refresh(s3_bucket: str):
     ds_from_namespace = lance.dataset(
         namespace=namespace,
         table_id=table_id,
-        s3_credentials_refresh_offset_seconds=1,
     )
 
     initial_call_count = namespace.get_describe_call_count()
@@ -574,7 +572,6 @@ def test_file_writer_with_storage_options_provider(s3_bucket: str):
         schema=schema,
         storage_options=namespace_storage_options,
         storage_options_provider=provider,
-        s3_credentials_refresh_offset_seconds=1,
     )
 
     batch = pa.RecordBatch.from_pydict({"x": [1, 2, 3], "y": [4, 5, 6]}, schema=schema)
@@ -593,7 +590,6 @@ def test_file_writer_with_storage_options_provider(s3_bucket: str):
         file_uri,
         storage_options=namespace_storage_options,
         storage_options_provider=provider,
-        s3_credentials_refresh_offset_seconds=1,
     )
     result = reader.read_all(batch_size=1024)
     result_table = result.to_table()
@@ -613,7 +609,6 @@ def test_file_writer_with_storage_options_provider(s3_bucket: str):
         schema=schema,
         storage_options=namespace_storage_options,
         storage_options_provider=provider,
-        s3_credentials_refresh_offset_seconds=1,
     )
 
     batch3 = pa.RecordBatch.from_pydict(
@@ -629,7 +624,6 @@ def test_file_writer_with_storage_options_provider(s3_bucket: str):
         file_uri2,
         storage_options=namespace_storage_options,
         storage_options_provider=provider,
-        s3_credentials_refresh_offset_seconds=1,
     )
     result2 = reader2.read_all(batch_size=1024)
     result_table2 = result2.to_table()
@@ -696,7 +690,6 @@ def test_file_reader_with_storage_options_provider(s3_bucket: str):
         file_uri,
         storage_options=namespace_storage_options,
         storage_options_provider=provider,
-        s3_credentials_refresh_offset_seconds=1,
     )
     result = reader.read_all(batch_size=1024)
     result_table = result.to_table()
@@ -727,7 +720,6 @@ def test_file_reader_with_storage_options_provider(s3_bucket: str):
         file_uri2,
         storage_options=namespace_storage_options,
         storage_options_provider=provider,
-        s3_credentials_refresh_offset_seconds=1,
     )
     result2 = reader2.read_all(batch_size=1024)
     result_table2 = result2.to_table()
@@ -778,7 +770,6 @@ def test_file_session_with_storage_options_provider(s3_bucket: str):
         f"s3://{s3_bucket}/{table_name}_session",
         storage_options=namespace_storage_options,
         storage_options_provider=provider,
-        s3_credentials_refresh_offset_seconds=1,
     )
 
     # Test contains method

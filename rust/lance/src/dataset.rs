@@ -809,15 +809,12 @@ impl Dataset {
     /// * `namespace` - The namespace to use for table management
     /// * `table_id` - The table identifier
     /// * `params` - Write parameters
-    /// * `ignore_namespace_table_storage_options` - If true, ignore storage options returned
-    ///   by the namespace and only use the storage options in params. The storage options
-    ///   provider will not be created, so credentials will not be automatically refreshed.
+    #[allow(deprecated)]
     pub async fn write_into_namespace(
         batches: impl RecordBatchReader + Send + 'static,
         namespace: Arc<dyn LanceNamespace>,
         table_id: Vec<String>,
         mut params: Option<WriteParams>,
-        ignore_namespace_table_storage_options: bool,
     ) -> Result<Self> {
         let mut write_params = params.take().unwrap_or_default();
 
@@ -866,28 +863,26 @@ impl Dataset {
                     location: location!(),
                 })?;
 
-                // Set initial credentials and provider unless ignored
-                if !ignore_namespace_table_storage_options {
-                    if let Some(namespace_storage_options) = response.storage_options {
-                        let provider = Arc::new(LanceNamespaceStorageOptionsProvider::new(
-                            namespace, table_id,
-                        ));
+                // Set initial credentials and provider from namespace
+                if let Some(namespace_storage_options) = response.storage_options {
+                    let provider = Arc::new(LanceNamespaceStorageOptionsProvider::new(
+                        namespace, table_id,
+                    ));
 
-                        // Merge namespace storage options with any existing options
-                        let mut merged_options = write_params
-                            .store_params
-                            .as_ref()
-                            .and_then(|p| p.storage_options.clone())
-                            .unwrap_or_default();
-                        merged_options.extend(namespace_storage_options);
+                    // Merge namespace storage options with any existing options
+                    let mut merged_options = write_params
+                        .store_params
+                        .as_ref()
+                        .and_then(|p| p.storage_options.clone())
+                        .unwrap_or_default();
+                    merged_options.extend(namespace_storage_options);
 
-                        let existing_params = write_params.store_params.take().unwrap_or_default();
-                        write_params.store_params = Some(ObjectStoreParams {
-                            storage_options: Some(merged_options),
-                            storage_options_provider: Some(provider),
-                            ..existing_params
-                        });
-                    }
+                    let existing_params = write_params.store_params.take().unwrap_or_default();
+                    write_params.store_params = Some(ObjectStoreParams {
+                        storage_options: Some(merged_options),
+                        storage_options_provider: Some(provider),
+                        ..existing_params
+                    });
                 }
 
                 Self::write(batches, uri.as_str(), Some(write_params)).await
@@ -913,29 +908,27 @@ impl Dataset {
                     location: location!(),
                 })?;
 
-                // Set initial credentials and provider unless ignored
-                if !ignore_namespace_table_storage_options {
-                    if let Some(namespace_storage_options) = response.storage_options {
-                        let provider = Arc::new(LanceNamespaceStorageOptionsProvider::new(
-                            namespace.clone(),
-                            table_id.clone(),
-                        ));
+                // Set initial credentials and provider from namespace
+                if let Some(namespace_storage_options) = response.storage_options {
+                    let provider = Arc::new(LanceNamespaceStorageOptionsProvider::new(
+                        namespace.clone(),
+                        table_id.clone(),
+                    ));
 
-                        // Merge namespace storage options with any existing options
-                        let mut merged_options = write_params
-                            .store_params
-                            .as_ref()
-                            .and_then(|p| p.storage_options.clone())
-                            .unwrap_or_default();
-                        merged_options.extend(namespace_storage_options);
+                    // Merge namespace storage options with any existing options
+                    let mut merged_options = write_params
+                        .store_params
+                        .as_ref()
+                        .and_then(|p| p.storage_options.clone())
+                        .unwrap_or_default();
+                    merged_options.extend(namespace_storage_options);
 
-                        let existing_params = write_params.store_params.take().unwrap_or_default();
-                        write_params.store_params = Some(ObjectStoreParams {
-                            storage_options: Some(merged_options),
-                            storage_options_provider: Some(provider),
-                            ..existing_params
-                        });
-                    }
+                    let existing_params = write_params.store_params.take().unwrap_or_default();
+                    write_params.store_params = Some(ObjectStoreParams {
+                        storage_options: Some(merged_options),
+                        storage_options_provider: Some(provider),
+                        ..existing_params
+                    });
                 }
 
                 // For APPEND/OVERWRITE modes, we must open the existing dataset first

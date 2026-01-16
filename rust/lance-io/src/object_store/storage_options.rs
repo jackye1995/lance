@@ -20,6 +20,9 @@ use snafu::location;
 /// Key for the expiration timestamp in storage options HashMap
 pub const EXPIRES_AT_MILLIS_KEY: &str = "expires_at_millis";
 
+/// Key for the refresh offset in storage options HashMap (milliseconds before expiry to refresh)
+pub const REFRESH_OFFSET_MILLIS_KEY: &str = "refresh_offset_millis";
+
 /// Trait for providing storage options with expiration tracking
 ///
 /// Implementations can fetch storage options from various sources (namespace servers,

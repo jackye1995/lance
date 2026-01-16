@@ -20,9 +20,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 
 use super::storage_options::StorageOptionsProvider;
-use super::{StorageOptions, EXPIRES_AT_MILLIS_KEY};
+use super::{StorageOptions, EXPIRES_AT_MILLIS_KEY, REFRESH_OFFSET_MILLIS_KEY};
 use lance_core::{Error, Result};
 use snafu::location;
+
+/// Default refresh offset: 60 seconds before expiration
+const DEFAULT_REFRESH_OFFSET_MILLIS: u64 = 60_000;
 
 /// Unified access to storage options with automatic caching and refresh
 ///
@@ -72,6 +75,15 @@ struct CachedStorageOptions {
 }
 
 impl StorageOptionsAccessor {
+    /// Extract refresh offset from storage options, or use default
+    fn extract_refresh_offset(options: &HashMap<String, String>) -> Duration {
+        options
+            .get(REFRESH_OFFSET_MILLIS_KEY)
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(Duration::from_millis)
+            .unwrap_or(Duration::from_millis(DEFAULT_REFRESH_OFFSET_MILLIS))
+    }
+
     /// Create an accessor with only static options (no refresh capability)
     ///
     /// The returned accessor will always return the provided options.
@@ -80,6 +92,7 @@ impl StorageOptionsAccessor {
         let expires_at_millis = options
             .get(EXPIRES_AT_MILLIS_KEY)
             .and_then(|s| s.parse::<u64>().ok());
+        let refresh_offset = Self::extract_refresh_offset(&options);
 
         Self {
             initial_options: Some(options.clone()),
@@ -88,7 +101,7 @@ impl StorageOptionsAccessor {
                 options,
                 expires_at_millis,
             }))),
-            refresh_offset: Duration::ZERO,
+            refresh_offset,
         }
     }
 
@@ -96,19 +109,16 @@ impl StorageOptionsAccessor {
     ///
     /// The accessor will fetch from the provider on first access and cache
     /// the results. Refresh happens automatically before expiration.
+    /// Uses the default refresh offset (60 seconds) until options are fetched.
     ///
     /// # Arguments
     /// * `provider` - The storage options provider for fetching fresh options
-    /// * `refresh_offset` - Duration before expiry to trigger refresh
-    pub fn with_provider(
-        provider: Arc<dyn StorageOptionsProvider>,
-        refresh_offset: Duration,
-    ) -> Self {
+    pub fn with_provider(provider: Arc<dyn StorageOptionsProvider>) -> Self {
         Self {
             initial_options: None,
             provider: Some(provider),
             cache: Arc::new(RwLock::new(None)),
-            refresh_offset,
+            refresh_offset: Duration::from_millis(DEFAULT_REFRESH_OFFSET_MILLIS),
         }
     }
 
@@ -116,19 +126,19 @@ impl StorageOptionsAccessor {
     ///
     /// Initial options are used until they expire, then the provider is called.
     /// This avoids an immediate fetch when initial credentials are still valid.
+    /// The `refresh_offset_millis` key in initial_options controls refresh timing.
     ///
     /// # Arguments
     /// * `initial_options` - Initial storage options to cache
     /// * `provider` - The storage options provider for refreshing
-    /// * `refresh_offset` - Duration before expiry to trigger refresh
     pub fn with_initial_and_provider(
         initial_options: HashMap<String, String>,
         provider: Arc<dyn StorageOptionsProvider>,
-        refresh_offset: Duration,
     ) -> Self {
         let expires_at_millis = initial_options
             .get(EXPIRES_AT_MILLIS_KEY)
             .and_then(|s| s.parse::<u64>().ok());
+        let refresh_offset = Self::extract_refresh_offset(&initial_options);
 
         Self {
             initial_options: Some(initial_options.clone()),
@@ -411,8 +421,7 @@ mod tests {
         MockClock::set_system_time(Duration::from_secs(100_000));
 
         let mock_provider = Arc::new(MockStorageOptionsProvider::new(Some(600_000)));
-        let accessor =
-            StorageOptionsAccessor::with_provider(mock_provider.clone(), Duration::from_secs(60));
+        let accessor = StorageOptionsAccessor::with_provider(mock_provider.clone());
 
         let result = accessor.get_storage_options().await.unwrap();
         assert!(result.0.contains_key("aws_access_key_id"));
@@ -442,7 +451,6 @@ mod tests {
         let accessor = StorageOptionsAccessor::with_initial_and_provider(
             initial.clone(),
             mock_provider.clone(),
-            Duration::from_secs(60),
         );
 
         // First call uses initial
@@ -456,26 +464,26 @@ mod tests {
         MockClock::set_system_time(Duration::from_secs(100_000));
 
         let mock_provider = Arc::new(MockStorageOptionsProvider::new(Some(600_000))); // 10 min expiry
-        let accessor = StorageOptionsAccessor::with_provider(
-            mock_provider.clone(),
-            Duration::from_secs(300), // 5 min refresh offset
-        );
+                                                                                      // Use with_initial_and_provider to set custom refresh_offset_millis (5 min = 300000ms)
+        let now_ms = MockClock::system_time().as_millis() as u64;
+        let expires_at = now_ms + 600_000; // 10 minutes from now
+        let initial = HashMap::from([
+            (EXPIRES_AT_MILLIS_KEY.to_string(), expires_at.to_string()),
+            (REFRESH_OFFSET_MILLIS_KEY.to_string(), "300000".to_string()), // 5 min refresh offset
+        ]);
+        let accessor =
+            StorageOptionsAccessor::with_initial_and_provider(initial, mock_provider.clone());
 
-        // First call fetches
+        // First call uses initial cached options
         let result = accessor.get_storage_options().await.unwrap();
-        assert_eq!(result.0.get("aws_access_key_id").unwrap(), "AKID_1");
-        assert_eq!(mock_provider.get_call_count().await, 1);
-
-        // Second call uses cache
-        let result = accessor.get_storage_options().await.unwrap();
-        assert_eq!(result.0.get("aws_access_key_id").unwrap(), "AKID_1");
-        assert_eq!(mock_provider.get_call_count().await, 1);
+        assert!(result.0.contains_key(EXPIRES_AT_MILLIS_KEY));
+        assert_eq!(mock_provider.get_call_count().await, 0);
 
         // Advance time to 6 minutes - should trigger refresh (within 5 min refresh offset)
         MockClock::set_system_time(Duration::from_secs(100_000 + 360));
         let result = accessor.get_storage_options().await.unwrap();
-        assert_eq!(result.0.get("aws_access_key_id").unwrap(), "AKID_2");
-        assert_eq!(mock_provider.get_call_count().await, 2);
+        assert_eq!(result.0.get("aws_access_key_id").unwrap(), "AKID_1");
+        assert_eq!(mock_provider.get_call_count().await, 1);
     }
 
     #[tokio::test]
@@ -491,11 +499,8 @@ mod tests {
         ]);
         let mock_provider = Arc::new(MockStorageOptionsProvider::new(Some(600_000)));
 
-        let accessor = StorageOptionsAccessor::with_initial_and_provider(
-            initial,
-            mock_provider.clone(),
-            Duration::from_secs(60),
-        );
+        let accessor =
+            StorageOptionsAccessor::with_initial_and_provider(initial, mock_provider.clone());
 
         // Should fetch from provider since initial is expired
         let result = accessor.get_storage_options().await.unwrap();
@@ -506,8 +511,7 @@ mod tests {
     #[tokio::test]
     async fn test_accessor_id_with_provider() {
         let mock_provider = Arc::new(MockStorageOptionsProvider::new(None));
-        let accessor =
-            StorageOptionsAccessor::with_provider(mock_provider, Duration::from_secs(60));
+        let accessor = StorageOptionsAccessor::with_provider(mock_provider);
 
         let id = accessor.accessor_id();
         assert!(id.starts_with("MockStorageOptionsProvider"));
@@ -527,10 +531,7 @@ mod tests {
         // Create a mock provider with far future expiration
         let mock_provider = Arc::new(MockStorageOptionsProvider::new(Some(9999999999999)));
 
-        let accessor = Arc::new(StorageOptionsAccessor::with_provider(
-            mock_provider.clone(),
-            Duration::from_secs(300),
-        ));
+        let accessor = Arc::new(StorageOptionsAccessor::with_provider(mock_provider.clone()));
 
         // Spawn 10 concurrent tasks that all try to get options at the same time
         let mut handles = vec![];
@@ -567,8 +568,7 @@ mod tests {
         MockClock::set_system_time(Duration::from_secs(100_000));
 
         let mock_provider = Arc::new(MockStorageOptionsProvider::new(None)); // No expiration
-        let accessor =
-            StorageOptionsAccessor::with_provider(mock_provider.clone(), Duration::from_secs(60));
+        let accessor = StorageOptionsAccessor::with_provider(mock_provider.clone());
 
         // First call fetches
         accessor.get_storage_options().await.unwrap();

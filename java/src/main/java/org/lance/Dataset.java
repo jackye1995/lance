@@ -144,7 +144,6 @@ public class Dataset implements Closeable {
               params.getDataStorageVersion(),
               params.getEnableV2ManifestPaths(),
               params.getStorageOptions(),
-              params.getS3CredentialsRefreshOffsetSeconds(),
               params.getInitialBases(),
               params.getTargetBases());
       dataset.allocator = allocator;
@@ -206,7 +205,6 @@ public class Dataset implements Closeable {
             params.getEnableV2ManifestPaths(),
             params.getStorageOptions(),
             Optional.ofNullable(storageOptionsProvider),
-            params.getS3CredentialsRefreshOffsetSeconds(),
             params.getInitialBases(),
             params.getTargetBases());
     dataset.allocator = allocator;
@@ -224,7 +222,6 @@ public class Dataset implements Closeable {
       Optional<String> dataStorageVersion,
       Optional<Boolean> enableV2ManifestPaths,
       Map<String, String> storageOptions,
-      Optional<Long> s3CredentialsRefreshOffsetSeconds,
       Optional<List<BasePath>> initialBases,
       Optional<List<String>> targetBases);
 
@@ -239,7 +236,6 @@ public class Dataset implements Closeable {
       Optional<String> dataStorageVersion,
       Optional<Boolean> enableV2ManifestPaths,
       Map<String, String> storageOptions,
-      Optional<Long> s3CredentialsRefreshOffsetSeconds,
       Optional<List<BasePath>> initialBases,
       Optional<List<String>> targetBases);
 
@@ -255,7 +251,6 @@ public class Dataset implements Closeable {
       Optional<Boolean> enableV2ManifestPaths,
       Map<String, String> storageOptions,
       Optional<StorageOptionsProvider> storageOptionsProvider,
-      Optional<Long> s3CredentialsRefreshOffsetSeconds,
       Optional<List<BasePath>> initialBases,
       Optional<List<String>> targetBases);
 
@@ -335,8 +330,7 @@ public class Dataset implements Closeable {
             options.getMetadataCacheSizeBytes(),
             options.getStorageOptions(),
             options.getSerializedManifest(),
-            options.getStorageOptionsProvider(),
-            options.getS3CredentialsRefreshOffsetSeconds());
+            options.getStorageOptionsProvider());
     dataset.allocator = allocator;
     dataset.selfManagedAllocator = selfManagedAllocator;
     return dataset;
@@ -350,8 +344,7 @@ public class Dataset implements Closeable {
       long metadataCacheSizeBytes,
       Map<String, String> storageOptions,
       Optional<ByteBuffer> serializedManifest,
-      Optional<StorageOptionsProvider> storageOptionsProvider,
-      Optional<Long> s3CredentialsRefreshOffsetSeconds);
+      Optional<StorageOptionsProvider> storageOptionsProvider);
 
   /**
    * Creates a builder for opening a dataset.

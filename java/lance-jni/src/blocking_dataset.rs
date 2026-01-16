@@ -148,17 +148,12 @@ impl BlockingDataset {
         storage_options: HashMap<String, String>,
         serialized_manifest: Option<&[u8]>,
         storage_options_provider: Option<Arc<dyn StorageOptionsProvider>>,
-        s3_credentials_refresh_offset_seconds: Option<u64>,
     ) -> Result<Self> {
         let mut store_params = ObjectStoreParams {
             block_size: block_size.map(|size| size as usize),
             storage_options: Some(storage_options.clone()),
             ..Default::default()
         };
-        if let Some(offset_seconds) = s3_credentials_refresh_offset_seconds {
-            store_params.s3_credentials_refresh_offset =
-                std::time::Duration::from_secs(offset_seconds);
-        }
         if let Some(provider) = storage_options_provider.clone() {
             store_params.storage_options_provider = Some(provider);
         }
@@ -177,10 +172,6 @@ impl BlockingDataset {
         builder = builder.with_storage_options(storage_options);
         if let Some(provider) = storage_options_provider.clone() {
             builder = builder.with_storage_options_provider(provider)
-        }
-        if let Some(offset_seconds) = s3_credentials_refresh_offset_seconds {
-            builder = builder
-                .with_s3_credentials_refresh_offset(std::time::Duration::from_secs(offset_seconds));
         }
 
         if let Some(serialized_manifest) = serialized_manifest {
@@ -366,7 +357,6 @@ pub extern "system" fn Java_org_lance_Dataset_createWithFfiSchema<'local>(
     data_storage_version: JObject,     // Optional<String>
     enable_v2_manifest_paths: JObject, // Optional<Boolean>
     storage_options_obj: JObject,      // Map<String, String>
-    s3_credentials_refresh_offset_seconds_obj: JObject, // Optional<Long>
     initial_bases: JObject,
     target_bases: JObject,
 ) -> JObject<'local> {
@@ -384,7 +374,6 @@ pub extern "system" fn Java_org_lance_Dataset_createWithFfiSchema<'local>(
             data_storage_version,
             enable_v2_manifest_paths,
             storage_options_obj,
-            s3_credentials_refresh_offset_seconds_obj,
             initial_bases,
             target_bases,
         )
@@ -404,7 +393,6 @@ fn inner_create_with_ffi_schema<'local>(
     data_storage_version: JObject,     // Optional<String>
     enable_v2_manifest_paths: JObject, // Optional<Boolean>
     storage_options_obj: JObject,      // Map<String, String>
-    s3_credentials_refresh_offset_seconds_obj: JObject, // Optional<Long>
     initial_bases: JObject,
     target_bases: JObject,
 ) -> Result<JObject<'local>> {
@@ -425,7 +413,6 @@ fn inner_create_with_ffi_schema<'local>(
         enable_v2_manifest_paths,
         storage_options_obj,
         JObject::null(), // No provider for schema-only creation
-        s3_credentials_refresh_offset_seconds_obj,
         initial_bases,
         target_bases,
         reader,
@@ -478,7 +465,6 @@ pub extern "system" fn Java_org_lance_Dataset_createWithFfiStream<'local>(
     data_storage_version: JObject,     // Optional<String>
     enable_v2_manifest_paths: JObject, // Optional<Boolean>
     storage_options_obj: JObject,      // Map<String, String>
-    s3_credentials_refresh_offset_seconds_obj: JObject, // Optional<Long>
     initial_bases: JObject,
     target_bases: JObject,
 ) -> JObject<'local> {
@@ -497,7 +483,6 @@ pub extern "system" fn Java_org_lance_Dataset_createWithFfiStream<'local>(
             data_storage_version,
             storage_options_obj,
             JObject::null(),
-            s3_credentials_refresh_offset_seconds_obj,
             initial_bases,
             target_bases
         )
@@ -519,7 +504,6 @@ pub extern "system" fn Java_org_lance_Dataset_createWithFfiStreamAndProvider<'lo
     enable_v2_manifest_paths: JObject,     // Optional<Boolean>
     storage_options_obj: JObject,          // Map<String, String>
     storage_options_provider_obj: JObject, // Optional<StorageOptionsProvider>
-    s3_credentials_refresh_offset_seconds_obj: JObject, // Optional<Long>
     initial_bases: JObject,                // Optional<List<BasePath>>
     target_bases: JObject,                 // Optional<List<String>>
 ) -> JObject<'local> {
@@ -538,7 +522,6 @@ pub extern "system" fn Java_org_lance_Dataset_createWithFfiStreamAndProvider<'lo
             enable_v2_manifest_paths,
             storage_options_obj,
             storage_options_provider_obj,
-            s3_credentials_refresh_offset_seconds_obj,
             initial_bases,
             target_bases
         )
@@ -559,7 +542,6 @@ fn inner_create_with_ffi_stream<'local>(
     enable_v2_manifest_paths: JObject,     // Optional<Boolean>
     storage_options_obj: JObject,          // Map<String, String>
     storage_options_provider_obj: JObject, // Optional<StorageOptionsProvider>
-    s3_credentials_refresh_offset_seconds_obj: JObject, // Optional<Long>
     initial_bases: JObject,                // Optional<List<BasePath>>
     target_bases: JObject,                 // Optional<List<String>>
 ) -> Result<JObject<'local>> {
@@ -577,7 +559,6 @@ fn inner_create_with_ffi_stream<'local>(
         enable_v2_manifest_paths,
         storage_options_obj,
         storage_options_provider_obj,
-        s3_credentials_refresh_offset_seconds_obj,
         initial_bases,
         target_bases,
         reader,
@@ -597,7 +578,6 @@ fn create_dataset<'local>(
     enable_v2_manifest_paths: JObject,
     storage_options_obj: JObject,
     storage_options_provider_obj: JObject, // Optional<StorageOptionsProvider>
-    s3_credentials_refresh_offset_seconds_obj: JObject,
     initial_bases: JObject,
     target_bases: JObject,
     reader: impl RecordBatchReader + Send + 'static,
@@ -615,7 +595,6 @@ fn create_dataset<'local>(
         Some(&enable_v2_manifest_paths),
         &storage_options_obj,
         &storage_options_provider_obj,
-        &s3_credentials_refresh_offset_seconds_obj,
         &initial_bases,
         &target_bases,
     )?;
@@ -1092,7 +1071,6 @@ pub extern "system" fn Java_org_lance_Dataset_openNative<'local>(
     storage_options_obj: JObject,          // Map<String, String>
     serialized_manifest: JObject,          // Optional<ByteBuffer>
     storage_options_provider_obj: JObject, // Optional<StorageOptionsProvider>
-    s3_credentials_refresh_offset_seconds_obj: JObject, // Optional<Long>
 ) -> JObject<'local> {
     ok_or_throw!(
         env,
@@ -1106,7 +1084,6 @@ pub extern "system" fn Java_org_lance_Dataset_openNative<'local>(
             storage_options_obj,
             serialized_manifest,
             storage_options_provider_obj,
-            s3_credentials_refresh_offset_seconds_obj
         )
     )
 }
@@ -1122,7 +1099,6 @@ fn inner_open_native<'local>(
     storage_options_obj: JObject,          // Map<String, String>
     serialized_manifest: JObject,          // Optional<ByteBuffer>
     storage_options_provider_obj: JObject, // Optional<StorageOptionsProvider>
-    s3_credentials_refresh_offset_seconds_obj: JObject, // Optional<Long>
 ) -> Result<JObject<'local>> {
     let path_str: String = path.extract(env)?;
     let version = env.get_int_opt(&version_obj)?;
@@ -1139,11 +1115,6 @@ fn inner_open_native<'local>(
     let storage_options_provider_arc =
         storage_options_provider.map(|v| Arc::new(v) as Arc<dyn StorageOptionsProvider>);
 
-    // Extract s3_credentials_refresh_offset_seconds
-    let s3_credentials_refresh_offset_seconds = env
-        .get_long_opt(&s3_credentials_refresh_offset_seconds_obj)?
-        .map(|v| v as u64);
-
     let serialized_manifest = env.get_bytes_opt(&serialized_manifest)?;
     let dataset = BlockingDataset::open(
         &path_str,
@@ -1154,7 +1125,6 @@ fn inner_open_native<'local>(
         storage_options,
         serialized_manifest,
         storage_options_provider_arc,
-        s3_credentials_refresh_offset_seconds,
     )?;
     dataset.into_java(env)
 }
@@ -1378,7 +1348,10 @@ pub extern "system" fn Java_org_lance_Dataset_nativeGetLatestStorageOptions<'loc
     mut env: JNIEnv<'local>,
     java_dataset: JObject,
 ) -> JObject<'local> {
-    ok_or_throw!(env, inner_get_latest_storage_options(&mut env, java_dataset))
+    ok_or_throw!(
+        env,
+        inner_get_latest_storage_options(&mut env, java_dataset)
+    )
 }
 
 fn inner_get_latest_storage_options<'local>(

@@ -486,40 +486,34 @@ impl DynamicStorageOptionsCredentialProvider {
     /// Create a new credential provider from a storage options provider
     ///
     /// This is a convenience constructor for backward compatibility.
+    /// The refresh offset will be extracted from storage options using
+    /// the `refresh_offset_millis` key, defaulting to 60 seconds.
     ///
     /// # Arguments
     /// * `provider` - The storage options provider
-    /// * `refresh_offset` - Duration before expiry to refresh credentials
-    pub fn from_provider(
-        provider: Arc<dyn StorageOptionsProvider>,
-        refresh_offset: Duration,
-    ) -> Self {
+    pub fn from_provider(provider: Arc<dyn StorageOptionsProvider>) -> Self {
         Self {
-            accessor: Arc::new(StorageOptionsAccessor::with_provider(
-                provider,
-                refresh_offset,
-            )),
+            accessor: Arc::new(StorageOptionsAccessor::with_provider(provider)),
         }
     }
 
     /// Create a new credential provider with initial credentials
     ///
     /// This is a convenience constructor for backward compatibility.
+    /// The refresh offset will be extracted from initial_options using
+    /// the `refresh_offset_millis` key, defaulting to 60 seconds.
     ///
     /// # Arguments
     /// * `provider` - The storage options provider
-    /// * `refresh_offset` - Duration before expiry to refresh credentials
     /// * `initial_options` - Initial storage options to cache
     pub fn from_provider_with_initial(
         provider: Arc<dyn StorageOptionsProvider>,
-        refresh_offset: Duration,
         initial_options: HashMap<String, String>,
     ) -> Self {
         Self {
             accessor: Arc::new(StorageOptionsAccessor::with_initial_and_provider(
                 initial_options,
                 provider,
-                refresh_offset,
             )),
         }
     }

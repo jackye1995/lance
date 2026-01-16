@@ -95,8 +95,6 @@ impl DatasetBuilder {
     /// # Arguments
     /// * `namespace` - The namespace implementation to fetch table info from
     /// * `table_id` - The table identifier (e.g., vec!["my_table"])
-    /// * `ignore_namespace_table_storage_options` - If true, storage options returned from
-    ///   the namespace's `describe_table()` will be ignored (treated as None). Defaults to false.
     ///
     /// # Example
     /// ```ignore
@@ -111,28 +109,17 @@ impl DatasetBuilder {
     ///
     /// // Load a dataset using storage options from namespace
     /// let dataset = DatasetBuilder::from_namespace(
-    ///     namespace.clone(),
-    ///     vec!["my_table".to_string()],
-    ///     false,
-    /// )
-    /// .await?
-    /// .load()
-    /// .await?;
-    ///
-    /// // Load a dataset ignoring namespace storage options
-    /// let dataset = DatasetBuilder::from_namespace(
     ///     namespace,
     ///     vec!["my_table".to_string()],
-    ///     true,
     /// )
     /// .await?
     /// .load()
     /// .await?;
     /// ```
+    #[allow(deprecated)]
     pub async fn from_namespace(
         namespace: Arc<dyn LanceNamespace>,
         table_id: Vec<String>,
-        ignore_namespace_table_storage_options: bool,
     ) -> Result<Self> {
         let request = DescribeTableRequest {
             id: Some(table_id.clone()),
@@ -156,11 +143,8 @@ impl DatasetBuilder {
 
         let mut builder = Self::from_uri(table_uri);
 
-        let namespace_storage_options = if ignore_namespace_table_storage_options {
-            None
-        } else {
-            response.storage_options
-        };
+        // Use namespace storage options if available
+        let namespace_storage_options = response.storage_options;
 
         builder.storage_options_override = namespace_storage_options.clone();
 

@@ -35,6 +35,7 @@ use super::local::LocalObjectReader;
 mod list_retry;
 pub mod providers;
 pub mod storage_options;
+pub mod storage_options_accessor;
 mod tracing;
 use crate::object_reader::SmallReader;
 use crate::object_writer::WriteResult;
@@ -66,6 +67,7 @@ pub use providers::{ObjectStoreProvider, ObjectStoreRegistry};
 pub use storage_options::{
     LanceNamespaceStorageOptionsProvider, StorageOptionsProvider, EXPIRES_AT_MILLIS_KEY,
 };
+pub use storage_options_accessor::StorageOptionsAccessor;
 
 #[async_trait]
 pub trait ObjectStoreExt {
@@ -193,7 +195,16 @@ pub struct ObjectStoreParams {
     pub object_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
     pub storage_options: Option<HashMap<String, String>>,
     /// Dynamic storage options provider for automatic credential refresh
+    #[deprecated(
+        since = "0.25.0",
+        note = "Use storage_options_accessor instead for unified access to storage options"
+    )]
     pub storage_options_provider: Option<Arc<dyn StorageOptionsProvider>>,
+    /// Unified storage options accessor with caching and automatic refresh
+    ///
+    /// This is the preferred way to provide storage options. It bundles static options
+    /// with an optional dynamic provider and handles all caching and refresh logic.
+    pub storage_options_accessor: Option<Arc<StorageOptionsAccessor>>,
     /// Use constant size upload parts for multipart uploads. Only necessary
     /// for Cloudflare R2, which doesn't support variable size parts. When this
     /// is false, max upload size is 2.5TB. When this is true, the max size is
@@ -214,8 +225,42 @@ impl Default for ObjectStoreParams {
             object_store_wrapper: None,
             storage_options: None,
             storage_options_provider: None,
+            storage_options_accessor: None,
             use_constant_size_upload_parts: false,
             list_is_lexically_ordered: None,
+        }
+    }
+}
+
+impl ObjectStoreParams {
+    /// Get or create a StorageOptionsAccessor from the params
+    ///
+    /// If `storage_options_accessor` is already set, returns it.
+    /// Otherwise, creates an accessor from the legacy `storage_options` and
+    /// `storage_options_provider` fields.
+    #[allow(deprecated)]
+    pub fn get_or_create_accessor(&self) -> Option<Arc<StorageOptionsAccessor>> {
+        if let Some(accessor) = &self.storage_options_accessor {
+            return Some(accessor.clone());
+        }
+
+        // Create accessor from legacy fields
+        match (&self.storage_options, &self.storage_options_provider) {
+            (Some(opts), Some(provider)) => {
+                Some(Arc::new(StorageOptionsAccessor::with_initial_and_provider(
+                    opts.clone(),
+                    provider.clone(),
+                    self.s3_credentials_refresh_offset,
+                )))
+            }
+            (None, Some(provider)) => Some(Arc::new(StorageOptionsAccessor::with_provider(
+                provider.clone(),
+                self.s3_credentials_refresh_offset,
+            ))),
+            (Some(opts), None) => Some(Arc::new(StorageOptionsAccessor::static_options(
+                opts.clone(),
+            ))),
+            (None, None) => None,
         }
     }
 }
@@ -247,6 +292,9 @@ impl std::hash::Hash for ObjectStoreParams {
         if let Some(provider) = &self.storage_options_provider {
             provider.provider_id().hash(state);
         }
+        if let Some(accessor) = &self.storage_options_accessor {
+            accessor.accessor_id().hash(state);
+        }
         self.use_constant_size_upload_parts.hash(state);
         self.list_is_lexically_ordered.hash(state);
     }
@@ -263,7 +311,7 @@ impl PartialEq for ObjectStoreParams {
         }
 
         // For equality, we use pointer comparison for ObjectStore, S3 credentials, wrapper
-        // For storage_options_provider, we use provider_id() for semantic equality
+        // For storage_options_provider and accessor, we use provider_id()/accessor_id() for semantic equality
         self.block_size == other.block_size
             && self
                 .object_store
@@ -285,6 +333,14 @@ impl PartialEq for ObjectStoreParams {
                     .storage_options_provider
                     .as_ref()
                     .map(|p| p.provider_id())
+            && self
+                .storage_options_accessor
+                .as_ref()
+                .map(|a| a.accessor_id())
+                == other
+                    .storage_options_accessor
+                    .as_ref()
+                    .map(|a| a.accessor_id())
             && self.use_constant_size_upload_parts == other.use_constant_size_upload_parts
             && self.list_is_lexically_ordered == other.list_is_lexically_ordered
     }

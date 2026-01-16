@@ -92,6 +92,7 @@ use crate::rt;
 use crate::scanner::ScanStatistics;
 use crate::schema::{logical_schema_from_lance, LanceSchema};
 use crate::session::Session;
+use crate::storage_options::PyStorageOptionsAccessor;
 use crate::utils::PyLance;
 use crate::{LanceReader, Scanner};
 
@@ -1516,6 +1517,39 @@ impl Dataset {
     fn latest_version(self_: PyRef<'_, Self>) -> PyResult<u64> {
         rt().block_on(Some(self_.py()), self_.ds.latest_version_id())?
             .map_err(|err| PyIOError::new_err(err.to_string()))
+    }
+
+    /// Get the initial storage options used to open this dataset.
+    ///
+    /// This returns the options that were provided when the dataset was opened,
+    /// without any refresh from the provider. Returns None if no storage options
+    /// were provided.
+    fn storage_options(&self) -> Option<HashMap<String, String>> {
+        self.ds.storage_options().cloned()
+    }
+
+    /// Get the latest storage options, potentially refreshed from the provider.
+    ///
+    /// If a storage options provider was configured and credentials are expiring,
+    /// this will refresh them. Returns the current valid storage options, or None
+    /// if no storage options accessor is configured.
+    fn latest_storage_options(
+        self_: PyRef<'_, Self>,
+    ) -> PyResult<Option<HashMap<String, String>>> {
+        let result = rt()
+            .block_on(Some(self_.py()), self_.ds.latest_storage_options())?
+            .map_err(|err| PyIOError::new_err(err.to_string()))?;
+        Ok(result.map(|opts| opts.0))
+    }
+
+    /// Get the storage options accessor for this dataset.
+    ///
+    /// The accessor bundles static storage options and optional dynamic provider,
+    /// handling caching and refresh logic internally.
+    fn storage_options_accessor(&self) -> Option<PyStorageOptionsAccessor> {
+        self.ds
+            .storage_options_accessor()
+            .map(PyStorageOptionsAccessor::new)
     }
 
     fn checkout_version(&self, version: Bound<PyAny>) -> PyResult<Self> {

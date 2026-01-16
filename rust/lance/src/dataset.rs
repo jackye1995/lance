@@ -35,7 +35,8 @@ use lance_file::reader::FileReaderOptions;
 use lance_file::version::LanceFileVersion;
 use lance_index::DatasetIndexExt;
 use lance_io::object_store::{
-    LanceNamespaceStorageOptionsProvider, ObjectStore, ObjectStoreParams,
+    LanceNamespaceStorageOptionsProvider, ObjectStore, ObjectStoreParams, StorageOptions,
+    StorageOptionsAccessor,
 };
 use lance_io::utils::{read_last_block, read_message, read_metadata_offset, read_struct};
 use lance_namespace::LanceNamespace;
@@ -1612,7 +1613,10 @@ impl Dataset {
         &self.object_store
     }
 
-    /// Returns the storage options used when opening this dataset, if any.
+    /// Returns the initial storage options used when opening this dataset, if any.
+    ///
+    /// This returns the static initial options without triggering any refresh.
+    /// For the latest refreshed options, use [`Self::latest_storage_options`].
     pub fn storage_options(&self) -> Option<&HashMap<String, String>> {
         self.store_params
             .as_ref()
@@ -1620,12 +1624,52 @@ impl Dataset {
     }
 
     /// Returns the storage options provider used when opening this dataset, if any.
+    #[deprecated(
+        since = "0.25.0",
+        note = "Use storage_options_accessor() instead for unified access to storage options"
+    )]
+    #[allow(deprecated)]
     pub fn storage_options_provider(
         &self,
     ) -> Option<Arc<dyn lance_io::object_store::StorageOptionsProvider>> {
         self.store_params
             .as_ref()
             .and_then(|params| params.storage_options_provider.clone())
+    }
+
+    /// Returns the unified storage options accessor for this dataset, if any.
+    ///
+    /// The accessor handles both static and dynamic storage options with automatic
+    /// caching and refresh. Use [`StorageOptionsAccessor::get_storage_options`] to
+    /// get the latest options.
+    pub fn storage_options_accessor(&self) -> Option<Arc<StorageOptionsAccessor>> {
+        self.store_params
+            .as_ref()
+            .and_then(|params| params.get_or_create_accessor())
+    }
+
+    /// Returns the latest (possibly refreshed) storage options.
+    ///
+    /// If a dynamic storage options provider is configured, this will return
+    /// the cached options if still valid, or fetch fresh options if expired.
+    ///
+    /// For the initial static options without refresh, use [`Self::storage_options`].
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(Some(options))` - Storage options are available (static or refreshed)
+    /// - `Ok(None)` - No storage options were configured for this dataset
+    /// - `Err(...)` - Error occurred while fetching/refreshing options from provider
+    pub async fn latest_storage_options(&self) -> Result<Option<StorageOptions>> {
+        // First check if we have an accessor (handles both static and dynamic options)
+        if let Some(accessor) = self.storage_options_accessor() {
+            let options = accessor.get_storage_options().await?;
+            return Ok(Some(options));
+        }
+
+        // Fallback to legacy storage_options field if no accessor
+        // This handles the case where storage_options was set without a provider
+        Ok(self.storage_options().cloned().map(StorageOptions))
     }
 
     pub fn data_dir(&self) -> Path {

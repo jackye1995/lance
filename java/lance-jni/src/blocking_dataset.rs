@@ -77,8 +77,39 @@ pub struct BlockingDataset {
 
 impl BlockingDataset {
     /// Get the storage options provider that was used when opening this dataset
+    #[deprecated(note = "Use storage_options_accessor() instead")]
     pub fn get_storage_options_provider(&self) -> Option<Arc<dyn StorageOptionsProvider>> {
+        #[allow(deprecated)]
         self.inner.storage_options_provider()
+    }
+
+    /// Get the initial storage options used to open this dataset.
+    ///
+    /// Returns the options that were provided when the dataset was opened,
+    /// without any refresh from the provider. Returns None if no storage options
+    /// were provided.
+    pub fn storage_options(&self) -> Option<HashMap<String, String>> {
+        self.inner.storage_options().cloned()
+    }
+
+    /// Get the latest storage options, potentially refreshed from the provider.
+    ///
+    /// If a storage options provider was configured and credentials are expiring,
+    /// this will refresh them.
+    pub fn latest_storage_options(&self) -> Result<Option<HashMap<String, String>>> {
+        RT.block_on(async { self.inner.latest_storage_options().await })
+            .map(|opt| opt.map(|opts| opts.0))
+            .map_err(|e| Error::io_error(e.to_string()))
+    }
+
+    /// Get the storage options accessor for this dataset.
+    ///
+    /// The accessor bundles static storage options and optional dynamic provider,
+    /// handling caching and refresh logic internally.
+    pub fn storage_options_accessor(
+        &self,
+    ) -> Option<Arc<lance_io::object_store::StorageOptionsAccessor>> {
+        self.inner.storage_options_accessor()
     }
 
     pub fn drop(uri: &str, storage_options: HashMap<String, String>) -> Result<()> {
@@ -1317,6 +1348,52 @@ fn inner_latest_version_id(env: &mut JNIEnv, java_dataset: JObject) -> Result<u6
     let dataset_guard =
         unsafe { env.get_rust_field::<_, _, BlockingDataset>(java_dataset, NATIVE_DATASET) }?;
     dataset_guard.latest_version()
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_lance_Dataset_nativeGetStorageOptions<'local>(
+    mut env: JNIEnv<'local>,
+    java_dataset: JObject,
+) -> JObject<'local> {
+    ok_or_throw!(env, inner_get_storage_options(&mut env, java_dataset))
+}
+
+fn inner_get_storage_options<'local>(
+    env: &mut JNIEnv<'local>,
+    java_dataset: JObject,
+) -> Result<JObject<'local>> {
+    let storage_options = {
+        let dataset_guard =
+            unsafe { env.get_rust_field::<_, _, BlockingDataset>(java_dataset, NATIVE_DATASET) }?;
+        dataset_guard.storage_options()
+    };
+    match storage_options {
+        Some(opts) => opts.into_java(env),
+        None => Ok(JObject::null()),
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_lance_Dataset_nativeGetLatestStorageOptions<'local>(
+    mut env: JNIEnv<'local>,
+    java_dataset: JObject,
+) -> JObject<'local> {
+    ok_or_throw!(env, inner_get_latest_storage_options(&mut env, java_dataset))
+}
+
+fn inner_get_latest_storage_options<'local>(
+    env: &mut JNIEnv<'local>,
+    java_dataset: JObject,
+) -> Result<JObject<'local>> {
+    let storage_options = {
+        let dataset_guard =
+            unsafe { env.get_rust_field::<_, _, BlockingDataset>(java_dataset, NATIVE_DATASET) }?;
+        dataset_guard.latest_storage_options()?
+    };
+    match storage_options {
+        Some(opts) => opts.into_java(env),
+        None => Ok(JObject::null()),
+    }
 }
 
 #[no_mangle]

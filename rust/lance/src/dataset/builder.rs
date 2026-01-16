@@ -12,7 +12,7 @@ use lance_file::datatypes::populate_schema_dictionary;
 use lance_file::reader::FileReaderOptions;
 use lance_io::object_store::{
     LanceNamespaceStorageOptionsProvider, ObjectStore, ObjectStoreParams, StorageOptions,
-    DEFAULT_CLOUD_IO_PARALLELISM,
+    StorageOptionsAccessor, DEFAULT_CLOUD_IO_PARALLELISM,
 };
 use lance_namespace::models::DescribeTableRequest;
 use lance_namespace::LanceNamespace;
@@ -351,11 +351,46 @@ impl DatasetBuilder {
     ///     .with_s3_credentials_refresh_offset(Duration::from_secs(600))
     ///     .load()
     ///     .await?;
+    #[deprecated(
+        since = "0.25.0",
+        note = "Use with_storage_options_accessor() instead for unified access to storage options"
+    )]
+    #[allow(deprecated)]
     pub fn with_storage_options_provider(
         mut self,
         provider: Arc<dyn lance_io::object_store::StorageOptionsProvider>,
     ) -> Self {
         self.options.storage_options_provider = Some(provider);
+        self
+    }
+
+    /// Set a unified storage options accessor for credential management
+    ///
+    /// The accessor bundles static storage options with an optional dynamic provider,
+    /// handling all caching and refresh logic internally.
+    ///
+    /// # Arguments
+    /// * `accessor` - The storage options accessor
+    ///
+    /// # Example
+    /// ```ignore
+    /// use std::sync::Arc;
+    /// use std::time::Duration;
+    /// use lance_io::object_store::StorageOptionsAccessor;
+    ///
+    /// // Create an accessor with a dynamic provider
+    /// let accessor = Arc::new(StorageOptionsAccessor::with_provider(
+    ///     provider,
+    ///     Duration::from_secs(300), // 5 minute refresh offset
+    /// ));
+    ///
+    /// let dataset = DatasetBuilder::from_uri("s3://bucket/table.lance")
+    ///     .with_storage_options_accessor(accessor)
+    ///     .load()
+    ///     .await?;
+    /// ```
+    pub fn with_storage_options_accessor(mut self, accessor: Arc<StorageOptionsAccessor>) -> Self {
+        self.options.storage_options_accessor = Some(accessor);
         self
     }
 

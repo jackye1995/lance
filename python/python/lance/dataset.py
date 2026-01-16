@@ -2225,6 +2225,49 @@ class LanceDataset(pa.dataset.Dataset):
         """
         return self._ds.latest_version()
 
+    @property
+    def storage_options(self) -> Optional[Dict[str, str]]:
+        """
+        Get the initial storage options used to open this dataset.
+
+        This returns the options that were provided when the dataset was opened,
+        without any refresh from the provider. Returns None if no storage options
+        were provided.
+        """
+        return self._ds.storage_options()
+
+    def latest_storage_options(self) -> Optional[Dict[str, str]]:
+        """
+        Get the latest storage options, potentially refreshed from the provider.
+
+        If a storage options provider was configured and credentials are expiring,
+        this will refresh them.
+
+        Returns
+        -------
+        Optional[Dict[str, str]]
+            - Storage options dict if configured (static or refreshed from provider)
+            - None if no storage options were configured for this dataset
+
+        Raises
+        ------
+        IOError
+            If an error occurs while fetching/refreshing options from the provider
+        """
+        return self._ds.latest_storage_options()
+
+    @property
+    def storage_options_accessor(self):
+        """
+        Get the storage options accessor for this dataset.
+
+        The accessor bundles static storage options and optional dynamic provider,
+        handling caching and refresh logic internally.
+
+        Returns None if neither storage options nor a provider were configured.
+        """
+        return self._ds.storage_options_accessor()
+
     def checkout_version(
         self, version: int | str | Tuple[Optional[str], Optional[int]]
     ) -> "LanceDataset":

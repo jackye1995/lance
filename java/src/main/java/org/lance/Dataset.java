@@ -758,6 +758,42 @@ public class Dataset implements Closeable {
 
   private native long nativeGetLatestVersionId();
 
+  /**
+   * Get the initial storage options used to open this dataset.
+   *
+   * <p>This returns the options that were provided when the dataset was opened, without any refresh
+   * from the provider. Returns null if no storage options were provided.
+   *
+   * @return the initial storage options, or null if none were provided
+   */
+  public Map<String, String> getStorageOptions() {
+    try (LockManager.ReadLock readLock = lockManager.acquireReadLock()) {
+      Preconditions.checkArgument(nativeDatasetHandle != 0, "Dataset is closed");
+      return nativeGetStorageOptions();
+    }
+  }
+
+  private native Map<String, String> nativeGetStorageOptions();
+
+  /**
+   * Get the latest storage options, potentially refreshed from the provider.
+   *
+   * <p>If a storage options provider was configured and credentials are expiring, this will refresh
+   * them.
+   *
+   * @return the latest storage options (static or refreshed from provider), or null if no storage
+   *     options were configured for this dataset
+   * @throws RuntimeException if an error occurs while fetching/refreshing options from the provider
+   */
+  public Map<String, String> getLatestStorageOptions() {
+    try (LockManager.ReadLock readLock = lockManager.acquireReadLock()) {
+      Preconditions.checkArgument(nativeDatasetHandle != 0, "Dataset is closed");
+      return nativeGetLatestStorageOptions();
+    }
+  }
+
+  private native Map<String, String> nativeGetLatestStorageOptions();
+
   /** Checkout the dataset to the latest version. */
   public void checkoutLatest() {
     try (LockManager.WriteLock writeLock = lockManager.acquireWriteLock()) {

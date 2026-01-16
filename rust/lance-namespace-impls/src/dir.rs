@@ -471,8 +471,11 @@ impl DirectoryNamespaceBuilder {
         session: &Option<Arc<Session>>,
     ) -> Result<(Arc<ObjectStore>, Path)> {
         // Build ObjectStoreParams from storage options
+        let accessor = storage_options.clone().map(|opts| {
+            Arc::new(lance_io::object_store::StorageOptionsAccessor::static_options(opts))
+        });
         let params = ObjectStoreParams {
-            storage_options: storage_options.clone(),
+            storage_options_accessor: accessor,
             ..Default::default()
         };
 
@@ -1262,7 +1265,9 @@ impl LanceNamespace for DirectoryNamespace {
         };
 
         let store_params = self.storage_options.as_ref().map(|opts| ObjectStoreParams {
-            storage_options: Some(opts.clone()),
+            storage_options_accessor: Some(Arc::new(
+                lance_io::object_store::StorageOptionsAccessor::static_options(opts.clone()),
+            )),
             ..Default::default()
         });
 

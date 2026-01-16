@@ -35,7 +35,6 @@ use super::local::LocalObjectReader;
 mod list_retry;
 pub mod providers;
 pub mod storage_options;
-pub mod storage_options_accessor;
 mod tracing;
 use crate::object_reader::SmallReader;
 use crate::object_writer::WriteResult;
@@ -65,10 +64,9 @@ pub const DEFAULT_DOWNLOAD_RETRY_COUNT: usize = 3;
 
 pub use providers::{ObjectStoreProvider, ObjectStoreRegistry};
 pub use storage_options::{
-    LanceNamespaceStorageOptionsProvider, StorageOptionsProvider, EXPIRES_AT_MILLIS_KEY,
-    REFRESH_OFFSET_MILLIS_KEY,
+    LanceNamespaceStorageOptionsProvider, StorageOptionsAccessor, StorageOptionsProvider,
+    EXPIRES_AT_MILLIS_KEY, REFRESH_OFFSET_MILLIS_KEY,
 };
-pub use storage_options_accessor::StorageOptionsAccessor;
 
 #[async_trait]
 pub trait ObjectStoreExt {
@@ -196,16 +194,11 @@ pub struct ObjectStoreParams {
     #[cfg(feature = "aws")]
     pub aws_credentials: Option<AwsCredentialProvider>,
     pub object_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
-    pub storage_options: Option<HashMap<String, String>>,
-    /// Dynamic storage options provider for automatic credential refresh.
-    ///
-    /// When set, the provider will be called to refresh storage options when they expire.
-    /// The `expires_at_millis` key in the returned options controls when refresh occurs.
-    pub storage_options_provider: Option<Arc<dyn StorageOptionsProvider>>,
     /// Unified storage options accessor with caching and automatic refresh
     ///
-    /// This is the preferred way to provide storage options. It bundles static options
-    /// with an optional dynamic provider and handles all caching and refresh logic.
+    /// Provides storage options and optionally a dynamic provider for automatic
+    /// credential refresh. Use `StorageOptionsAccessor::static_options()` for static
+    /// options or `StorageOptionsAccessor::with_initial_and_provider()` for dynamic refresh.
     pub storage_options_accessor: Option<Arc<StorageOptionsAccessor>>,
     /// Use constant size upload parts for multipart uploads. Only necessary
     /// for Cloudflare R2, which doesn't support variable size parts. When this
@@ -225,8 +218,6 @@ impl Default for ObjectStoreParams {
             #[cfg(feature = "aws")]
             aws_credentials: None,
             object_store_wrapper: None,
-            storage_options: None,
-            storage_options_provider: None,
             storage_options_accessor: None,
             use_constant_size_upload_parts: false,
             list_is_lexically_ordered: None,
@@ -235,30 +226,18 @@ impl Default for ObjectStoreParams {
 }
 
 impl ObjectStoreParams {
-    /// Get or create a StorageOptionsAccessor from the params
-    ///
-    /// If `storage_options_accessor` is already set, returns it.
-    /// Otherwise, creates an accessor from the legacy `storage_options` and
-    /// `storage_options_provider` fields.
-    #[allow(deprecated)]
-    pub fn get_or_create_accessor(&self) -> Option<Arc<StorageOptionsAccessor>> {
-        if let Some(accessor) = &self.storage_options_accessor {
-            return Some(accessor.clone());
-        }
+    /// Get the StorageOptionsAccessor from the params
+    pub fn get_accessor(&self) -> Option<Arc<StorageOptionsAccessor>> {
+        self.storage_options_accessor.clone()
+    }
 
-        // Create accessor from legacy fields
-        match (&self.storage_options, &self.storage_options_provider) {
-            (Some(opts), Some(provider)) => Some(Arc::new(
-                StorageOptionsAccessor::with_initial_and_provider(opts.clone(), provider.clone()),
-            )),
-            (None, Some(provider)) => Some(Arc::new(StorageOptionsAccessor::with_provider(
-                provider.clone(),
-            ))),
-            (Some(opts), None) => Some(Arc::new(StorageOptionsAccessor::static_options(
-                opts.clone(),
-            ))),
-            (None, None) => None,
-        }
+    /// Get storage options from the accessor, if any
+    ///
+    /// Returns the initial storage options from the accessor without triggering refresh.
+    pub fn storage_options(&self) -> Option<&HashMap<String, String>> {
+        self.storage_options_accessor
+            .as_ref()
+            .and_then(|a| a.initial_storage_options())
     }
 }
 
@@ -266,7 +245,7 @@ impl ObjectStoreParams {
 impl std::hash::Hash for ObjectStoreParams {
     #[allow(deprecated)]
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        // For hashing, we use pointer values for ObjectStore, S3 credentials, wrapper, and storage options provider
+        // For hashing, we use pointer values for ObjectStore, S3 credentials, wrapper
         self.block_size.hash(state);
         if let Some((store, url)) = &self.object_store {
             Arc::as_ptr(store).hash(state);
@@ -279,15 +258,6 @@ impl std::hash::Hash for ObjectStoreParams {
         }
         if let Some(wrapper) = &self.object_store_wrapper {
             Arc::as_ptr(wrapper).hash(state);
-        }
-        if let Some(storage_options) = &self.storage_options {
-            for (key, value) in storage_options {
-                key.hash(state);
-                value.hash(state);
-            }
-        }
-        if let Some(provider) = &self.storage_options_provider {
-            provider.provider_id().hash(state);
         }
         if let Some(accessor) = &self.storage_options_accessor {
             accessor.accessor_id().hash(state);
@@ -308,7 +278,7 @@ impl PartialEq for ObjectStoreParams {
         }
 
         // For equality, we use pointer comparison for ObjectStore, S3 credentials, wrapper
-        // For storage_options_provider and accessor, we use provider_id()/accessor_id() for semantic equality
+        // For accessor, we use accessor_id() for semantic equality
         self.block_size == other.block_size
             && self
                 .object_store
@@ -321,15 +291,6 @@ impl PartialEq for ObjectStoreParams {
             && self.s3_credentials_refresh_offset == other.s3_credentials_refresh_offset
             && self.object_store_wrapper.as_ref().map(Arc::as_ptr)
                 == other.object_store_wrapper.as_ref().map(Arc::as_ptr)
-            && self.storage_options == other.storage_options
-            && self
-                .storage_options_provider
-                .as_ref()
-                .map(|p| p.provider_id())
-                == other
-                    .storage_options_provider
-                    .as_ref()
-                    .map(|p| p.provider_id())
             && self
                 .storage_options_accessor
                 .as_ref()
@@ -467,7 +428,7 @@ impl ObjectStore {
         if let Some((store, path)) = params.object_store.as_ref() {
             let mut inner = store.clone();
             let store_prefix =
-                registry.calculate_object_store_prefix(uri, params.storage_options.as_ref())?;
+                registry.calculate_object_store_prefix(uri, params.storage_options())?;
             if let Some(wrapper) = params.object_store_wrapper.as_ref() {
                 inner = wrapper.wrap(&store_prefix, inner);
             }
@@ -1037,8 +998,11 @@ mod tests {
     ) {
         // Test the default
         let registry = Arc::new(ObjectStoreRegistry::default());
+        let accessor = storage_options
+            .clone()
+            .map(|opts| Arc::new(StorageOptionsAccessor::static_options(opts)));
         let params = ObjectStoreParams {
-            storage_options: storage_options.clone(),
+            storage_options_accessor: accessor.clone(),
             ..ObjectStoreParams::default()
         };
         let (store, _) = ObjectStore::from_uri_and_params(registry, uri, &params)
@@ -1050,7 +1014,7 @@ mod tests {
         let registry = Arc::new(ObjectStoreRegistry::default());
         let params = ObjectStoreParams {
             block_size: Some(1024),
-            storage_options: storage_options.clone(),
+            storage_options_accessor: accessor,
             ..ObjectStoreParams::default()
         };
         let (store, _) = ObjectStore::from_uri_and_params(registry, uri, &params)

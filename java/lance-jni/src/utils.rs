@@ -105,9 +105,22 @@ pub fn extract_write_params(
         write_params.target_base_names_or_paths = Some(names);
     }
 
+    // Create storage options accessor from storage_options and provider
+    let accessor = match (storage_options.is_empty(), storage_options_provider) {
+        (false, Some(provider)) => Some(Arc::new(
+            lance::io::StorageOptionsAccessor::with_initial_and_provider(storage_options, provider),
+        )),
+        (false, None) => Some(Arc::new(lance::io::StorageOptionsAccessor::static_options(
+            storage_options,
+        ))),
+        (true, Some(provider)) => Some(Arc::new(lance::io::StorageOptionsAccessor::with_provider(
+            provider,
+        ))),
+        (true, None) => None,
+    };
+
     write_params.store_params = Some(ObjectStoreParams {
-        storage_options: Some(storage_options),
-        storage_options_provider,
+        storage_options_accessor: accessor,
         ..Default::default()
     });
     Ok(write_params)

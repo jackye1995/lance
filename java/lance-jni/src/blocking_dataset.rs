@@ -81,8 +81,8 @@ impl BlockingDataset {
     /// Returns the options that were provided when the dataset was opened,
     /// without any refresh from the provider. Returns None if no storage options
     /// were provided.
-    pub fn storage_options(&self) -> Option<HashMap<String, String>> {
-        self.inner.storage_options().cloned()
+    pub fn initial_storage_options(&self) -> Option<HashMap<String, String>> {
+        self.inner.initial_storage_options().cloned()
     }
 
     /// Get the latest storage options, potentially refreshed from the provider.
@@ -99,7 +99,9 @@ impl BlockingDataset {
         RT.block_on(async move {
             let registry = Arc::new(ObjectStoreRegistry::default());
             let object_store_params = ObjectStoreParams {
-                storage_options: Some(storage_options.clone()),
+                storage_options_accessor: Some(Arc::new(
+                    lance::io::StorageOptionsAccessor::static_options(storage_options),
+                )),
                 ..Default::default()
             };
             let (object_store, path) =
@@ -132,10 +134,26 @@ impl BlockingDataset {
         serialized_manifest: Option<&[u8]>,
         storage_options_provider: Option<Arc<dyn StorageOptionsProvider>>,
     ) -> Result<Self> {
+        // Create storage options accessor from storage_options and provider
+        let accessor = match (storage_options.is_empty(), storage_options_provider) {
+            (false, Some(provider)) => Some(Arc::new(
+                lance::io::StorageOptionsAccessor::with_initial_and_provider(
+                    storage_options,
+                    provider,
+                ),
+            )),
+            (false, None) => Some(Arc::new(lance::io::StorageOptionsAccessor::static_options(
+                storage_options,
+            ))),
+            (true, Some(provider)) => Some(Arc::new(
+                lance::io::StorageOptionsAccessor::with_provider(provider),
+            )),
+            (true, None) => None,
+        };
+
         let store_params = ObjectStoreParams {
             block_size: block_size.map(|size| size as usize),
-            storage_options: Some(storage_options),
-            storage_options_provider,
+            storage_options_accessor: accessor,
             ..Default::default()
         };
         let params = ReadParams {
@@ -165,12 +183,19 @@ impl BlockingDataset {
         read_version: Option<u64>,
         storage_options: HashMap<String, String>,
     ) -> Result<Self> {
+        let accessor = if storage_options.is_empty() {
+            None
+        } else {
+            Some(Arc::new(lance::io::StorageOptionsAccessor::static_options(
+                storage_options,
+            )))
+        };
         let inner = RT.block_on(Dataset::commit(
             uri,
             operation,
             read_version,
             Some(ObjectStoreParams {
-                storage_options: Some(storage_options),
+                storage_options_accessor: accessor,
                 ..Default::default()
             }),
             None,
@@ -1298,21 +1323,24 @@ fn inner_latest_version_id(env: &mut JNIEnv, java_dataset: JObject) -> Result<u6
 }
 
 #[no_mangle]
-pub extern "system" fn Java_org_lance_Dataset_nativeGetStorageOptions<'local>(
+pub extern "system" fn Java_org_lance_Dataset_nativeGetInitialStorageOptions<'local>(
     mut env: JNIEnv<'local>,
     java_dataset: JObject,
 ) -> JObject<'local> {
-    ok_or_throw!(env, inner_get_storage_options(&mut env, java_dataset))
+    ok_or_throw!(
+        env,
+        inner_get_initial_storage_options(&mut env, java_dataset)
+    )
 }
 
-fn inner_get_storage_options<'local>(
+fn inner_get_initial_storage_options<'local>(
     env: &mut JNIEnv<'local>,
     java_dataset: JObject,
 ) -> Result<JObject<'local>> {
     let storage_options = {
         let dataset_guard =
             unsafe { env.get_rust_field::<_, _, BlockingDataset>(java_dataset, NATIVE_DATASET) }?;
-        dataset_guard.storage_options()
+        dataset_guard.initial_storage_options()
     };
     match storage_options {
         Some(opts) => opts.into_java(env),
@@ -2205,7 +2233,9 @@ fn transform_jstorage_options(
     Ok(storage_options
         .map(|options| {
             Some(ObjectStoreParams {
-                storage_options: Some(options),
+                storage_options_accessor: Some(Arc::new(
+                    lance::io::StorageOptionsAccessor::static_options(options),
+                )),
                 ..Default::default()
             })
         })

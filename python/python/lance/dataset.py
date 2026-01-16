@@ -2224,7 +2224,7 @@ class LanceDataset(pa.dataset.Dataset):
         return self._ds.latest_version()
 
     @property
-    def storage_options(self) -> Optional[Dict[str, str]]:
+    def initial_storage_options(self) -> Optional[Dict[str, str]]:
         """
         Get the initial storage options used to open this dataset.
 
@@ -2232,7 +2232,7 @@ class LanceDataset(pa.dataset.Dataset):
         without any refresh from the provider. Returns None if no storage options
         were provided.
         """
-        return self._ds.storage_options()
+        return self._ds.initial_storage_options()
 
     def latest_storage_options(self) -> Optional[Dict[str, str]]:
         """

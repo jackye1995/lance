@@ -148,9 +148,12 @@ impl DatasetBuilder {
 
         builder.storage_options_override = namespace_storage_options.clone();
 
-        if namespace_storage_options.is_some() {
-            builder.options.storage_options_provider = Some(Arc::new(
+        if let Some(initial_opts) = namespace_storage_options {
+            let provider: Arc<dyn lance_io::object_store::StorageOptionsProvider> = Arc::new(
                 LanceNamespaceStorageOptionsProvider::new(namespace, table_id),
+            );
+            builder.options.storage_options_accessor = Some(Arc::new(
+                StorageOptionsAccessor::with_initial_and_provider(initial_opts, provider),
             ));
         }
 
@@ -273,7 +276,26 @@ impl DatasetBuilder {
     /// - [S3 options](https://docs.rs/object_store/latest/object_store/aws/enum.AmazonS3ConfigKey.html#variants)
     /// - [Google options](https://docs.rs/object_store/latest/object_store/gcp/enum.GoogleConfigKey.html#variants)
     pub fn with_storage_options(mut self, storage_options: HashMap<String, String>) -> Self {
-        self.options.storage_options = Some(storage_options);
+        // Merge with existing options if accessor exists, otherwise create new static accessor
+        if let Some(existing) = self.options.storage_options_accessor.take() {
+            let mut merged = existing
+                .initial_storage_options()
+                .cloned()
+                .unwrap_or_default();
+            merged.extend(storage_options);
+            if let Some(provider) = existing.provider().cloned() {
+                self.options.storage_options_accessor = Some(Arc::new(
+                    StorageOptionsAccessor::with_initial_and_provider(merged, provider),
+                ));
+            } else {
+                self.options.storage_options_accessor =
+                    Some(Arc::new(StorageOptionsAccessor::static_options(merged)));
+            }
+        } else {
+            self.options.storage_options_accessor = Some(Arc::new(
+                StorageOptionsAccessor::static_options(storage_options),
+            ));
+        }
         self
     }
 
@@ -285,9 +307,25 @@ impl DatasetBuilder {
     ///     .with_storage_option("region", "us-east-1");
     /// ```
     pub fn with_storage_option(mut self, key: impl AsRef<str>, value: impl AsRef<str>) -> Self {
-        let mut storage_options = self.options.storage_options.unwrap_or_default();
+        let mut storage_options = self.options.storage_options().cloned().unwrap_or_default();
         storage_options.insert(key.as_ref().to_string(), value.as_ref().to_string());
-        self.options.storage_options = Some(storage_options);
+
+        // Merge with existing accessor if present
+        if let Some(existing) = self.options.storage_options_accessor.take() {
+            if let Some(provider) = existing.provider().cloned() {
+                self.options.storage_options_accessor = Some(Arc::new(
+                    StorageOptionsAccessor::with_initial_and_provider(storage_options, provider),
+                ));
+            } else {
+                self.options.storage_options_accessor = Some(Arc::new(
+                    StorageOptionsAccessor::static_options(storage_options),
+                ));
+            }
+        } else {
+            self.options.storage_options_accessor = Some(Arc::new(
+                StorageOptionsAccessor::static_options(storage_options),
+            ));
+        }
         self
     }
 
@@ -339,7 +377,20 @@ impl DatasetBuilder {
         mut self,
         provider: Arc<dyn lance_io::object_store::StorageOptionsProvider>,
     ) -> Self {
-        self.options.storage_options_provider = Some(provider);
+        // Preserve existing storage options if any
+        if let Some(existing) = self.options.storage_options_accessor.take() {
+            if let Some(initial) = existing.initial_storage_options().cloned() {
+                self.options.storage_options_accessor = Some(Arc::new(
+                    StorageOptionsAccessor::with_initial_and_provider(initial, provider),
+                ));
+            } else {
+                self.options.storage_options_accessor =
+                    Some(Arc::new(StorageOptionsAccessor::with_provider(provider)));
+            }
+        } else {
+            self.options.storage_options_accessor =
+                Some(Arc::new(StorageOptionsAccessor::with_provider(provider)));
+        }
         self
     }
 
@@ -432,8 +483,8 @@ impl DatasetBuilder {
 
         let storage_options = self
             .options
-            .storage_options
-            .clone()
+            .storage_options()
+            .cloned()
             .map(StorageOptions::new)
             .unwrap_or_default();
         let download_retry_count = storage_options.download_retry_count();
@@ -492,12 +543,29 @@ impl DatasetBuilder {
     }
 
     async fn load_impl(mut self) -> Result<Dataset> {
-        // Apply storage_options_override last to ensure namespace options take precedence
+        // Apply storage_options_override to merge namespace options with any existing accessor
         if let Some(override_opts) = self.storage_options_override.take() {
-            let mut merged_opts = self.options.storage_options.clone().unwrap_or_default();
+            // Get existing options and merge
+            let mut merged_opts = self.options.storage_options().cloned().unwrap_or_default();
             // Override with namespace storage options - they take precedence
             merged_opts.extend(override_opts);
-            self.options.storage_options = Some(merged_opts);
+
+            // Update accessor with merged options
+            if let Some(accessor) = &self.options.storage_options_accessor {
+                if let Some(provider) = accessor.provider().cloned() {
+                    self.options.storage_options_accessor = Some(Arc::new(
+                        StorageOptionsAccessor::with_initial_and_provider(merged_opts, provider),
+                    ));
+                } else {
+                    self.options.storage_options_accessor = Some(Arc::new(
+                        StorageOptionsAccessor::static_options(merged_opts),
+                    ));
+                }
+            } else {
+                self.options.storage_options_accessor = Some(Arc::new(
+                    StorageOptionsAccessor::static_options(merged_opts),
+                ));
+            }
         }
 
         let session = match self.session.as_ref() {

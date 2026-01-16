@@ -1520,8 +1520,8 @@ impl Dataset {
     /// This returns the options that were provided when the dataset was opened,
     /// without any refresh from the provider. Returns None if no storage options
     /// were provided.
-    fn storage_options(&self) -> Option<HashMap<String, String>> {
-        self.ds.storage_options().cloned()
+    fn initial_storage_options(&self) -> Option<HashMap<String, String>> {
+        self.ds.initial_storage_options().cloned()
     }
 
     /// Get the latest storage options, potentially refreshed from the provider.
@@ -1564,7 +1564,9 @@ impl Dataset {
         // `version` can be a version number or a tag name.
         // `storage_options` will be forwarded to the object store params for the new dataset.
         let store_params = storage_options.as_ref().map(|opts| ObjectStoreParams {
-            storage_options: Some(opts.clone()),
+            storage_options_accessor: Some(Arc::new(
+                lance::io::StorageOptionsAccessor::static_options(opts.clone()),
+            )),
             ..Default::default()
         });
 
@@ -1743,7 +1745,9 @@ impl Dataset {
         let mut new_self = self.ds.as_ref().clone();
         let reference = self.transform_ref(reference)?;
         let store_params = storage_options.map(|opts| ObjectStoreParams {
-            storage_options: Some(opts),
+            storage_options_accessor: Some(Arc::new(
+                lance::io::StorageOptionsAccessor::static_options(opts),
+            )),
             ..Default::default()
         });
         let created = rt()
@@ -2263,14 +2267,14 @@ impl Dataset {
         detached: Option<bool>,
         max_retries: Option<u32>,
     ) -> PyResult<Self> {
-        let provider = storage_options_provider
-            .map(crate::storage_options::py_object_to_storage_options_provider)
-            .transpose()?;
+        let accessor = crate::storage_options::create_accessor_from_python(
+            storage_options.clone(),
+            storage_options_provider,
+        )?;
 
-        let object_store_params = if storage_options.is_some() || provider.is_some() {
+        let object_store_params = if accessor.is_some() {
             Some(ObjectStoreParams {
-                storage_options: storage_options.clone(),
-                storage_options_provider: provider,
+                storage_options_accessor: accessor,
                 ..Default::default()
             })
         } else {
@@ -2327,14 +2331,14 @@ impl Dataset {
         detached: Option<bool>,
         max_retries: Option<u32>,
     ) -> PyResult<(Self, PyLance<Transaction>)> {
-        let provider = storage_options_provider
-            .map(crate::storage_options::py_object_to_storage_options_provider)
-            .transpose()?;
+        let accessor = crate::storage_options::create_accessor_from_python(
+            storage_options.clone(),
+            storage_options_provider,
+        )?;
 
-        let object_store_params = if storage_options.is_some() || provider.is_some() {
+        let object_store_params = if accessor.is_some() {
             Some(ObjectStoreParams {
-                storage_options: storage_options.clone(),
-                storage_options_provider: provider,
+                storage_options_accessor: accessor,
                 ..Default::default()
             })
         } else {
@@ -3133,18 +3137,17 @@ pub fn get_write_params(options: &Bound<'_, PyDict>) -> PyResult<Option<WritePar
 
         let storage_options = get_dict_opt::<HashMap<String, String>>(options, "storage_options")?;
         let storage_options_provider =
-            get_dict_opt::<Py<PyAny>>(options, "storage_options_provider")?
-                .map(|py_obj| {
-                    crate::storage_options::py_object_to_storage_options_provider(
-                        py_obj.bind(options.py()),
-                    )
-                })
-                .transpose()?;
+            get_dict_opt::<Py<PyAny>>(options, "storage_options_provider")?;
 
         if storage_options.is_some() || storage_options_provider.is_some() {
-            p.store_params = Some(ObjectStoreParams {
+            let accessor = crate::storage_options::create_accessor_from_python(
                 storage_options,
-                storage_options_provider,
+                storage_options_provider
+                    .as_ref()
+                    .map(|py_obj| py_obj.bind(options.py())),
+            )?;
+            p.store_params = Some(ObjectStoreParams {
+                storage_options_accessor: accessor,
                 ..Default::default()
             });
         }

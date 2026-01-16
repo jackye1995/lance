@@ -759,14 +759,14 @@ public class Dataset implements Closeable {
    *
    * @return the initial storage options, or null if none were provided
    */
-  public Map<String, String> getStorageOptions() {
+  public Map<String, String> getInitialStorageOptions() {
     try (LockManager.ReadLock readLock = lockManager.acquireReadLock()) {
       Preconditions.checkArgument(nativeDatasetHandle != 0, "Dataset is closed");
-      return nativeGetStorageOptions();
+      return nativeGetInitialStorageOptions();
     }
   }
 
-  private native Map<String, String> nativeGetStorageOptions();
+  private native Map<String, String> nativeGetInitialStorageOptions();
 
   /**
    * Get the latest storage options, potentially refreshed from the provider.

@@ -382,16 +382,30 @@ pub async fn object_store_from_uri_or_path(
     object_store_from_uri_or_path_with_provider(uri_or_path, storage_options, None).await
 }
 
-#[allow(deprecated)]
 pub async fn object_store_from_uri_or_path_with_provider(
     uri_or_path: impl AsRef<str>,
     storage_options: Option<HashMap<String, String>>,
     storage_options_provider: Option<Arc<dyn lance_io::object_store::StorageOptionsProvider>>,
 ) -> PyResult<(Arc<ObjectStore>, Path)> {
     let object_store_registry = Arc::new(lance::io::ObjectStoreRegistry::default());
+
+    let accessor = match (storage_options, storage_options_provider) {
+        (Some(opts), Some(provider)) => Some(Arc::new(
+            lance::io::StorageOptionsAccessor::with_initial_and_provider(opts, provider),
+        )),
+        (None, Some(provider)) => {
+            Some(Arc::new(lance::io::StorageOptionsAccessor::with_provider(
+                provider,
+            )))
+        }
+        (Some(opts), None) => Some(Arc::new(
+            lance::io::StorageOptionsAccessor::static_options(opts),
+        )),
+        (None, None) => None,
+    };
+
     let object_store_params = ObjectStoreParams {
-        storage_options: storage_options.clone(),
-        storage_options_provider,
+        storage_options_accessor: accessor,
         ..Default::default()
     };
 

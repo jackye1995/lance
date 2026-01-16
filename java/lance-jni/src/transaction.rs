@@ -756,16 +756,46 @@ fn inner_commit_transaction<'local>(
     let write_param_jmap = JMap::from_env(env, &write_param_jobj)?;
     let write_param = to_rust_map(env, &write_param_jmap)?;
 
-    // Get the Dataset's storage_options_accessor
+    // Get the Dataset's storage_options_accessor and merge with write_param
     let storage_options_accessor = {
         let dataset_guard =
             unsafe { env.get_rust_field::<_, _, BlockingDataset>(&java_dataset, NATIVE_DATASET) }?;
-        dataset_guard.inner.storage_options_accessor()
+        let existing_accessor = dataset_guard.inner.storage_options_accessor();
+
+        // Merge write_param with existing accessor's initial options
+        match existing_accessor {
+            Some(accessor) => {
+                let mut merged = accessor
+                    .initial_storage_options()
+                    .cloned()
+                    .unwrap_or_default();
+                merged.extend(write_param);
+                if let Some(provider) = accessor.provider().cloned() {
+                    Some(Arc::new(
+                        lance::io::StorageOptionsAccessor::with_initial_and_provider(
+                            merged, provider,
+                        ),
+                    ))
+                } else {
+                    Some(Arc::new(lance::io::StorageOptionsAccessor::static_options(
+                        merged,
+                    )))
+                }
+            }
+            None => {
+                if !write_param.is_empty() {
+                    Some(Arc::new(lance::io::StorageOptionsAccessor::static_options(
+                        write_param,
+                    )))
+                } else {
+                    None
+                }
+            }
+        }
     };
 
-    // Build ObjectStoreParams using write_param for storage_options and accessor from Dataset
+    // Build ObjectStoreParams using the merged accessor
     let store_params = ObjectStoreParams {
-        storage_options: Some(write_param),
         storage_options_accessor,
         ..Default::default()
     };

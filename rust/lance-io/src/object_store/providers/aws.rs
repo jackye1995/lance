@@ -56,8 +56,8 @@ impl AwsStoreProvider {
         let mut s3_storage_options = storage_options.as_s3_options();
         let region = resolve_s3_region(base_path, &s3_storage_options).await?;
 
-        // Get or create accessor from params
-        let accessor = params.get_or_create_accessor();
+        // Get accessor from params
+        let accessor = params.get_accessor();
 
         let (aws_creds, region) = build_aws_credential(
             params.s3_credentials_refresh_offset,
@@ -136,7 +136,7 @@ impl ObjectStoreProvider for AwsStoreProvider {
     ) -> Result<ObjectStore> {
         let block_size = params.block_size.unwrap_or(DEFAULT_CLOUD_BLOCK_SIZE);
         let mut storage_options =
-            StorageOptions(params.storage_options.clone().unwrap_or_default());
+            StorageOptions(params.storage_options().cloned().unwrap_or_default());
         storage_options.with_env_s3();
         let download_retry_count = storage_options.download_retry_count();
 
@@ -176,7 +176,7 @@ impl ObjectStoreProvider for AwsStoreProvider {
             download_retry_count,
             io_tracker: Default::default(),
             store_prefix: self
-                .calculate_object_store_prefix(&base_path, params.storage_options.as_ref())?,
+                .calculate_object_store_prefix(&base_path, params.storage_options())?,
         })
     }
 }
@@ -443,10 +443,14 @@ impl ObjectStoreParams {
         aws_credentials: Option<AwsCredentialProvider>,
         region: Option<String>,
     ) -> Self {
+        let storage_options_accessor = region.map(|region| {
+            let opts: HashMap<String, String> =
+                [("region".into(), region)].iter().cloned().collect();
+            Arc::new(StorageOptionsAccessor::static_options(opts))
+        });
         Self {
             aws_credentials,
-            storage_options: region
-                .map(|region| [("region".into(), region)].iter().cloned().collect()),
+            storage_options_accessor,
             ..Default::default()
         }
     }
@@ -667,13 +671,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_use_opendal_flag() {
+        use crate::object_store::StorageOptionsAccessor;
         let provider = AwsStoreProvider;
         let url = Url::parse("s3://test-bucket/path").unwrap();
         let params_with_flag = ObjectStoreParams {
-            storage_options: Some(HashMap::from([
-                ("use_opendal".to_string(), "true".to_string()),
-                ("region".to_string(), "us-west-2".to_string()),
-            ])),
+            storage_options_accessor: Some(Arc::new(StorageOptionsAccessor::static_options(
+                HashMap::from([
+                    ("use_opendal".to_string(), "true".to_string()),
+                    ("region".to_string(), "us-west-2".to_string()),
+                ]),
+            ))),
             ..Default::default()
         };
 

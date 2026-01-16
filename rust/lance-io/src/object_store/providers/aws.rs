@@ -760,11 +760,11 @@ mod tests {
             ),
             ("aws_session_token".to_string(), "TOKEN_CACHED".to_string()),
             ("expires_at_millis".to_string(), expires_at.to_string()),
+            ("refresh_offset_millis".to_string(), "300000".to_string()), // 5 minute refresh offset
         ]);
 
         let provider = DynamicStorageOptionsCredentialProvider::from_provider_with_initial(
             mock.clone(),
-            Duration::from_secs(300), // 5 minute refresh offset
             initial_options,
         );
 
@@ -798,11 +798,11 @@ mod tests {
                 "SECRET_EXPIRED".to_string(),
             ),
             ("expires_at_millis".to_string(), expired_time.to_string()),
+            ("refresh_offset_millis".to_string(), "300000".to_string()), // 5 minute refresh offset
         ]);
 
         let provider = DynamicStorageOptionsCredentialProvider::from_provider_with_initial(
             mock.clone(),
-            Duration::from_secs(300), // 5 minute refresh offset
             initial_options,
         );
 
@@ -820,27 +820,24 @@ mod tests {
     async fn test_dynamic_credential_provider_refresh_lead_time() {
         MockClock::set_system_time(Duration::from_secs(100_000));
 
-        // Create a mock provider that returns credentials expiring in 4 minutes
+        // Create a mock provider that returns credentials expiring in 30 seconds
         let mock = Arc::new(MockStorageOptionsProvider::new(Some(
-            240_000, // Expires in 4 minutes
+            30_000, // Expires in 30 seconds
         )));
 
-        // Create credential provider with 5 minute refresh offset
-        // This means credentials should be refreshed when they have less than 5 minutes left
-        let provider = DynamicStorageOptionsCredentialProvider::from_provider(
-            mock.clone(),
-            Duration::from_secs(300), // 5 minute refresh offset
-        );
+        // Create credential provider with default 60 second refresh offset
+        // This means credentials should be refreshed when they have less than 60 seconds left
+        let provider = DynamicStorageOptionsCredentialProvider::from_provider(mock.clone());
 
         // First call should fetch credentials from provider (no initial cache)
-        // Credentials expire in 4 minutes, which is less than our 5 minute refresh offset,
+        // Credentials expire in 30 seconds, which is less than our 60 second refresh offset,
         // so they should be considered "needs refresh" immediately
         let cred = provider.get_credential().await.unwrap();
         assert_eq!(cred.key_id, "AKID_1");
         assert_eq!(mock.get_call_count().await, 1);
 
-        // Second call should trigger refresh because credentials expire in 4 minutes
-        // but our refresh lead time is 5 minutes (now + 5min > expires_at)
+        // Second call should trigger refresh because credentials expire in 30 seconds
+        // but our refresh lead time is 60 seconds (now + 60sec > expires_at)
         // The mock will return new credentials (AKID_2) with the same expiration
         let cred = provider.get_credential().await.unwrap();
         assert_eq!(cred.key_id, "AKID_2");
@@ -851,16 +848,13 @@ mod tests {
     async fn test_dynamic_credential_provider_no_initial_cache() {
         MockClock::set_system_time(Duration::from_secs(100_000));
 
-        // Create a mock provider that returns credentials expiring in 10 minutes
+        // Create a mock provider that returns credentials expiring in 2 minutes
         let mock = Arc::new(MockStorageOptionsProvider::new(Some(
-            600_000, // Expires in 10 minutes
+            120_000, // Expires in 2 minutes
         )));
 
-        // Create credential provider without initial cache
-        let provider = DynamicStorageOptionsCredentialProvider::from_provider(
-            mock.clone(),
-            Duration::from_secs(300), // 5 minute refresh offset
-        );
+        // Create credential provider without initial cache, using default 60 second refresh offset
+        let provider = DynamicStorageOptionsCredentialProvider::from_provider(mock.clone());
 
         // First call should fetch from provider (call count = 1)
         let cred = provider.get_credential().await.unwrap();
@@ -869,21 +863,22 @@ mod tests {
         assert_eq!(cred.token, Some("TOKEN_1".to_string()));
         assert_eq!(mock.get_call_count().await, 1);
 
-        // Second call should use cached credentials (not expired yet)
+        // Second call should use cached credentials (not expired yet, still > 60 seconds remaining)
         let cred = provider.get_credential().await.unwrap();
         assert_eq!(cred.key_id, "AKID_1");
         assert_eq!(mock.get_call_count().await, 1); // Still 1, didn't fetch again
 
-        // Advance time to 6 minutes - should trigger refresh (within 5 min refresh offset)
-        MockClock::set_system_time(Duration::from_secs(100_000 + 360));
+        // Advance time to 90 seconds - should trigger refresh (within 60 sec refresh offset)
+        // At this point, credentials expire in 30 seconds (< 60 sec offset)
+        MockClock::set_system_time(Duration::from_secs(100_000 + 90));
         let cred = provider.get_credential().await.unwrap();
         assert_eq!(cred.key_id, "AKID_2");
         assert_eq!(cred.secret_key, "SECRET_2");
         assert_eq!(cred.token, Some("TOKEN_2".to_string()));
         assert_eq!(mock.get_call_count().await, 2);
 
-        // Advance time to 11 minutes total - should trigger another refresh
-        MockClock::set_system_time(Duration::from_secs(100_000 + 660));
+        // Advance time to 210 seconds total (90 + 120) - should trigger another refresh
+        MockClock::set_system_time(Duration::from_secs(100_000 + 210));
         let cred = provider.get_credential().await.unwrap();
         assert_eq!(cred.key_id, "AKID_3");
         assert_eq!(cred.secret_key, "SECRET_3");
@@ -911,12 +906,12 @@ mod tests {
             ),
             ("aws_session_token".to_string(), "TOKEN_INITIAL".to_string()),
             ("expires_at_millis".to_string(), expires_at.to_string()),
+            ("refresh_offset_millis".to_string(), "300000".to_string()), // 5 minute refresh offset
         ]);
 
         // Create credential provider with initial options
         let provider = DynamicStorageOptionsCredentialProvider::from_provider_with_initial(
             mock.clone(),
-            Duration::from_secs(300), // 5 minute refresh offset
             initial_options,
         );
 
@@ -968,7 +963,6 @@ mod tests {
 
         let provider = Arc::new(DynamicStorageOptionsCredentialProvider::from_provider(
             mock.clone(),
-            Duration::from_secs(300),
         ));
 
         // Spawn 10 concurrent tasks that all try to get credentials at the same time
@@ -1024,6 +1018,7 @@ mod tests {
             ),
             ("aws_session_token".to_string(), "TOKEN_OLD".to_string()),
             ("expires_at_millis".to_string(), expires_at.to_string()),
+            ("refresh_offset_millis".to_string(), "300000".to_string()), // 5 minute refresh offset
         ]);
 
         // Mock will return credentials expiring in 1 hour
@@ -1034,7 +1029,6 @@ mod tests {
         let provider = Arc::new(
             DynamicStorageOptionsCredentialProvider::from_provider_with_initial(
                 mock.clone(),
-                Duration::from_secs(300),
                 initial_options,
             ),
         );
@@ -1090,7 +1084,6 @@ mod tests {
         // Create an accessor with the mock provider
         let accessor = Arc::new(StorageOptionsAccessor::with_provider(
             mock_storage_provider.clone(),
-            Duration::from_secs(300),
         ));
 
         // Create an explicit AWS credentials provider
@@ -1151,13 +1144,13 @@ mod tests {
                 "TOKEN_FROM_ACCESSOR".to_string(),
             ),
             ("expires_at_millis".to_string(), expires_at.to_string()),
+            ("refresh_offset_millis".to_string(), "300000".to_string()), // 5 minute refresh offset
         ]);
 
         // Create an accessor with initial options and provider
         let accessor = Arc::new(StorageOptionsAccessor::with_initial_and_provider(
             initial_options,
             mock_storage_provider.clone(),
-            Duration::from_secs(300),
         ));
 
         // Build credentials with accessor but NO explicit aws_credentials

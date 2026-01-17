@@ -14,10 +14,6 @@ crate-type = ["cdylib"]
 
 [features]
 default = []
-# Credential vending features for DirectoryNamespace
-credential-vendor-aws = ["lance-namespace-impls/credential-vendor-aws"]
-credential-vendor-gcp = ["lance-namespace-impls/credential-vendor-gcp"]
-credential-vendor-azure = ["lance-namespace-impls/credential-vendor-azure"]
 
 [dependencies]
 lance = { path = "../../rust/lance", features = ["substrait"] }

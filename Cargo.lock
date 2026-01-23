@@ -683,9 +683,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-dynamodb"
-version = "1.102.0"
+version = "1.103.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5f7e6a53cf5ee8b7041c73106d9a93480b47f8b955466262b043aab0b5bf489"
+checksum = "6df2a8b03419775bfaf4f3ebbb65a9772e9e69eed4467a1b33f22226722340fb"
 dependencies = [
  "aws-credential-types",
  "aws-runtime",
@@ -1503,9 +1503,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.2.53"
+version = "1.2.54"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "755d2fce177175ffca841e9a06afdb2c4ab0f593d53b4dee48147dfaade85932"
+checksum = "6354c81bbfd62d9cfa9cb3c773c2b7b2a3a482d569de977fd0e961f6e7c00583"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -3405,7 +3405,7 @@ checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 
 [[package]]
 name = "fsst"
-version = "2.0.0-rc.1"
+version = "2.0.0-rc.2"
 dependencies = [
  "arrow-array",
  "lance-datagen",
@@ -4167,7 +4167,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.1",
+ "socket2 0.6.2",
  "system-configuration",
  "tokio",
  "tower-service",
@@ -4682,7 +4682,7 @@ dependencies = [
 
 [[package]]
 name = "lance"
-version = "2.0.0-rc.1"
+version = "2.0.0-rc.2"
 dependencies = [
  "all_asserts",
  "approx",
@@ -4773,7 +4773,7 @@ dependencies = [
 
 [[package]]
 name = "lance-arrow"
-version = "2.0.0-rc.1"
+version = "2.0.0-rc.2"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4792,7 +4792,7 @@ dependencies = [
 
 [[package]]
 name = "lance-bitpacking"
-version = "2.0.0-rc.1"
+version = "2.0.0-rc.2"
 dependencies = [
  "arrayref",
  "paste",
@@ -4801,7 +4801,7 @@ dependencies = [
 
 [[package]]
 name = "lance-core"
-version = "2.0.0-rc.1"
+version = "2.0.0-rc.2"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4841,7 +4841,7 @@ dependencies = [
 
 [[package]]
 name = "lance-datafusion"
-version = "2.0.0-rc.1"
+version = "2.0.0-rc.2"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4872,7 +4872,7 @@ dependencies = [
 
 [[package]]
 name = "lance-datagen"
-version = "2.0.0-rc.1"
+version = "2.0.0-rc.2"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4892,7 +4892,7 @@ dependencies = [
 
 [[package]]
 name = "lance-encoding"
-version = "2.0.0-rc.1"
+version = "2.0.0-rc.2"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -4939,7 +4939,7 @@ dependencies = [
 
 [[package]]
 name = "lance-examples"
-version = "2.0.0-rc.1"
+version = "2.0.0-rc.2"
 dependencies = [
  "all_asserts",
  "arrow",
@@ -4965,7 +4965,7 @@ dependencies = [
 
 [[package]]
 name = "lance-file"
-version = "2.0.0-rc.1"
+version = "2.0.0-rc.2"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -5008,7 +5008,7 @@ dependencies = [
 
 [[package]]
 name = "lance-geo"
-version = "2.0.0-rc.1"
+version = "2.0.0-rc.2"
 dependencies = [
  "datafusion",
  "geo-traits",
@@ -5022,7 +5022,7 @@ dependencies = [
 
 [[package]]
 name = "lance-index"
-version = "2.0.0-rc.1"
+version = "2.0.0-rc.2"
 dependencies = [
  "approx",
  "arrow",
@@ -5102,7 +5102,7 @@ dependencies = [
 
 [[package]]
 name = "lance-io"
-version = "2.0.0-rc.1"
+version = "2.0.0-rc.2"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -5148,7 +5148,7 @@ dependencies = [
 
 [[package]]
 name = "lance-linalg"
-version = "2.0.0-rc.1"
+version = "2.0.0-rc.2"
 dependencies = [
  "approx",
  "arrow-array",
@@ -5169,7 +5169,7 @@ dependencies = [
 
 [[package]]
 name = "lance-namespace"
-version = "2.0.0-rc.1"
+version = "2.0.0-rc.2"
 dependencies = [
  "arrow",
  "async-trait",
@@ -5183,7 +5183,7 @@ dependencies = [
 
 [[package]]
 name = "lance-namespace-impls"
-version = "2.0.0-rc.1"
+version = "2.0.0-rc.2"
 dependencies = [
  "arrow",
  "arrow-ipc",
@@ -5240,7 +5240,7 @@ dependencies = [
 
 [[package]]
 name = "lance-table"
-version = "2.0.0-rc.1"
+version = "2.0.0-rc.2"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -5286,7 +5286,7 @@ dependencies = [
 
 [[package]]
 name = "lance-test-macros"
-version = "2.0.0-rc.1"
+version = "2.0.0-rc.2"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5295,7 +5295,7 @@ dependencies = [
 
 [[package]]
 name = "lance-testing"
-version = "2.0.0-rc.1"
+version = "2.0.0-rc.2"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -5306,7 +5306,7 @@ dependencies = [
 
 [[package]]
 name = "lance-tools"
-version = "2.0.0-rc.1"
+version = "2.0.0-rc.2"
 dependencies = [
  "clap",
  "lance-core",
@@ -6311,9 +6311,9 @@ checksum = "d05e27ee213611ffe7d6348b942e8f942b37114c00cc03cec254295a4a17852e"
 
 [[package]]
 name = "openssl-probe"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f50d9b3dabb09ecd771ad0aa242ca6894994c130308ca3d7684634df8037391"
+checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
 name = "openssl-sys"
@@ -6900,9 +6900,9 @@ dependencies = [
 
 [[package]]
 name = "proc-macro2"
-version = "1.0.105"
+version = "1.0.106"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "535d180e0ecab6268a3e718bb9fd44db66bbbc256257165fc699dadf70d16fe7"
+checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
 ]
@@ -7044,7 +7044,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls 0.23.36",
- "socket2 0.6.1",
+ "socket2 0.6.2",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -7081,16 +7081,16 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.1",
+ "socket2 0.6.2",
  "tracing",
  "windows-sys 0.60.2",
 ]
 
 [[package]]
 name = "quote"
-version = "1.0.43"
+version = "1.0.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc74d9a594b72ae6656596548f56f667211f8a97b3d4c3d467150794690dc40a"
+checksum = "21b2ebcf727b7760c461f091f9f0f539b77b8e87f2fd88131e7f1b433b3cece4"
 dependencies = [
  "proc-macro2",
 ]
@@ -7721,7 +7721,7 @@ version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "612460d5f7bea540c490b2b6395d8e34a953e52b491accd6c86c8164c5932a63"
 dependencies = [
- "openssl-probe 0.2.0",
+ "openssl-probe 0.2.1",
  "rustls-pki-types",
  "schannel",
  "security-framework 3.5.1",
@@ -8232,9 +8232,9 @@ dependencies = [
 
 [[package]]
 name = "socket2"
-version = "0.6.1"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17129e116933cf371d018bb80ae557e889637989d8638274fb25622827b03881"
+checksum = "86f4aa3ad99f2088c990dfa82d367e19cb29268ed67c574d10d0a4bfe71f07e0"
 dependencies = [
  "libc",
  "windows-sys 0.60.2",
@@ -8929,7 +8929,7 @@ dependencies = [
  "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
- "socket2 0.6.1",
+ "socket2 0.6.2",
  "tokio-macros",
  "windows-sys 0.61.2",
 ]

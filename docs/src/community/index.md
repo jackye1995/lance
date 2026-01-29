@@ -71,6 +71,7 @@ Here is the list of current subprojects:
 | lance-duckdb      | https://github.com/lance-format/lance-duckdb      | DuckDB extension for Lance                                             |
 | lance-huggingface | https://github.com/lance-format/lance-huggingface | Hugging Face integration for Lance                                     |
 | lance-namespace   | https://github.com/lance-format/lance-namespace   | Lance namespace format specification, Rust/Python/Java Codegen SDKs    |
+| lance-namespace-impls | https://github.com/lance-format/lance-namespace-impls | Lance Namespace Implementations - Apache Hive, Apache Polaris, Apache Gravitino, Unity Catalog, AWS Glue and more |
 | lance-python-docs | https://github.com/lance-format/lance-python-docs | Lance Python SDK generated docs and integration hook with readthedocs  |
 | lance-ray         | https://github.com/lance-format/lance-ray         | Ray integration for Lance                                              |
 | lance-spark       | https://github.com/lance-format/lance-spark       | Apache Spark connector for Lance                                       |
@@ -113,8 +114,7 @@ The PMC can vote to promote an incubating subproject to a subproject once the pr
 - Community adoption outside the primary contributor
 - At least one Lance maintainer actively maintaining the project
 
-**Note**: Upon graduation, committers who are not Lance maintainers will lose their commit privileges.
-They are encouraged to become Lance maintainers through their contributions.
+Contributors with write access will retain their access after graduation to subproject.
 
 ### Project License
 

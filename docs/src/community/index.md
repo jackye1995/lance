@@ -45,8 +45,8 @@ This section details the projects maintained in the Lance community.
 
 ### Core Project
 
-The core project is [lance](https://github.com/lance-format/lance), which contains the Lance file and table format specification,
-Rust SDK (including Namespace Integration SDK), Python SDK, Java SDK, and Website.
+[lance](https://github.com/lance-format/lance) is the core project of the lance-format GitHub Organization,
+which hosts most of the development on the table and file format, Rust SDK, Python and Java binding SDKs, documentation and discussions.
 
 The core project is maintained by the Lance community with strict quality and release standards.
 [Contributing Guidelines](./contributing.md), [Community Voting Process](./voting.md) and [Release Guidelines](./release.md)

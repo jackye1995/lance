@@ -63,10 +63,13 @@ Here is the list of current core projects:
 
 Subprojects are initiatives or repositories that extend Lance's functionality.
 They must align with Lance's overall mission and technical direction.
-New subprojects can be created with PMC approval.
+New subprojects are created by graduating from incubator projects through a PMC vote.
 
-Subprojects have relaxed requirements for contribution,
-where contributors may receive write access even if not maintainers.
+Subprojects have relaxed requirements compared to core projects:
+
+- Contributors may receive write access even if not maintainers
+- Merges may be allowed without review at maintainer discretion
+- Release processes may be simplified compared to core projects
 
 Here is the list of current subprojects:
 
@@ -79,16 +82,38 @@ Here is the list of current subprojects:
 | lance-trino       | https://github.com/lance-format/lance-trino       | Trino connector for Lance                           |
 | pglance           | https://github.com/lance-format/pglance           | PostgreSQL extension for Lance                      |
 
-### Graduating a Subproject
+### Incubator Projects
 
-The PMC can vote to promote a subproject to a core project once the subproject has demonstrated aspects including:
+Incubator projects are experimental or early-stage repositories in the Lance ecosystem.
+Any PMC member can create an incubator project without a formal vote.
+These projects provide a space for new ideas to develop before committing to full subproject standards.
 
-- Proper repository setup including CI, issue tracking, contributing guide, etc.
-- Proper code standard enforcement including lint, testing, etc.
-- Automated release mechanism
-- Established production use cases
+Incubator projects have the most relaxed requirements:
+
+- Anyone can be added as a committer by the project creator or existing committers
+- Merges without review are allowed
+- No formal release process is required
+
+**Important**: All incubator projects must include a prominent notice in their README indicating their incubating status, for example:
+
+> ⚠️ **Incubating Project**: This project is in incubation and is not yet an official Lance subproject.
+> APIs and functionality may change without notice.
+
+Any repository in the [lance-format](https://github.com/lance-format) organization that is not listed
+as a core project or subproject above is considered an incubator project.
+
+### Graduating from Incubator to Subproject
+
+The PMC can vote to promote an incubator project to a subproject once the project has demonstrated:
+
+- Proper repository setup including CI, issue tracking, and contributing guide
+- Proper code standard enforcement including lint and testing
+- Established use cases
 - Community adoption outside the primary contributor
-- Consistent contributions from the community to add new features and fix bugs
+- At least one Lance maintainer actively maintaining the project
+
+**Note**: Upon graduation, committers who are not Lance maintainers will lose their commit privileges.
+They are encouraged to become Lance maintainers through their contributions.
 
 ### Project License
 

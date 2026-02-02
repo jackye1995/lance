@@ -437,6 +437,7 @@ class LanceDataset(pa.dataset.Dataset):
         uri = os.fspath(uri) if isinstance(uri, Path) else uri
         self._uri = uri
         self._storage_options = storage_options
+        self._storage_options_provider = storage_options_provider
 
         # Handle deprecation warning for index_cache_size
         if index_cache_size is not None:
@@ -2282,6 +2283,35 @@ class LanceDataset(pa.dataset.Dataset):
         Returns None if neither storage options nor a provider were configured.
         """
         return self._ds.storage_options_accessor()
+
+    def new_file_session(self):
+        """
+        Create a new file session for reading and writing files in this dataset.
+
+        The file session will use the dataset's storage options and provider
+        for credential management, enabling automatic credential refresh for
+        long-running operations.
+
+        Returns
+        -------
+        LanceFileSession
+            A file session configured for this dataset's storage location.
+
+        Examples
+        --------
+        >>> import lance
+        >>> dataset = lance.dataset("s3://bucket/data.lance",
+        ...                        storage_options_provider=lambda: get_creds())
+        >>> session = dataset.new_file_session()
+        >>> session.upload_file("/local/file.txt", "remote/file.txt")
+        """
+        from lance.file import LanceFileSession
+
+        return LanceFileSession(
+            base_path=self._uri,
+            storage_options=self.latest_storage_options(),
+            storage_options_provider=self._storage_options_provider,
+        )
 
     def checkout_version(
         self, version: int | str | Tuple[Optional[str], Optional[int]]

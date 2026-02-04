@@ -527,11 +527,13 @@ class LanceDataset(pa.dataset.Dataset):
         )
         self._default_scan_options = default_scan_options
         self._read_params = read_params
+        self._storage_options_provider = None
 
     def __copy__(self):
         ds = LanceDataset.__new__(LanceDataset)
         ds._uri = self._uri
         ds._storage_options = self._storage_options
+        ds._storage_options_provider = self._storage_options_provider
         ds._ds = copy.copy(self._ds)
         ds._default_scan_options = self._default_scan_options
         ds._read_params = self._read_params.copy() if self._read_params else None
@@ -626,6 +628,7 @@ class LanceDataset(pa.dataset.Dataset):
         ds._ds = new_ds
         ds._uri = new_ds.uri
         ds._storage_options = self._storage_options
+        ds._storage_options_provider = self._storage_options_provider
         ds._default_scan_options = self._default_scan_options
         ds._read_params = self._read_params
         return ds
@@ -2296,14 +2299,6 @@ class LanceDataset(pa.dataset.Dataset):
         -------
         LanceFileSession
             A file session configured for this dataset's storage location.
-
-        Examples
-        --------
-        >>> import lance
-        >>> dataset = lance.dataset("s3://bucket/data.lance",
-        ...                        storage_options_provider=lambda: get_creds())
-        >>> session = dataset.new_file_session()
-        >>> session.upload_file("/local/file.txt", "remote/file.txt")
         """
         from lance.file import LanceFileSession
 
@@ -3509,6 +3504,7 @@ class LanceDataset(pa.dataset.Dataset):
 
         ds = LanceDataset.__new__(LanceDataset)
         ds._storage_options = storage_options
+        ds._storage_options_provider = storage_options_provider
         ds._ds = new_ds
         ds._uri = new_ds.uri
         ds._default_scan_options = None
@@ -3607,6 +3603,7 @@ class LanceDataset(pa.dataset.Dataset):
         ds._ds = new_ds
         ds._uri = new_ds.uri
         ds._storage_options = storage_options
+        ds._storage_options_provider = storage_options_provider
         ds._default_scan_options = None
         ds._read_params = None
         return BulkCommitResult(
@@ -5885,6 +5882,7 @@ def write_dataset(
 
     ds = LanceDataset.__new__(LanceDataset)
     ds._storage_options = storage_options
+    ds._storage_options_provider = None
     ds._ds = inner_ds
     ds._uri = inner_ds.uri
     ds._default_scan_options = None

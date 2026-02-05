@@ -45,6 +45,20 @@ When concurrent writers conflict, the system loads transaction files to detect c
 If the atomic commit fails, the process retries with updated transaction state.
 For detailed conflict detection and resolution mechanisms, see the [Conflict Resolution](#conflict-resolution) section.
 
+### Monotonic Timestamps
+
+Each manifest contains a creation timestamp with nanosecond resolution.
+The commit process guarantees that the timestamp is monotonically increasing across versions: each new version's timestamp is strictly greater than the previous version's timestamp by at least 1 millisecond.
+
+The timestamp is computed as:
+
+```
+new_timestamp = max(current_time, previous_timestamp + 1ms)
+```
+
+For the first version of a table (no predecessor), the current wall-clock time is used.
+This guarantee holds even when the system clock drifts backward or when rapid successive commits occur within the same millisecond.
+
 ## Transaction Types
 
 The authoritative specification for transaction types is defined in [`protos/transaction.proto`](https://github.com/lancedb/lance/blob/main/protos/transaction.proto).

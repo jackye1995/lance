@@ -103,7 +103,7 @@ use crate::io::commit::{
     detect_overlapping_fragments,
 };
 use crate::session::Session;
-use crate::utils::temporal::{timestamp_to_nanos, utc_now, SystemTime};
+use crate::utils::temporal::{monotonic_timestamp_nanos, utc_now, SystemTime};
 use crate::{Error, Result};
 pub use blob::BlobFile;
 use hash_joiner::HashJoiner;
@@ -3018,6 +3018,7 @@ pub(crate) async fn write_manifest_file(
     config: &ManifestWriteConfig,
     naming_scheme: ManifestNamingScheme,
     mut transaction: Option<&Transaction>,
+    prev_timestamp_nanos: Option<u128>,
 ) -> std::result::Result<ManifestLocation, CommitError> {
     if config.auto_set_feature_flags {
         apply_feature_flags(
@@ -3027,7 +3028,10 @@ pub(crate) async fn write_manifest_file(
         )?;
     }
 
-    manifest.set_timestamp(timestamp_to_nanos(config.timestamp));
+    manifest.set_timestamp(monotonic_timestamp_nanos(
+        config.timestamp,
+        prev_timestamp_nanos,
+    ));
 
     manifest.update_max_fragment_id();
 

@@ -227,6 +227,7 @@ async fn do_commit_new_dataset(
         write_config,
         manifest_naming_scheme,
         Some(transaction),
+        None, // first version, no previous timestamp
     )
     .await;
 
@@ -709,6 +710,7 @@ pub(crate) async fn do_commit_detached_transaction(
             write_config,
             ManifestNamingScheme::V2,
             Some(transaction),
+            Some(dataset.manifest.timestamp_nanos),
         )
         .await;
 
@@ -906,6 +908,7 @@ pub(crate) async fn commit_transaction(
             write_config,
             manifest_naming_scheme,
             Some(&transaction),
+            Some(dataset.manifest.timestamp_nanos),
         )
         .await;
 

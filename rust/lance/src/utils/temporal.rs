@@ -33,3 +33,63 @@ pub fn timestamp_to_nanos(timestamp: Option<SystemTime>) -> u128 {
         .unwrap()
         .as_nanos()
 }
+
+const MILLIS_TO_NANOS: u128 = 1_000_000;
+
+/// Returns a timestamp in nanoseconds that is guaranteed to be strictly greater
+/// than `prev_timestamp_nanos` (by at least 1 millisecond).
+///
+/// Formula: `max(current_time_nanos, prev_timestamp_nanos + 1ms)`
+///
+/// If `prev_timestamp_nanos` is `None` (first version), returns the current time.
+pub fn monotonic_timestamp_nanos(
+    timestamp: Option<SystemTime>,
+    prev_timestamp_nanos: Option<u128>,
+) -> u128 {
+    let current_nanos = timestamp_to_nanos(timestamp);
+    match prev_timestamp_nanos {
+        Some(prev) => std::cmp::max(current_nanos, prev + MILLIS_TO_NANOS),
+        None => current_nanos,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mock_instant::thread_local::MockClock;
+    use std::time::Duration;
+
+    #[test]
+    fn test_monotonic_timestamp_no_previous() {
+        MockClock::set_system_time(Duration::from_secs(100));
+        let result = monotonic_timestamp_nanos(None, None);
+        assert_eq!(result, Duration::from_secs(100).as_nanos());
+    }
+
+    #[test]
+    fn test_monotonic_timestamp_current_time_ahead() {
+        // current time is well ahead of prev + 1ms, so current time wins
+        MockClock::set_system_time(Duration::from_secs(200));
+        let prev = Duration::from_secs(100).as_nanos();
+        let result = monotonic_timestamp_nanos(None, Some(prev));
+        assert_eq!(result, Duration::from_secs(200).as_nanos());
+    }
+
+    #[test]
+    fn test_monotonic_timestamp_prev_ahead() {
+        // current time is behind prev, so prev + 1ms wins
+        MockClock::set_system_time(Duration::from_secs(100));
+        let prev = Duration::from_secs(200).as_nanos();
+        let result = monotonic_timestamp_nanos(None, Some(prev));
+        assert_eq!(result, prev + MILLIS_TO_NANOS);
+    }
+
+    #[test]
+    fn test_monotonic_timestamp_same_time() {
+        // current time == prev, so prev + 1ms wins
+        MockClock::set_system_time(Duration::from_secs(100));
+        let prev = Duration::from_secs(100).as_nanos();
+        let result = monotonic_timestamp_nanos(None, Some(prev));
+        assert_eq!(result, prev + MILLIS_TO_NANOS);
+    }
+}

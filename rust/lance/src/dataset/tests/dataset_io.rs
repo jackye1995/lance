@@ -456,6 +456,7 @@ async fn test_write_manifest(
         },
         dataset.manifest_location.naming_scheme,
         None,
+        Some(dataset.manifest.timestamp_nanos),
     )
     .await
     .unwrap();

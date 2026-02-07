@@ -16,12 +16,14 @@ use lance::dataset::optimize::{compact_files, CompactionOptions};
 use lance::dataset::{builder::DatasetBuilder, WriteParams};
 use lance::session::Session;
 use lance::{dataset::scanner::Scanner, Dataset};
+use lance_core::datatypes::LANCE_UNENFORCED_PRIMARY_KEY_POSITION;
 use lance_core::{box_error, Error, Result};
 use lance_index::optimize::OptimizeOptions;
 use lance_index::scalar::{BuiltinIndexType, ScalarIndexParams};
 use lance_index::traits::DatasetIndexExt;
 use lance_index::IndexType;
 use lance_io::object_store::{ObjectStore, ObjectStoreParams};
+use lance_namespace::error::NamespaceError;
 use lance_namespace::models::{
     CreateEmptyTableRequest, CreateEmptyTableResponse, CreateNamespaceRequest,
     CreateNamespaceResponse, CreateTableRequest, CreateTableResponse, DeclareTableRequest,
@@ -37,6 +39,7 @@ use lance_namespace::LanceNamespace;
 use object_store::path::Path;
 use snafu::location;
 use std::io::Cursor;
+use std::time::Duration;
 use std::{
     collections::HashMap,
     hash::{DefaultHasher, Hash, Hasher},
@@ -519,7 +522,15 @@ impl ManifestNamespace {
     /// Get the manifest schema
     fn manifest_schema() -> Arc<ArrowSchema> {
         Arc::new(ArrowSchema::new(vec![
-            Field::new("object_id", DataType::Utf8, false),
+            // Set unenforced primary key on object_id for bloom filter conflict detection
+            Field::new("object_id", DataType::Utf8, false).with_metadata(
+                [(
+                    LANCE_UNENFORCED_PRIMARY_KEY_POSITION.to_string(),
+                    "0".to_string(),
+                )]
+                .into_iter()
+                .collect(),
+            ),
             Field::new("object_type", DataType::Utf8, false),
             Field::new("location", DataType::Utf8, true),
             Field::new("metadata", DataType::Utf8, true),
@@ -780,6 +791,9 @@ impl ManifestNamespace {
 
         merge_builder.when_matched(lance::dataset::WhenMatched::Fail);
         merge_builder.when_not_matched(lance::dataset::WhenNotMatched::InsertAll);
+        // Disable retry - return concurrent modification error immediately
+        merge_builder.conflict_retries(0);
+        merge_builder.retry_timeout(Duration::ZERO);
 
         let (new_dataset_arc, _merge_stats) = merge_builder
             .try_build()
@@ -793,16 +807,31 @@ impl ManifestNamespace {
             .execute_reader(Box::new(reader))
             .await
             .map_err(|e| {
-                // Check if this is a "matched row" error from WhenMatched::Fail
                 let error_msg = e.to_string();
-                if error_msg.contains("matched")
+                // Check if this is a commit conflict (TooMuchWriteContention with retry_timeout=0)
+                if error_msg.contains("TooMuchWriteContention")
+                    || error_msg.contains("write contention")
+                    || error_msg.contains("CommitConflict")
+                {
+                    NamespaceError::ConcurrentModification {
+                        message: format!(
+                            "Concurrent modification detected for object '{}': {}",
+                            object_id, error_msg
+                        ),
+                    }
+                    .into()
+                // Check if this is a "matched row" error from WhenMatched::Fail (bloom filter conflict)
+                } else if error_msg.contains("matched")
                     || error_msg.contains("duplicate")
                     || error_msg.contains("already exists")
                 {
-                    Error::io(
-                        format!("Object with id '{}' already exists in manifest", object_id),
-                        location!(),
-                    )
+                    NamespaceError::ConcurrentModification {
+                        message: format!(
+                            "Object '{}' was concurrently created by another operation",
+                            object_id
+                        ),
+                    }
+                    .into()
                 } else {
                     Error::IO {
                         source: box_error(std::io::Error::other(format!(
@@ -830,19 +859,47 @@ impl ManifestNamespace {
 
     /// Delete an entry from the manifest table
     pub async fn delete_from_manifest(&self, object_id: &str) -> Result<()> {
-        {
-            let predicate = format!("object_id = '{}'", object_id);
-            let mut dataset_guard = self.manifest_dataset.get_mut().await?;
-            dataset_guard
-                .delete(&predicate)
-                .await
-                .map_err(|e| Error::IO {
-                    source: box_error(std::io::Error::other(format!("Failed to delete: {}", e))),
-                    location: location!(),
-                })?;
-        } // Drop the guard here
+        let predicate = format!("object_id = '{}'", object_id);
 
-        self.manifest_dataset.reload().await?;
+        // Get the current dataset and clone it for the delete operation
+        let dataset_guard = self.manifest_dataset.get().await?;
+        let dataset_arc = Arc::new(dataset_guard.clone());
+        drop(dataset_guard);
+
+        // Use DeleteBuilder with retry disabled to surface concurrent modification errors
+        let new_dataset_arc = lance::dataset::DeleteBuilder::new(dataset_arc, &predicate)
+            .conflict_retries(0)
+            .retry_timeout(Duration::ZERO)
+            .execute()
+            .await
+            .map_err(|e| {
+                let error_msg = e.to_string();
+                // Check if this is a commit conflict
+                if error_msg.contains("TooMuchWriteContention")
+                    || error_msg.contains("write contention")
+                    || error_msg.contains("CommitConflict")
+                {
+                    NamespaceError::ConcurrentModification {
+                        message: format!(
+                            "Concurrent modification detected while deleting '{}': {}",
+                            object_id, error_msg
+                        ),
+                    }
+                    .into()
+                } else {
+                    Error::IO {
+                        source: box_error(std::io::Error::other(format!(
+                            "Failed to delete: {}",
+                            e
+                        ))),
+                        location: location!(),
+                    }
+                }
+            })?;
+
+        // Update the cache with the known latest version (like insert_into_manifest does)
+        let new_dataset = Arc::try_unwrap(new_dataset_arc).unwrap_or_else(|arc| (*arc).clone());
+        self.manifest_dataset.set_latest(new_dataset).await;
 
         // Run inline optimization after delete
         if let Err(e) = self.run_inline_optimization().await {
@@ -953,63 +1010,161 @@ impl ManifestNamespace {
     }
 
     /// Create or get the manifest dataset
+    ///
+    /// Handles the race condition where multiple concurrent callers may try to create
+    /// the manifest table simultaneously. If the create fails because another caller
+    /// already created it, we retry loading the existing manifest.
     async fn create_or_get_manifest(
         root: &str,
         storage_options: &Option<HashMap<String, String>>,
         session: Option<Arc<Session>>,
     ) -> Result<DatasetConsistencyWrapper> {
         let manifest_path = format!("{}/{}", root, MANIFEST_TABLE_NAME);
-        log::debug!("Attempting to load manifest from {}", manifest_path);
-        let mut builder = DatasetBuilder::from_uri(&manifest_path);
 
-        if let Some(sess) = session.clone() {
-            builder = builder.with_session(sess);
+        // Helper to load the manifest dataset
+        let load_manifest = || async {
+            log::debug!("Attempting to load manifest from {}", manifest_path);
+            let mut builder = DatasetBuilder::from_uri(&manifest_path);
+            if let Some(sess) = session.clone() {
+                builder = builder.with_session(sess);
+            }
+            if let Some(opts) = storage_options {
+                builder = builder.with_storage_options(opts.clone());
+            }
+            builder.load().await
+        };
+
+        // First attempt: try to load existing manifest
+        if let Ok(dataset) = load_manifest().await {
+            let wrapper = DatasetConsistencyWrapper::new(dataset);
+            Self::ensure_manifest_primary_key(&wrapper).await?;
+            return Ok(wrapper);
         }
 
-        if let Some(opts) = storage_options {
-            builder = builder.with_storage_options(opts.clone());
-        }
+        // Manifest doesn't exist, try to create it
+        log::info!("Creating new manifest table at {}", manifest_path);
+        let schema = Self::manifest_schema();
+        let empty_batch = RecordBatch::new_empty(schema.clone());
+        let reader = RecordBatchIterator::new(vec![Ok(empty_batch)], schema.clone());
 
-        let dataset_result = builder.load().await;
-        if let Ok(dataset) = dataset_result {
-            Ok(DatasetConsistencyWrapper::new(dataset))
-        } else {
-            log::info!("Creating new manifest table at {}", manifest_path);
-            let schema = Self::manifest_schema();
-            let empty_batch = RecordBatch::new_empty(schema.clone());
-            let reader = RecordBatchIterator::new(vec![Ok(empty_batch)], schema.clone());
-
-            let write_params = WriteParams {
-                session,
-                store_params: storage_options.as_ref().map(|opts| ObjectStoreParams {
-                    storage_options_accessor: Some(Arc::new(
-                        lance_io::object_store::StorageOptionsAccessor::with_static_options(
-                            opts.clone(),
-                        ),
-                    )),
-                    ..Default::default()
-                }),
+        let write_params = WriteParams {
+            session: session.clone(),
+            store_params: storage_options.as_ref().map(|opts| ObjectStoreParams {
+                storage_options_accessor: Some(Arc::new(
+                    lance_io::object_store::StorageOptionsAccessor::with_static_options(
+                        opts.clone(),
+                    ),
+                )),
                 ..Default::default()
-            };
+            }),
+            ..Default::default()
+        };
 
-            let dataset = Dataset::write(Box::new(reader), &manifest_path, Some(write_params))
-                .await
-                .map_err(|e| Error::IO {
+        match Dataset::write(Box::new(reader), &manifest_path, Some(write_params)).await {
+            Ok(dataset) => {
+                log::info!(
+                    "Successfully created manifest table at {}, version={}, uri={}",
+                    manifest_path,
+                    dataset.version().version,
+                    dataset.uri()
+                );
+                let wrapper = DatasetConsistencyWrapper::new(dataset);
+                Self::ensure_manifest_primary_key(&wrapper).await?;
+                Ok(wrapper)
+            }
+            Err(e) => {
+                // Create failed - possibly because another concurrent caller created it first.
+                // Try loading again before returning an error.
+                let error_msg = e.to_string();
+                if error_msg.contains("already exists") {
+                    log::debug!(
+                        "Manifest creation failed with 'already exists', retrying load: {}",
+                        error_msg
+                    );
+                    if let Ok(dataset) = load_manifest().await {
+                        let wrapper = DatasetConsistencyWrapper::new(dataset);
+                        Self::ensure_manifest_primary_key(&wrapper).await?;
+                        return Ok(wrapper);
+                    }
+                }
+                // If we still can't load it, return the original error
+                Err(Error::IO {
                     source: box_error(std::io::Error::other(format!(
                         "Failed to create manifest dataset: {}",
                         e
                     ))),
                     location: location!(),
-                })?;
-
-            log::info!(
-                "Successfully created manifest table at {}, version={}, uri={}",
-                manifest_path,
-                dataset.version().version,
-                dataset.uri()
-            );
-            Ok(DatasetConsistencyWrapper::new(dataset))
+                })
+            }
         }
+    }
+
+    /// Ensure the manifest table has the unenforced primary key set on the object_id column.
+    ///
+    /// This is necessary for MergeInsert to properly enforce uniqueness constraints.
+    /// The method checks if the object_id field already has the primary key metadata,
+    /// and if not, sets it using update_field_metadata.
+    async fn ensure_manifest_primary_key(
+        manifest_dataset: &DatasetConsistencyWrapper,
+    ) -> Result<()> {
+        // Check if object_id already has the unenforced primary key metadata
+        {
+            let dataset_guard = manifest_dataset.get().await?;
+            let schema = dataset_guard.schema();
+            if let Some(field) = schema.field("object_id") {
+                if field.is_unenforced_primary_key() {
+                    log::debug!("object_id already has unenforced primary key set");
+                    return Ok(());
+                }
+            }
+        }
+
+        // Need to set the primary key - acquire write lock
+        let mut dataset_guard = manifest_dataset.get_mut().await?;
+
+        // Double-check after acquiring write lock
+        let schema = dataset_guard.schema();
+        if let Some(field) = schema.field("object_id") {
+            if field.is_unenforced_primary_key() {
+                log::debug!("object_id already has unenforced primary key set (after lock)");
+                return Ok(());
+            }
+        }
+
+        log::info!("Setting unenforced primary key on object_id for __manifest table");
+        dataset_guard
+            .update_field_metadata()
+            .update("object_id", [(LANCE_UNENFORCED_PRIMARY_KEY_POSITION, "0")])
+            .map_err(|e| Error::IO {
+                source: box_error(std::io::Error::other(format!(
+                    "Failed to update field metadata: {}",
+                    e
+                ))),
+                location: location!(),
+            })?
+            .await
+            .map_err(|e| Error::IO {
+                source: box_error(std::io::Error::other(format!(
+                    "Failed to update field metadata: {}",
+                    e
+                ))),
+                location: location!(),
+            })?;
+
+        // Reload to get the updated dataset with new metadata
+        dataset_guard
+            .checkout_latest()
+            .await
+            .map_err(|e| Error::IO {
+                source: box_error(std::io::Error::other(format!(
+                    "Failed to reload after metadata update: {}",
+                    e
+                ))),
+                location: location!(),
+            })?;
+
+        log::info!("Successfully set unenforced primary key on object_id");
+        Ok(())
     }
 }
 
@@ -1258,7 +1413,18 @@ impl LanceNamespace for ManifestNamespace {
             batches.into_iter().map(Ok).collect();
         let reader = RecordBatchIterator::new(batch_results, schema);
 
-        let write_params = WriteParams::default();
+        // Pass storage options to Dataset::write so it uses the correct S3 endpoint/credentials
+        let store_params = self.storage_options.as_ref().map(|opts| ObjectStoreParams {
+            storage_options_accessor: Some(Arc::new(
+                lance_io::object_store::StorageOptionsAccessor::with_static_options(opts.clone()),
+            )),
+            ..Default::default()
+        });
+
+        let write_params = WriteParams {
+            store_params,
+            ..Default::default()
+        };
         let _dataset = Dataset::write(Box::new(reader), &table_uri, Some(write_params))
             .await
             .map_err(|e| Error::IO {
@@ -1325,10 +1491,10 @@ impl LanceNamespace for ManifestNamespace {
                     ..Default::default()
                 })
             }
-            None => Err(Error::Namespace {
-                source: format!("Table '{}' not found", table_name).into(),
-                location: location!(),
-            }),
+            None => Err(NamespaceError::TableNotFound {
+                message: format!("Table '{}' not found", table_name),
+            }
+            .into()),
         }
     }
 
@@ -1885,6 +2051,7 @@ impl LanceNamespace for ManifestNamespace {
 
 #[cfg(test)]
 mod tests {
+    use super::LANCE_UNENFORCED_PRIMARY_KEY_POSITION;
     use crate::{DirectoryNamespaceBuilder, ManifestNamespace};
     use bytes::Bytes;
     use lance_core::utils::tempfile::TempStdDir;
@@ -2624,5 +2791,330 @@ mod tests {
             trailing_slash_result, "s3://bucket/path/subdir/table.lance",
             "URL with existing trailing slash should still work"
         );
+    }
+
+    #[tokio::test]
+    async fn test_manifest_schema_has_primary_key() {
+        use arrow::array::RecordBatch;
+        use arrow::record_batch::RecordBatchIterator;
+        use lance::dataset::Dataset;
+
+        // Check that manifest_schema() returns a schema with primary key on object_id
+        let schema = ManifestNamespace::manifest_schema();
+        let object_id_field = schema.field(0);
+        assert_eq!(object_id_field.name(), "object_id");
+
+        // Check the Arrow field metadata for primary key
+        let metadata = object_id_field.metadata();
+        assert!(
+            metadata.contains_key(LANCE_UNENFORCED_PRIMARY_KEY_POSITION),
+            "object_id should have primary key metadata. Got metadata: {:?}",
+            metadata
+        );
+
+        // Create an empty manifest dataset and verify Lance recognizes the primary key
+        let temp_dir = TempStdDir::default();
+        let temp_path = temp_dir.to_str().unwrap();
+        let manifest_path = format!("{}/{}", temp_path, "__manifest");
+
+        let empty_batch = RecordBatch::new_empty(schema.clone());
+        let reader = RecordBatchIterator::new(vec![Ok(empty_batch)], schema.clone());
+
+        let dataset = Dataset::write(Box::new(reader), &manifest_path, None)
+            .await
+            .unwrap();
+
+        let lance_schema = dataset.schema();
+        let lance_object_id_field = lance_schema
+            .field("object_id")
+            .expect("object_id field should exist");
+
+        assert!(
+            lance_object_id_field.is_unenforced_primary_key(),
+            "Lance dataset object_id should be marked as unenforced primary key"
+        );
+    }
+
+    #[rstest]
+    #[case::with_optimization(true)]
+    #[case::without_optimization(false)]
+    #[tokio::test]
+    async fn test_concurrent_create_same_table_only_one_succeeds(
+        #[case] inline_optimization: bool,
+    ) {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+        use tokio::sync::Barrier;
+
+        let temp_dir = TempStdDir::default();
+        let temp_path = temp_dir.to_str().unwrap();
+
+        let dir_namespace = Arc::new(
+            DirectoryNamespaceBuilder::new(temp_path)
+                .inline_optimization_enabled(inline_optimization)
+                .build()
+                .await
+                .unwrap(),
+        );
+
+        let num_concurrent = 10;
+        let success_count = Arc::new(AtomicU32::new(0));
+        let failure_count = Arc::new(AtomicU32::new(0));
+        // Use a barrier to ensure all tasks start at exactly the same time
+        let barrier = Arc::new(Barrier::new(num_concurrent as usize));
+
+        let mut handles = Vec::new();
+
+        for _ in 0..num_concurrent {
+            let ns = Arc::clone(&dir_namespace);
+            let success = Arc::clone(&success_count);
+            let failure = Arc::clone(&failure_count);
+            let barrier = Arc::clone(&barrier);
+
+            let handle = tokio::spawn(async move {
+                // Wait for all tasks to be ready
+                barrier.wait().await;
+
+                let buffer = create_test_ipc_data();
+                let mut create_req = CreateTableRequest::new();
+                create_req.id = Some(vec!["same_table".to_string()]);
+
+                match ns.create_table(create_req, Bytes::from(buffer)).await {
+                    Ok(_) => {
+                        success.fetch_add(1, Ordering::SeqCst);
+                    }
+                    Err(e) => {
+                        let msg = e.to_string();
+                        // Verify it's an "already exists" error
+                        assert!(
+                            msg.contains("already exists") || msg.contains("matched"),
+                            "Expected 'already exists' error, got: {}",
+                            msg
+                        );
+                        failure.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all tasks to complete
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        let final_success = success_count.load(Ordering::SeqCst);
+        let final_failure = failure_count.load(Ordering::SeqCst);
+
+        // Exactly one should succeed
+        assert_eq!(
+            final_success, 1,
+            "Expected exactly 1 success, got {}. Failures: {}",
+            final_success, final_failure
+        );
+        assert_eq!(
+            final_failure,
+            num_concurrent - 1,
+            "Expected {} failures, got {}",
+            num_concurrent - 1,
+            final_failure
+        );
+
+        // Verify the table exists
+        let exists_req = TableExistsRequest {
+            id: Some(vec!["same_table".to_string()]),
+            ..Default::default()
+        };
+        assert!(dir_namespace.table_exists(exists_req).await.is_ok());
+    }
+
+    /// Test that two independent DirectoryNamespace instances pointing to the same path
+    /// cannot both create the same table. This tests the bloom filter conflict detection
+    /// which requires the unenforced primary key to be set on object_id.
+    ///
+    /// Without the primary key, both inserts would succeed and create duplicate rows
+    /// in the manifest table. With the primary key, the bloom filter detects the conflict
+    /// and only one insert succeeds.
+    #[rstest]
+    #[case::with_optimization(true)]
+    #[case::without_optimization(false)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_concurrent_create_same_table_no_duplicates_in_manifest(
+        #[case] inline_optimization: bool,
+    ) {
+        use futures::StreamExt;
+        use std::sync::Arc;
+        use tokio::sync::Barrier;
+
+        let temp_dir = TempStdDir::default();
+        let temp_path = temp_dir.to_str().unwrap().to_string();
+
+        let num_concurrent = 5;
+        let barrier = Arc::new(Barrier::new(num_concurrent as usize));
+
+        let mut handles = Vec::new();
+
+        for _ in 0..num_concurrent {
+            let path = temp_path.clone();
+            let barrier = Arc::clone(&barrier);
+
+            let handle = tokio::spawn(async move {
+                // Each task creates its OWN independent DirectoryNamespace instance
+                let ns = DirectoryNamespaceBuilder::new(&path)
+                    .inline_optimization_enabled(inline_optimization)
+                    .build()
+                    .await
+                    .unwrap();
+
+                // Ensure manifest mode is enabled
+                assert!(ns.manifest_ns.is_some(), "Manifest mode should be enabled");
+
+                // Wait for all tasks to have created their namespace and be ready
+                barrier.wait().await;
+
+                let buffer = create_test_ipc_data();
+                let mut create_req = CreateTableRequest::new();
+                create_req.id = Some(vec!["concurrent_table".to_string()]);
+
+                // We don't care if this succeeds or fails - we just want to
+                // verify no duplicates in the manifest afterward
+                let _ = ns.create_table(create_req, Bytes::from(buffer)).await;
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        // Now verify that the manifest has exactly ONE row for "concurrent_table"
+        // This is the key assertion - with primary key, duplicates are prevented
+        let verify_ns = DirectoryNamespaceBuilder::new(&temp_path)
+            .inline_optimization_enabled(inline_optimization)
+            .build()
+            .await
+            .unwrap();
+
+        // Count rows in manifest with object_id = "concurrent_table"
+        let manifest_dataset = verify_ns
+            .manifest_ns
+            .as_ref()
+            .unwrap()
+            .manifest_dataset
+            .get()
+            .await
+            .unwrap();
+
+        let mut scanner = manifest_dataset.scan();
+        scanner
+            .filter("object_id = 'concurrent_table'")
+            .unwrap()
+            .project(&["object_id"])
+            .unwrap();
+
+        let batches: Vec<_> = scanner
+            .try_into_stream()
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await;
+
+        let total_rows: usize = batches
+            .iter()
+            .filter_map(|b| b.as_ref().ok())
+            .map(|b| b.num_rows())
+            .sum();
+
+        assert_eq!(
+            total_rows, 1,
+            "Expected exactly 1 row for 'concurrent_table' in manifest, but found {}. \
+             This indicates duplicate rows were inserted, which should not happen with primary key set.",
+            total_rows
+        );
+    }
+
+    /// Test concurrent create and drop of DIFFERENT tables from a single namespace instance.
+    /// This mirrors the Java S3 test scenario. Each task creates its own table and then drops it.
+    /// All operations should succeed - there should be no conflicts between different tables.
+    #[rstest]
+    #[case::with_optimization(true)]
+    #[case::without_optimization(false)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_concurrent_create_drop_different_tables(#[case] inline_optimization: bool) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use tokio::sync::Barrier;
+
+        let temp_dir = TempStdDir::default();
+        let temp_path = temp_dir.to_str().unwrap().to_string();
+
+        // Create a single namespace instance shared by all tasks
+        let ns = Arc::new(
+            DirectoryNamespaceBuilder::new(&temp_path)
+                .inline_optimization_enabled(inline_optimization)
+                .build()
+                .await
+                .unwrap(),
+        );
+
+        let num_tables = 10;
+        let barrier = Arc::new(Barrier::new(num_tables));
+        let success_count = Arc::new(AtomicUsize::new(0));
+        let failure_count = Arc::new(AtomicUsize::new(0));
+
+        let mut handles = Vec::new();
+
+        for i in 0..num_tables {
+            let ns = Arc::clone(&ns);
+            let barrier = Arc::clone(&barrier);
+            let success_count = Arc::clone(&success_count);
+            let failure_count = Arc::clone(&failure_count);
+
+            let handle = tokio::spawn(async move {
+                // Wait for all tasks to be ready
+                barrier.wait().await;
+
+                let table_name = format!("concurrent_table_{}", i);
+                let buffer = create_test_ipc_data();
+                let mut create_req = CreateTableRequest::new();
+                create_req.id = Some(vec![table_name.clone()]);
+
+                // Create the table
+                if ns
+                    .create_table(create_req, Bytes::from(buffer))
+                    .await
+                    .is_err()
+                {
+                    failure_count.fetch_add(1, Ordering::SeqCst);
+                    return;
+                }
+
+                // Drop the table
+                let mut drop_req = DropTableRequest::new();
+                drop_req.id = Some(vec![table_name.clone()]);
+                if ns.drop_table(drop_req).await.is_err() {
+                    failure_count.fetch_add(1, Ordering::SeqCst);
+                    return;
+                }
+
+                success_count.fetch_add(1, Ordering::SeqCst);
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        let final_success = success_count.load(Ordering::SeqCst);
+        let final_failure = failure_count.load(Ordering::SeqCst);
+
+        // All operations should succeed
+        assert_eq!(
+            final_success, num_tables,
+            "Expected all {} tasks to succeed, but only {} succeeded and {} failed",
+            num_tables, final_success, final_failure
+        );
+        assert_eq!(final_failure, 0, "Expected no failures");
     }
 }

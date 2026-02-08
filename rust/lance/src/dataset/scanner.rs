@@ -462,6 +462,65 @@ impl ExprFilter {
     }
 }
 
+/// Aggregate specification from Substrait or DataFusion expressions.
+#[derive(Debug, Clone)]
+pub enum AggregateSpec {
+    #[cfg(feature = "substrait")]
+    Substrait(Vec<u8>),
+    Datafusion {
+        group_by: Vec<Expr>,
+        aggregates: Vec<Expr>,
+        output_names: Vec<String>,
+    },
+}
+
+#[cfg(feature = "substrait")]
+impl AggregateSpec {
+    /// Converts to DataFusion expressions.
+    pub fn to_datafusion(
+        &self,
+        schema: Arc<ArrowSchema>,
+    ) -> Result<lance_datafusion::substrait::Aggregate> {
+        use lance_datafusion::exec::{get_session_context, LanceExecutionOptions};
+        use lance_datafusion::substrait::{parse_substrait_aggregate, Aggregate};
+
+        match self {
+            Self::Substrait(bytes) => {
+                let ctx = get_session_context(&LanceExecutionOptions::default());
+                parse_substrait_aggregate(bytes, schema, &ctx.state())
+                    .now_or_never()
+                    .expect("could not parse the Substrait aggregate in a synchronous fashion")
+            }
+            Self::Datafusion {
+                group_by,
+                aggregates,
+                output_names,
+            } => Ok(Aggregate {
+                group_by: group_by.clone(),
+                aggregates: aggregates.clone(),
+                output_names: output_names.clone(),
+            }),
+        }
+    }
+}
+
+#[cfg(not(feature = "substrait"))]
+impl AggregateSpec {
+    /// Converts the aggregate specification to DataFusion expressions
+    pub fn to_datafusion(
+        &self,
+        _schema: Arc<ArrowSchema>,
+    ) -> Result<(Vec<Expr>, Vec<Expr>, Vec<String>)> {
+        match self {
+            Self::Datafusion {
+                group_by,
+                aggregates,
+                output_names,
+            } => Ok((group_by.clone(), aggregates.clone(), output_names.clone())),
+        }
+    }
+}
+
 /// Dataset Scanner
 ///
 /// ```rust,ignore
@@ -569,6 +628,8 @@ pub struct Scanner {
 
     /// File reader options to use when reading data files.
     file_reader_options: Option<FileReaderOptions>,
+
+    aggregate: Option<AggregateSpec>,
 
     // Legacy fields to help migrate some old projection behavior to new behavior
     //
@@ -787,6 +848,7 @@ impl Scanner {
             scan_stats_callback: None,
             strict_batch_size: false,
             file_reader_options,
+            aggregate: None,
             legacy_with_row_addr: false,
             legacy_with_row_id: false,
             explicit_projection: false,
@@ -1015,6 +1077,28 @@ impl Scanner {
     pub fn filter_expr(&mut self, filter: Expr) -> &mut Self {
         self.filter.expr_filter = Some(ExprFilter::Datafusion(filter));
         self
+    }
+
+    /// Set aggregation using Substrait Plan bytes containing an AggregateRel.
+    #[cfg(feature = "substrait")]
+    pub fn aggregate_substrait(&mut self, aggregate_rel: &[u8]) -> Result<&mut Self> {
+        self.aggregate = Some(AggregateSpec::Substrait(aggregate_rel.to_vec()));
+        Ok(self)
+    }
+
+    /// Set aggregation using DataFusion expressions.
+    pub fn aggregate_expr(
+        &mut self,
+        group_by: Vec<Expr>,
+        aggregates: Vec<Expr>,
+        output_names: Vec<String>,
+    ) -> Result<&mut Self> {
+        self.aggregate = Some(AggregateSpec::Datafusion {
+            group_by,
+            aggregates,
+            output_names,
+        });
+        Ok(self)
     }
 
     /// Set the batch size.
@@ -1765,6 +1849,149 @@ impl Scanner {
             }
         }
         .boxed()
+    }
+
+    /// Create an execution plan with aggregation.
+    ///
+    /// Requires `aggregate_substrait()` or `aggregate_expr()` to be called first.
+    #[cfg(feature = "substrait")]
+    pub fn create_aggregate_plan(&self) -> BoxFuture<'_, Result<Arc<dyn ExecutionPlan>>> {
+        use datafusion_physical_expr::aggregate::AggregateFunctionExpr;
+
+        async move {
+            let agg_spec = self.aggregate.as_ref().ok_or_else(|| {
+                Error::invalid_input(
+                    "create_aggregate_plan called but no aggregate was set",
+                    location!(),
+                )
+            })?;
+
+            let plan = self.create_plan().await?;
+            let schema = plan.schema();
+            let agg = agg_spec.to_datafusion(schema.clone())?;
+            let df_schema = DFSchema::try_from(schema.as_ref().clone())?;
+            let num_groups = agg.group_by.len();
+
+            let group_exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = agg
+                .group_by
+                .iter()
+                .enumerate()
+                .map(|(i, expr)| {
+                    let name = if i < agg.output_names.len() {
+                        agg.output_names[i].clone()
+                    } else {
+                        expr.schema_name().to_string()
+                    };
+                    let physical_expr =
+                        create_physical_expr(expr, &df_schema, &ExecutionProps::default())?;
+                    Ok((physical_expr, name))
+                })
+                .collect::<Result<_>>()?;
+
+            let aggr_exprs: Vec<Arc<AggregateFunctionExpr>> = agg
+                .aggregates
+                .iter()
+                .enumerate()
+                .map(|(i, expr)| {
+                    let output_name_idx = num_groups + i;
+                    let alias = if output_name_idx < agg.output_names.len() {
+                        Some(agg.output_names[output_name_idx].as_str())
+                    } else {
+                        None
+                    };
+                    self.build_physical_aggregate_expr_with_alias(expr, &df_schema, &schema, alias)
+                })
+                .collect::<Result<_>>()?;
+
+            let filters: Vec<Option<Arc<dyn PhysicalExpr>>> = vec![None; aggr_exprs.len()];
+
+            Ok(Arc::new(AggregateExec::try_new(
+                AggregateMode::Single,
+                PhysicalGroupBy::new_single(group_exprs),
+                aggr_exprs,
+                filters,
+                plan,
+                schema,
+            )?) as Arc<dyn ExecutionPlan>)
+        }
+        .boxed()
+    }
+
+    #[cfg(feature = "substrait")]
+    fn build_physical_aggregate_expr_with_alias(
+        &self,
+        expr: &Expr,
+        df_schema: &DFSchema,
+        input_schema: &SchemaRef,
+        alias: Option<&str>,
+    ) -> Result<Arc<datafusion_physical_expr::aggregate::AggregateFunctionExpr>> {
+        use datafusion::physical_planner::create_aggregate_expr_and_maybe_filter;
+
+        let coerced_expr = self.coerce_aggregate_expr(expr, df_schema)?;
+        let aliased_expr = if let Some(name) = alias {
+            coerced_expr.alias(name)
+        } else {
+            coerced_expr
+        };
+
+        let (agg_expr, _filter, _order_by) = create_aggregate_expr_and_maybe_filter(
+            &aliased_expr,
+            df_schema,
+            input_schema.as_ref(),
+            &ExecutionProps::default(),
+        )?;
+
+        Ok(agg_expr)
+    }
+
+    /// Apply type coercion to aggregate arguments for UserDefined signature functions.
+    #[cfg(feature = "substrait")]
+    fn coerce_aggregate_expr(&self, expr: &Expr, schema: &DFSchema) -> Result<Expr> {
+        use datafusion::logical_expr::{expr::AggregateFunction, Expr, TypeSignature};
+
+        match expr {
+            Expr::AggregateFunction(agg_func) => {
+                let func = &agg_func.func;
+                let args = &agg_func.params.args;
+
+                if !matches!(func.signature().type_signature, TypeSignature::UserDefined) {
+                    return Ok(expr.clone());
+                }
+
+                if args.is_empty() {
+                    return Ok(expr.clone());
+                }
+
+                let current_types: Vec<arrow_schema::DataType> = args
+                    .iter()
+                    .map(|e| e.get_type(schema))
+                    .collect::<std::result::Result<_, _>>()?;
+
+                let coerced_types = func.coerce_types(&current_types)?;
+                let coerced_args: Vec<Expr> = args
+                    .iter()
+                    .zip(coerced_types.iter())
+                    .map(|(arg, target_type)| {
+                        let arg_type = arg.get_type(schema)?;
+                        if arg_type == *target_type {
+                            Ok(arg.clone())
+                        } else {
+                            arg.clone().cast_to(target_type, schema)
+                        }
+                    })
+                    .collect::<std::result::Result<_, _>>()?;
+
+                Ok(Expr::AggregateFunction(AggregateFunction::new_udf(
+                    func.clone(),
+                    coerced_args,
+                    agg_func.params.distinct,
+                    agg_func.params.filter.clone(),
+                    agg_func.params.order_by.clone(),
+                    agg_func.params.null_treatment,
+                )))
+            }
+            other => Ok(other.clone()),
+        }
     }
 
     // A "narrow" field is a field that is so small that we are better off reading the

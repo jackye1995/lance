@@ -1,0 +1,776 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The Lance Authors
+
+//! Tests for aggregate pushdown via Substrait
+
+use std::sync::Arc;
+
+use arrow_array::cast::AsArray;
+use arrow_array::types::{Float64Type, Int64Type};
+use arrow_array::{RecordBatch, RecordBatchIterator};
+use arrow_schema::{DataType, Field, Schema as ArrowSchema};
+use datafusion_substrait::substrait::proto::{
+    aggregate_function::AggregationInvocation,
+    aggregate_rel::{Grouping, Measure},
+    expression::{
+        field_reference::{ReferenceType, RootReference, RootType},
+        reference_segment::{self, StructField},
+        FieldReference, ReferenceSegment, RexType,
+    },
+    extensions::{
+        simple_extension_declaration::{ExtensionFunction, MappingType},
+        SimpleExtensionDeclaration, SimpleExtensionUri,
+    },
+    function_argument::ArgType,
+    rel::RelType,
+    AggregateFunction, AggregateRel, Expression, FunctionArgument, Plan, PlanRel, Rel, RelRoot,
+    Version,
+};
+use futures::TryStreamExt;
+use lance_datafusion::exec::{execute_plan, LanceExecutionOptions};
+use lance_datagen::{array, gen_batch};
+use lance_table::format::Fragment;
+use prost::Message;
+use tempfile::tempdir;
+
+use crate::utils::test::{DatagenExt, FragmentCount, FragmentRowCount};
+use crate::Dataset;
+
+/// Helper to create a field reference expression for a column index
+fn field_ref(field_index: i32) -> Expression {
+    Expression {
+        rex_type: Some(RexType::Selection(Box::new(FieldReference {
+            reference_type: Some(ReferenceType::DirectReference(ReferenceSegment {
+                reference_type: Some(reference_segment::ReferenceType::StructField(Box::new(
+                    StructField {
+                        field: field_index,
+                        child: None,
+                    },
+                ))),
+            })),
+            root_type: Some(RootType::RootReference(RootReference {})),
+        }))),
+    }
+}
+
+/// Helper to create a Substrait AggregateRel with given measures and groupings
+fn create_aggregate_rel(
+    measures: Vec<Measure>,
+    grouping_expressions: Vec<Expression>,
+    groupings: Vec<Grouping>,
+    extensions: Vec<SimpleExtensionDeclaration>,
+    output_names: Vec<String>,
+) -> Vec<u8> {
+    let aggregate_rel = AggregateRel {
+        common: None,
+        input: None, // Input is ignored for pushdown
+        groupings,
+        measures,
+        grouping_expressions,
+        advanced_extension: None,
+    };
+
+    let rel = Rel {
+        rel_type: Some(RelType::Aggregate(Box::new(aggregate_rel))),
+    };
+
+    // Wrap in a Plan to include extensions
+    let plan = Plan {
+        version: Some(Version {
+            major_number: 0,
+            minor_number: 63,
+            patch_number: 0,
+            git_hash: String::new(),
+            producer: "lance-test".to_string(),
+        }),
+        #[allow(deprecated)]
+        extension_uris: vec![
+            SimpleExtensionUri {
+                extension_uri_anchor: 1,
+                uri: "https://github.com/substrait-io/substrait/blob/main/extensions/functions_aggregate_generic.yaml".to_string(),
+            },
+            SimpleExtensionUri {
+                extension_uri_anchor: 2,
+                uri: "https://github.com/substrait-io/substrait/blob/main/extensions/functions_arithmetic.yaml".to_string(),
+            },
+        ],
+        extensions,
+        relations: vec![PlanRel {
+            rel_type: Some(datafusion_substrait::substrait::proto::plan_rel::RelType::Root(
+                RelRoot {
+                    input: Some(rel),
+                    names: output_names,
+                },
+            )),
+        }],
+        advanced_extensions: None,
+        expected_type_urls: vec![],
+        extension_urns: vec![],
+        parameter_bindings: vec![],
+        type_aliases: vec![],
+    };
+
+    plan.encode_to_vec()
+}
+
+/// Create extension declaration for an aggregate function
+fn agg_extension(anchor: u32, name: &str) -> SimpleExtensionDeclaration {
+    SimpleExtensionDeclaration {
+        mapping_type: Some(MappingType::ExtensionFunction(ExtensionFunction {
+            #[allow(deprecated)]
+            extension_uri_reference: 1,
+            extension_urn_reference: 0,
+            function_anchor: anchor,
+            name: name.to_string(),
+        })),
+    }
+}
+
+/// Create a COUNT(*) measure
+fn count_star_measure(function_ref: u32) -> Measure {
+    Measure {
+        measure: Some(AggregateFunction {
+            function_reference: function_ref,
+            arguments: vec![], // COUNT(*) has no arguments
+            options: vec![],
+            output_type: None,
+            phase: 0,
+            sorts: vec![],
+            invocation: AggregationInvocation::All as i32,
+            #[allow(deprecated)]
+            args: vec![],
+        }),
+        filter: None,
+    }
+}
+
+/// Create a SUM/AVG/MIN/MAX measure on a column
+fn simple_agg_measure(function_ref: u32, column_index: i32) -> Measure {
+    Measure {
+        measure: Some(AggregateFunction {
+            function_reference: function_ref,
+            arguments: vec![FunctionArgument {
+                arg_type: Some(ArgType::Value(field_ref(column_index))),
+            }],
+            options: vec![],
+            output_type: None,
+            phase: 0,
+            sorts: vec![],
+            invocation: AggregationInvocation::All as i32,
+            #[allow(deprecated)]
+            args: vec![],
+        }),
+        filter: None,
+    }
+}
+
+/// Execute aggregate plan and collect results
+async fn execute_aggregate(
+    dataset: &Dataset,
+    aggregate_bytes: &[u8],
+) -> crate::Result<Vec<RecordBatch>> {
+    let mut scanner = dataset.scan();
+    scanner.aggregate_substrait(aggregate_bytes)?;
+
+    let plan = scanner.create_aggregate_plan().await?;
+    let stream = execute_plan(plan, LanceExecutionOptions::default())?;
+    stream.try_collect().await.map_err(|e| e.into())
+}
+
+/// Execute aggregate plan on specific fragments
+async fn execute_aggregate_on_fragments(
+    dataset: &Dataset,
+    aggregate_bytes: &[u8],
+    fragments: Vec<Fragment>,
+) -> crate::Result<Vec<RecordBatch>> {
+    let mut scanner = dataset.scan();
+    scanner.with_fragments(fragments);
+    scanner.aggregate_substrait(aggregate_bytes)?;
+
+    let plan = scanner.create_aggregate_plan().await?;
+    let stream = execute_plan(plan, LanceExecutionOptions::default())?;
+    stream.try_collect().await.map_err(|e| e.into())
+}
+
+/// Create a test dataset with numeric columns
+async fn create_numeric_dataset(uri: &str, num_fragments: u32, rows_per_fragment: u32) -> Dataset {
+    gen_batch()
+        .col("x", array::step::<Int64Type>())
+        .col("y", array::step_custom::<Int64Type>(0, 2))
+        .col("category", array::cycle::<Int64Type>(vec![1, 2, 3]))
+        .into_dataset(
+            uri,
+            FragmentCount::from(num_fragments),
+            FragmentRowCount::from(rows_per_fragment),
+        )
+        .await
+        .unwrap()
+}
+
+// ============================================================================
+// COUNT(*) Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_count_star_single_fragment() {
+    let tmp_dir = tempdir().unwrap();
+    let uri = tmp_dir.path().to_str().unwrap();
+    let ds = create_numeric_dataset(uri, 1, 100).await;
+
+    let agg_bytes = create_aggregate_rel(
+        vec![count_star_measure(1)],
+        vec![],
+        vec![],
+        vec![agg_extension(1, "count")],
+        vec![],
+    );
+
+    let results = execute_aggregate(&ds, &agg_bytes).await.unwrap();
+    assert_eq!(results.len(), 1);
+    let batch = &results[0];
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(batch.column(0).as_primitive::<Int64Type>().value(0), 100);
+}
+
+#[tokio::test]
+async fn test_count_star_multiple_fragments() {
+    let tmp_dir = tempdir().unwrap();
+    let uri = tmp_dir.path().to_str().unwrap();
+    let ds = create_numeric_dataset(uri, 5, 100).await;
+
+    let agg_bytes = create_aggregate_rel(
+        vec![count_star_measure(1)],
+        vec![],
+        vec![],
+        vec![agg_extension(1, "count")],
+        vec![],
+    );
+
+    let results = execute_aggregate(&ds, &agg_bytes).await.unwrap();
+    assert_eq!(results.len(), 1);
+    let batch = &results[0];
+    assert_eq!(batch.num_rows(), 1);
+    // 5 fragments * 100 rows = 500 total
+    assert_eq!(batch.column(0).as_primitive::<Int64Type>().value(0), 500);
+}
+
+#[tokio::test]
+async fn test_count_star_subset_fragments() {
+    let tmp_dir = tempdir().unwrap();
+    let uri = tmp_dir.path().to_str().unwrap();
+    let ds = create_numeric_dataset(uri, 5, 100).await;
+
+    // Get only first 2 fragments
+    let all_fragments = ds.get_fragments();
+    let subset: Vec<Fragment> = all_fragments
+        .into_iter()
+        .take(2)
+        .map(|f| f.metadata)
+        .collect();
+
+    let agg_bytes = create_aggregate_rel(
+        vec![count_star_measure(1)],
+        vec![],
+        vec![],
+        vec![agg_extension(1, "count")],
+        vec![],
+    );
+
+    let results = execute_aggregate_on_fragments(&ds, &agg_bytes, subset)
+        .await
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    let batch = &results[0];
+    assert_eq!(batch.num_rows(), 1);
+    // 2 fragments * 100 rows = 200 total
+    assert_eq!(batch.column(0).as_primitive::<Int64Type>().value(0), 200);
+}
+
+// ============================================================================
+// SUM Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_sum_single_fragment() {
+    let tmp_dir = tempdir().unwrap();
+    let uri = tmp_dir.path().to_str().unwrap();
+    let ds = create_numeric_dataset(uri, 1, 100).await;
+
+    // SUM(x) where x = 0..99
+    let agg_bytes = create_aggregate_rel(
+        vec![simple_agg_measure(1, 0)], // column 0 = x
+        vec![],
+        vec![],
+        vec![agg_extension(1, "sum")],
+        vec![],
+    );
+
+    let results = execute_aggregate(&ds, &agg_bytes).await.unwrap();
+    assert_eq!(results.len(), 1);
+    let batch = &results[0];
+    assert_eq!(batch.num_rows(), 1);
+    // SUM(0..99) = 99*100/2 = 4950
+    assert_eq!(batch.column(0).as_primitive::<Int64Type>().value(0), 4950);
+}
+
+#[tokio::test]
+async fn test_sum_multiple_fragments() {
+    let tmp_dir = tempdir().unwrap();
+    let uri = tmp_dir.path().to_str().unwrap();
+    let ds = create_numeric_dataset(uri, 4, 25).await;
+
+    // SUM(x) where x = 0..99 across 4 fragments
+    let agg_bytes = create_aggregate_rel(
+        vec![simple_agg_measure(1, 0)],
+        vec![],
+        vec![],
+        vec![agg_extension(1, "sum")],
+        vec![],
+    );
+
+    let results = execute_aggregate(&ds, &agg_bytes).await.unwrap();
+    assert_eq!(results.len(), 1);
+    let batch = &results[0];
+    // SUM(0..99) = 4950
+    assert_eq!(batch.column(0).as_primitive::<Int64Type>().value(0), 4950);
+}
+
+// ============================================================================
+// MIN/MAX Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_min_max() {
+    let tmp_dir = tempdir().unwrap();
+    let uri = tmp_dir.path().to_str().unwrap();
+    let ds = create_numeric_dataset(uri, 4, 25).await;
+
+    // MIN(x) and MAX(x)
+    let agg_bytes = create_aggregate_rel(
+        vec![
+            simple_agg_measure(1, 0), // MIN(x)
+            simple_agg_measure(2, 0), // MAX(x)
+        ],
+        vec![],
+        vec![],
+        vec![agg_extension(1, "min"), agg_extension(2, "max")],
+        vec![],
+    );
+
+    let results = execute_aggregate(&ds, &agg_bytes).await.unwrap();
+    assert_eq!(results.len(), 1);
+    let batch = &results[0];
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(batch.num_columns(), 2);
+    // MIN should be 0, MAX should be 99
+    assert_eq!(batch.column(0).as_primitive::<Int64Type>().value(0), 0);
+    assert_eq!(batch.column(1).as_primitive::<Int64Type>().value(0), 99);
+}
+
+// ============================================================================
+// AVG Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_avg() {
+    let tmp_dir = tempdir().unwrap();
+    let uri = tmp_dir.path().to_str().unwrap();
+    let ds = create_numeric_dataset(uri, 4, 25).await;
+
+    // AVG(x) where x = 0..99
+    let agg_bytes = create_aggregate_rel(
+        vec![simple_agg_measure(1, 0)],
+        vec![],
+        vec![],
+        vec![agg_extension(1, "avg")],
+        vec![],
+    );
+
+    let results = execute_aggregate(&ds, &agg_bytes).await.unwrap();
+    assert_eq!(results.len(), 1);
+    let batch = &results[0];
+    // AVG(0..99) = 49.5
+    let avg = batch.column(0).as_primitive::<Float64Type>().value(0);
+    assert!((avg - 49.5).abs() < 0.001);
+}
+
+// ============================================================================
+// Multiple Aggregates Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_multiple_aggregates() {
+    let tmp_dir = tempdir().unwrap();
+    let uri = tmp_dir.path().to_str().unwrap();
+    let ds = create_numeric_dataset(uri, 4, 25).await;
+
+    // COUNT(*), SUM(x), MIN(x), MAX(x), AVG(x)
+    let agg_bytes = create_aggregate_rel(
+        vec![
+            count_star_measure(1),
+            simple_agg_measure(2, 0), // SUM(x)
+            simple_agg_measure(3, 0), // MIN(x)
+            simple_agg_measure(4, 0), // MAX(x)
+            simple_agg_measure(5, 0), // AVG(x)
+        ],
+        vec![],
+        vec![],
+        vec![
+            agg_extension(1, "count"),
+            agg_extension(2, "sum"),
+            agg_extension(3, "min"),
+            agg_extension(4, "max"),
+            agg_extension(5, "avg"),
+        ],
+        vec![],
+    );
+
+    let results = execute_aggregate(&ds, &agg_bytes).await.unwrap();
+    assert_eq!(results.len(), 1);
+    let batch = &results[0];
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(batch.num_columns(), 5);
+
+    // Verify all aggregates
+    assert_eq!(batch.column(0).as_primitive::<Int64Type>().value(0), 100); // COUNT
+    assert_eq!(batch.column(1).as_primitive::<Int64Type>().value(0), 4950); // SUM
+    assert_eq!(batch.column(2).as_primitive::<Int64Type>().value(0), 0); // MIN
+    assert_eq!(batch.column(3).as_primitive::<Int64Type>().value(0), 99); // MAX
+    let avg = batch.column(4).as_primitive::<Float64Type>().value(0);
+    assert!((avg - 49.5).abs() < 0.001); // AVG
+}
+
+// ============================================================================
+// GROUP BY Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_group_by_with_count() {
+    let tmp_dir = tempdir().unwrap();
+    let uri = tmp_dir.path().to_str().unwrap();
+    let ds = create_numeric_dataset(uri, 4, 30).await;
+
+    // COUNT(*) GROUP BY category
+    // category cycles through 1, 2, 3
+    let agg_bytes = create_aggregate_rel(
+        vec![count_star_measure(1)],
+        vec![field_ref(2)], // category is column index 2
+        vec![Grouping {
+            #[allow(deprecated)]
+            grouping_expressions: vec![],
+            expression_references: vec![0], // Reference to first grouping expression
+        }],
+        vec![agg_extension(1, "count")],
+        vec![],
+    );
+
+    let results = execute_aggregate(&ds, &agg_bytes).await.unwrap();
+    assert!(!results.is_empty());
+
+    let batch = arrow::compute::concat_batches(&results[0].schema(), &results).unwrap();
+    assert_eq!(batch.num_rows(), 3); // 3 categories
+
+    // Each category should have 40 rows (120 total / 3 categories)
+    let counts: Vec<i64> = batch
+        .column(1) // count column
+        .as_primitive::<Int64Type>()
+        .values()
+        .to_vec();
+
+    for count in counts {
+        assert_eq!(count, 40);
+    }
+}
+
+#[tokio::test]
+async fn test_group_by_with_sum() {
+    let tmp_dir = tempdir().unwrap();
+    let uri = tmp_dir.path().to_str().unwrap();
+    let ds = create_numeric_dataset(uri, 1, 9).await;
+
+    // SUM(x) GROUP BY category
+    // x = 0..8, category cycles 1,2,3,1,2,3,1,2,3
+    // category 1: sum(0,3,6) = 9
+    // category 2: sum(1,4,7) = 12
+    // category 3: sum(2,5,8) = 15
+    let agg_bytes = create_aggregate_rel(
+        vec![simple_agg_measure(1, 0)], // SUM(x)
+        vec![field_ref(2)],             // GROUP BY category
+        vec![Grouping {
+            #[allow(deprecated)]
+            grouping_expressions: vec![],
+            expression_references: vec![0],
+        }],
+        vec![agg_extension(1, "sum")],
+        vec![],
+    );
+
+    let results = execute_aggregate(&ds, &agg_bytes).await.unwrap();
+    assert!(!results.is_empty());
+
+    let batch = arrow::compute::concat_batches(&results[0].schema(), &results).unwrap();
+    assert_eq!(batch.num_rows(), 3); // 3 categories
+
+    // Collect results into a map for verification
+    let categories: Vec<i64> = batch
+        .column(0) // category column
+        .as_primitive::<Int64Type>()
+        .values()
+        .to_vec();
+    let sums: Vec<i64> = batch
+        .column(1) // sum column
+        .as_primitive::<Int64Type>()
+        .values()
+        .to_vec();
+
+    let mut results_map = std::collections::HashMap::new();
+    for (cat, sum) in categories.iter().zip(sums.iter()) {
+        results_map.insert(*cat, *sum);
+    }
+
+    assert_eq!(results_map.get(&1), Some(&9));
+    assert_eq!(results_map.get(&2), Some(&12));
+    assert_eq!(results_map.get(&3), Some(&15));
+}
+
+// ============================================================================
+// Fragment Subset with Aggregates Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_aggregate_specific_fragments() {
+    let tmp_dir = tempdir().unwrap();
+    let uri = tmp_dir.path().to_str().unwrap();
+    let ds = create_numeric_dataset(uri, 10, 10).await;
+
+    // Get fragments 3, 5, 7 (0-indexed)
+    let all_fragments = ds.get_fragments();
+    let subset: Vec<Fragment> = all_fragments
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| *i == 3 || *i == 5 || *i == 7)
+        .map(|(_, f)| f.metadata)
+        .collect();
+
+    let agg_bytes = create_aggregate_rel(
+        vec![count_star_measure(1)],
+        vec![],
+        vec![],
+        vec![agg_extension(1, "count")],
+        vec![],
+    );
+
+    let results = execute_aggregate_on_fragments(&ds, &agg_bytes, subset)
+        .await
+        .unwrap();
+
+    assert_eq!(results.len(), 1);
+    let batch = &results[0];
+    // 3 fragments * 10 rows = 30 total
+    assert_eq!(batch.column(0).as_primitive::<Int64Type>().value(0), 30);
+}
+
+#[tokio::test]
+async fn test_sum_specific_fragments() {
+    let tmp_dir = tempdir().unwrap();
+    let uri = tmp_dir.path().to_str().unwrap();
+
+    // Create dataset where each fragment has distinct values
+    // Fragment 0: x = 0..9 (sum = 45)
+    // Fragment 1: x = 10..19 (sum = 145)
+    // Fragment 2: x = 20..29 (sum = 245)
+    // Fragment 3: x = 30..39 (sum = 345)
+    let ds = create_numeric_dataset(uri, 4, 10).await;
+
+    // Only scan fragments 1 and 2
+    let all_fragments = ds.get_fragments();
+    let subset: Vec<Fragment> = all_fragments
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| *i == 1 || *i == 2)
+        .map(|(_, f)| f.metadata)
+        .collect();
+
+    let agg_bytes = create_aggregate_rel(
+        vec![simple_agg_measure(1, 0)], // SUM(x)
+        vec![],
+        vec![],
+        vec![agg_extension(1, "sum")],
+        vec![],
+    );
+
+    let results = execute_aggregate_on_fragments(&ds, &agg_bytes, subset)
+        .await
+        .unwrap();
+
+    assert_eq!(results.len(), 1);
+    let batch = &results[0];
+    // Fragment 1: sum(10..19) = 145
+    // Fragment 2: sum(20..29) = 245
+    // Total = 390
+    assert_eq!(batch.column(0).as_primitive::<Int64Type>().value(0), 390);
+}
+
+// ============================================================================
+// Edge Cases
+// ============================================================================
+
+#[tokio::test]
+async fn test_aggregate_empty_result() {
+    let tmp_dir = tempdir().unwrap();
+    let uri = tmp_dir.path().to_str().unwrap();
+    let ds = create_numeric_dataset(uri, 1, 100).await;
+
+    // Apply filter that matches no rows, then aggregate
+    let mut scanner = ds.scan();
+    scanner.project::<&str>(&[]).unwrap();
+    scanner.with_row_id();
+    scanner.filter("x > 1000").unwrap(); // No rows match
+
+    let agg_bytes = create_aggregate_rel(
+        vec![count_star_measure(1)],
+        vec![],
+        vec![],
+        vec![agg_extension(1, "count")],
+        vec![],
+    );
+    scanner.aggregate_substrait(&agg_bytes).unwrap();
+
+    let plan = scanner.create_aggregate_plan().await.unwrap();
+    let stream = execute_plan(plan, LanceExecutionOptions::default()).unwrap();
+    let results: Vec<RecordBatch> = stream.try_collect().await.unwrap();
+
+    assert_eq!(results.len(), 1);
+    let batch = &results[0];
+    assert_eq!(batch.num_rows(), 1);
+    // COUNT(*) of empty result should be 0
+    assert_eq!(batch.column(0).as_primitive::<Int64Type>().value(0), 0);
+}
+
+#[tokio::test]
+async fn test_aggregate_single_row() {
+    let tmp_dir = tempdir().unwrap();
+    let uri = tmp_dir.path().to_str().unwrap();
+
+    // Create dataset with single row using Int64 to avoid type coercion issues
+    let schema = Arc::new(ArrowSchema::new(vec![Field::new(
+        "x",
+        DataType::Int64,
+        false,
+    )]));
+
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![Arc::new(arrow_array::Int64Array::from(vec![42]))],
+    )
+    .unwrap();
+
+    let reader = RecordBatchIterator::new(vec![Ok(batch)], schema);
+    let ds = Dataset::write(reader, uri, None).await.unwrap();
+
+    let agg_bytes = create_aggregate_rel(
+        vec![
+            count_star_measure(1),
+            simple_agg_measure(2, 0), // SUM(x)
+            simple_agg_measure(3, 0), // MIN(x)
+            simple_agg_measure(4, 0), // MAX(x)
+        ],
+        vec![],
+        vec![],
+        vec![
+            agg_extension(1, "count"),
+            agg_extension(2, "sum"),
+            agg_extension(3, "min"),
+            agg_extension(4, "max"),
+        ],
+        vec![],
+    );
+
+    let results = execute_aggregate(&ds, &agg_bytes).await.unwrap();
+    assert_eq!(results.len(), 1);
+    let batch = &results[0];
+
+    assert_eq!(batch.column(0).as_primitive::<Int64Type>().value(0), 1); // COUNT
+    assert_eq!(batch.column(1).as_primitive::<Int64Type>().value(0), 42); // SUM
+    assert_eq!(batch.column(2).as_primitive::<Int64Type>().value(0), 42); // MIN
+    assert_eq!(batch.column(3).as_primitive::<Int64Type>().value(0), 42); // MAX
+}
+
+// ============================================================================
+// Output Schema / Alias Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_aggregate_with_aliases() {
+    let tmp_dir = tempdir().unwrap();
+    let uri = tmp_dir.path().to_str().unwrap();
+    let ds = create_numeric_dataset(uri, 1, 100).await;
+
+    // COUNT(*), SUM(x), MIN(x) with custom aliases
+    let agg_bytes = create_aggregate_rel(
+        vec![
+            count_star_measure(1),
+            simple_agg_measure(2, 0),
+            simple_agg_measure(3, 0),
+        ],
+        vec![],
+        vec![],
+        vec![
+            agg_extension(1, "count"),
+            agg_extension(2, "sum"),
+            agg_extension(3, "min"),
+        ],
+        vec![
+            "total_count".to_string(),
+            "sum_of_x".to_string(),
+            "min_x".to_string(),
+        ],
+    );
+
+    let results = execute_aggregate(&ds, &agg_bytes).await.unwrap();
+    assert_eq!(results.len(), 1);
+    let batch = &results[0];
+
+    // Verify output schema has the expected aliases
+    let schema = batch.schema();
+    assert_eq!(schema.fields().len(), 3);
+    assert_eq!(schema.field(0).name(), "total_count");
+    assert_eq!(schema.field(1).name(), "sum_of_x");
+    assert_eq!(schema.field(2).name(), "min_x");
+
+    // Verify values are correct
+    assert_eq!(batch.column(0).as_primitive::<Int64Type>().value(0), 100);
+    assert_eq!(batch.column(1).as_primitive::<Int64Type>().value(0), 4950);
+    assert_eq!(batch.column(2).as_primitive::<Int64Type>().value(0), 0);
+}
+
+#[tokio::test]
+async fn test_group_by_with_aliases() {
+    let tmp_dir = tempdir().unwrap();
+    let uri = tmp_dir.path().to_str().unwrap();
+    let ds = create_numeric_dataset(uri, 1, 9).await;
+
+    // SUM(x) GROUP BY category with aliases
+    let agg_bytes = create_aggregate_rel(
+        vec![simple_agg_measure(1, 0)],
+        vec![field_ref(2)],
+        vec![Grouping {
+            #[allow(deprecated)]
+            grouping_expressions: vec![],
+            expression_references: vec![0],
+        }],
+        vec![agg_extension(1, "sum")],
+        vec!["group_key".to_string(), "total_sum".to_string()],
+    );
+
+    let results = execute_aggregate(&ds, &agg_bytes).await.unwrap();
+    assert!(!results.is_empty());
+
+    let batch = arrow::compute::concat_batches(&results[0].schema(), &results).unwrap();
+
+    // Verify output schema has the expected aliases
+    let schema = batch.schema();
+    assert_eq!(schema.fields().len(), 2);
+    assert_eq!(schema.field(0).name(), "group_key");
+    assert_eq!(schema.field(1).name(), "total_sum");
+}

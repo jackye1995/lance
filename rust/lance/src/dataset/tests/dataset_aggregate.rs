@@ -208,10 +208,6 @@ async fn create_numeric_dataset(uri: &str, num_fragments: u32, rows_per_fragment
         .unwrap()
 }
 
-// ============================================================================
-// COUNT(*) Tests
-// ============================================================================
-
 #[tokio::test]
 async fn test_count_star_single_fragment() {
     let tmp_dir = tempdir().unwrap();
@@ -287,10 +283,6 @@ async fn test_count_star_subset_fragments() {
     assert_eq!(batch.column(0).as_primitive::<Int64Type>().value(0), 200);
 }
 
-// ============================================================================
-// SUM Tests
-// ============================================================================
-
 #[tokio::test]
 async fn test_sum_single_fragment() {
     let tmp_dir = tempdir().unwrap();
@@ -336,10 +328,6 @@ async fn test_sum_multiple_fragments() {
     assert_eq!(batch.column(0).as_primitive::<Int64Type>().value(0), 4950);
 }
 
-// ============================================================================
-// MIN/MAX Tests
-// ============================================================================
-
 #[tokio::test]
 async fn test_min_max() {
     let tmp_dir = tempdir().unwrap();
@@ -368,10 +356,6 @@ async fn test_min_max() {
     assert_eq!(batch.column(1).as_primitive::<Int64Type>().value(0), 99);
 }
 
-// ============================================================================
-// AVG Tests
-// ============================================================================
-
 #[tokio::test]
 async fn test_avg() {
     let tmp_dir = tempdir().unwrap();
@@ -394,10 +378,6 @@ async fn test_avg() {
     let avg = batch.column(0).as_primitive::<Float64Type>().value(0);
     assert!((avg - 49.5).abs() < 0.001);
 }
-
-// ============================================================================
-// Multiple Aggregates Tests
-// ============================================================================
 
 #[tokio::test]
 async fn test_multiple_aggregates() {
@@ -440,10 +420,6 @@ async fn test_multiple_aggregates() {
     let avg = batch.column(4).as_primitive::<Float64Type>().value(0);
     assert!((avg - 49.5).abs() < 0.001); // AVG
 }
-
-// ============================================================================
-// GROUP BY Tests
-// ============================================================================
 
 #[tokio::test]
 async fn test_group_by_with_count() {
@@ -534,10 +510,6 @@ async fn test_group_by_with_sum() {
     assert_eq!(results_map.get(&3), Some(&15));
 }
 
-// ============================================================================
-// Fragment Subset with Aggregates Tests
-// ============================================================================
-
 #[tokio::test]
 async fn test_aggregate_specific_fragments() {
     let tmp_dir = tempdir().unwrap();
@@ -611,10 +583,6 @@ async fn test_sum_specific_fragments() {
     // Total = 390
     assert_eq!(batch.column(0).as_primitive::<Int64Type>().value(0), 390);
 }
-
-// ============================================================================
-// Edge Cases
-// ============================================================================
 
 #[tokio::test]
 async fn test_aggregate_empty_result() {
@@ -696,10 +664,6 @@ async fn test_aggregate_single_row() {
     assert_eq!(batch.column(2).as_primitive::<Int64Type>().value(0), 42); // MIN
     assert_eq!(batch.column(3).as_primitive::<Int64Type>().value(0), 42); // MAX
 }
-
-// ============================================================================
-// Output Schema / Alias Tests
-// ============================================================================
 
 #[tokio::test]
 async fn test_aggregate_with_aliases() {

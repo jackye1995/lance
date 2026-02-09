@@ -8,7 +8,7 @@ use crate::aggregate::Aggregate;
 use datafusion_common::DFSchema;
 use datafusion_substrait::extensions::Extensions;
 use datafusion_substrait::logical_plan::consumer::{
-    from_substrait_agg_func, from_substrait_rex, DefaultSubstraitConsumer,
+    from_substrait_agg_func, from_substrait_rex, from_substrait_sorts, DefaultSubstraitConsumer,
 };
 use datafusion_substrait::substrait::proto::{
     expression::{
@@ -495,7 +495,14 @@ async fn parse_measures(
             };
 
             // Parse ordering (for ordered aggregates like ARRAY_AGG)
-            let order_by = Vec::new(); // TODO: parse agg_func.sorts if needed
+            let order_by = from_substrait_sorts(consumer, &agg_func.sorts, schema)
+                .await
+                .map_err(|e| {
+                    Error::invalid_input(
+                        format!("Failed to parse aggregate sorts: {}", e),
+                        location!(),
+                    )
+                })?;
 
             // Check for DISTINCT invocation
             let distinct = matches!(

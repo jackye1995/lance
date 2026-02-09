@@ -462,9 +462,9 @@ impl ExprFilter {
     }
 }
 
-/// Aggregate specification from Substrait or DataFusion expressions.
+/// Aggregate expression from Substrait or DataFusion.
 #[derive(Debug, Clone)]
-pub enum AggregateSpec {
+pub enum AggregateExpr {
     #[cfg(feature = "substrait")]
     Substrait(Vec<u8>),
     Datafusion {
@@ -474,10 +474,28 @@ pub enum AggregateSpec {
     },
 }
 
-#[cfg(feature = "substrait")]
-impl AggregateSpec {
-    /// Converts to DataFusion expressions.
-    pub fn to_datafusion(
+impl AggregateExpr {
+    /// Create from Substrait Plan bytes.
+    #[cfg(feature = "substrait")]
+    pub fn substrait(bytes: impl Into<Vec<u8>>) -> Self {
+        Self::Substrait(bytes.into())
+    }
+
+    /// Create from DataFusion expressions.
+    pub fn datafusion(
+        group_by: Vec<Expr>,
+        aggregates: Vec<Expr>,
+        output_names: Vec<String>,
+    ) -> Self {
+        Self::Datafusion {
+            group_by,
+            aggregates,
+            output_names,
+        }
+    }
+
+    #[cfg(feature = "substrait")]
+    fn to_aggregate(
         &self,
         schema: Arc<ArrowSchema>,
     ) -> Result<lance_datafusion::substrait::Aggregate> {
@@ -500,23 +518,6 @@ impl AggregateSpec {
                 aggregates: aggregates.clone(),
                 output_names: output_names.clone(),
             }),
-        }
-    }
-}
-
-#[cfg(not(feature = "substrait"))]
-impl AggregateSpec {
-    /// Converts the aggregate specification to DataFusion expressions
-    pub fn to_datafusion(
-        &self,
-        _schema: Arc<ArrowSchema>,
-    ) -> Result<(Vec<Expr>, Vec<Expr>, Vec<String>)> {
-        match self {
-            Self::Datafusion {
-                group_by,
-                aggregates,
-                output_names,
-            } => Ok((group_by.clone(), aggregates.clone(), output_names.clone())),
         }
     }
 }
@@ -629,7 +630,7 @@ pub struct Scanner {
     /// File reader options to use when reading data files.
     file_reader_options: Option<FileReaderOptions>,
 
-    aggregate: Option<AggregateSpec>,
+    aggregate: Option<AggregateExpr>,
 
     // Legacy fields to help migrate some old projection behavior to new behavior
     //
@@ -1079,26 +1080,10 @@ impl Scanner {
         self
     }
 
-    /// Set aggregation using Substrait Plan bytes containing an AggregateRel.
-    #[cfg(feature = "substrait")]
-    pub fn aggregate_substrait(&mut self, aggregate_rel: &[u8]) -> Result<&mut Self> {
-        self.aggregate = Some(AggregateSpec::Substrait(aggregate_rel.to_vec()));
-        Ok(self)
-    }
-
-    /// Set aggregation using DataFusion expressions.
-    pub fn aggregate_expr(
-        &mut self,
-        group_by: Vec<Expr>,
-        aggregates: Vec<Expr>,
-        output_names: Vec<String>,
-    ) -> Result<&mut Self> {
-        self.aggregate = Some(AggregateSpec::Datafusion {
-            group_by,
-            aggregates,
-            output_names,
-        });
-        Ok(self)
+    /// Set aggregation.
+    pub fn aggregate(&mut self, aggregate: AggregateExpr) -> &mut Self {
+        self.aggregate = Some(aggregate);
+        self
     }
 
     /// Set the batch size.
@@ -1868,7 +1853,7 @@ impl Scanner {
 
             let plan = self.create_plan().await?;
             let schema = plan.schema();
-            let agg = agg_spec.to_datafusion(schema.clone())?;
+            let agg = agg_spec.to_aggregate(schema.clone())?;
             let df_schema = DFSchema::try_from(schema.as_ref().clone())?;
             let num_groups = agg.group_by.len();
 

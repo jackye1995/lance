@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The Lance Authors
 
-//! Tests for aggregate pushdown via Substrait
+//! Tests for Substrait aggregate
 
 use std::sync::Arc;
 
@@ -33,6 +33,7 @@ use lance_table::format::Fragment;
 use prost::Message;
 use tempfile::tempdir;
 
+use crate::dataset::scanner::AggregateExpr;
 use crate::utils::test::{DatagenExt, FragmentCount, FragmentRowCount};
 use crate::Dataset;
 
@@ -170,7 +171,7 @@ async fn execute_aggregate(
     aggregate_bytes: &[u8],
 ) -> crate::Result<Vec<RecordBatch>> {
     let mut scanner = dataset.scan();
-    scanner.aggregate_substrait(aggregate_bytes)?;
+    scanner.aggregate(AggregateExpr::substrait(aggregate_bytes));
 
     let plan = scanner.create_aggregate_plan().await?;
     let stream = execute_plan(plan, LanceExecutionOptions::default())?;
@@ -185,7 +186,7 @@ async fn execute_aggregate_on_fragments(
 ) -> crate::Result<Vec<RecordBatch>> {
     let mut scanner = dataset.scan();
     scanner.with_fragments(fragments);
-    scanner.aggregate_substrait(aggregate_bytes)?;
+    scanner.aggregate(AggregateExpr::substrait(aggregate_bytes));
 
     let plan = scanner.create_aggregate_plan().await?;
     let stream = execute_plan(plan, LanceExecutionOptions::default())?;
@@ -634,7 +635,7 @@ async fn test_aggregate_empty_result() {
         vec![agg_extension(1, "count")],
         vec![],
     );
-    scanner.aggregate_substrait(&agg_bytes).unwrap();
+    scanner.aggregate(AggregateExpr::substrait(agg_bytes));
 
     let plan = scanner.create_aggregate_plan().await.unwrap();
     let stream = execute_plan(plan, LanceExecutionOptions::default()).unwrap();

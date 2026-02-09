@@ -585,6 +585,50 @@ async fn test_sum_specific_fragments() {
 }
 
 #[tokio::test]
+async fn test_aggregate_with_filter() {
+    let tmp_dir = tempdir().unwrap();
+    let uri = tmp_dir.path().to_str().unwrap();
+    let ds = create_numeric_dataset(uri, 1, 100).await;
+
+    let mut scanner = ds.scan();
+    scanner.filter("x >= 50").unwrap();
+
+    let agg_bytes = create_aggregate_rel(
+        vec![
+            count_star_measure(1),
+            simple_agg_measure(2, 0), // SUM(x)
+            simple_agg_measure(3, 0), // MIN(x)
+            simple_agg_measure(4, 0), // MAX(x)
+        ],
+        vec![],
+        vec![],
+        vec![
+            agg_extension(1, "count"),
+            agg_extension(2, "sum"),
+            agg_extension(3, "min"),
+            agg_extension(4, "max"),
+        ],
+        vec![],
+    );
+    scanner.aggregate(AggregateExpr::substrait(agg_bytes));
+
+    let plan = scanner.create_aggregate_plan().await.unwrap();
+    let stream = execute_plan(plan, LanceExecutionOptions::default()).unwrap();
+    let results: Vec<RecordBatch> = stream.try_collect().await.unwrap();
+
+    assert_eq!(results.len(), 1);
+    let batch = &results[0];
+    assert_eq!(batch.num_rows(), 1);
+
+    // Filter x >= 50 matches rows 50..99 (50 rows)
+    assert_eq!(batch.column(0).as_primitive::<Int64Type>().value(0), 50); // COUNT
+    // SUM(50..99) = (50+99)*50/2 = 3725
+    assert_eq!(batch.column(1).as_primitive::<Int64Type>().value(0), 3725); // SUM
+    assert_eq!(batch.column(2).as_primitive::<Int64Type>().value(0), 50); // MIN
+    assert_eq!(batch.column(3).as_primitive::<Int64Type>().value(0), 99); // MAX
+}
+
+#[tokio::test]
 async fn test_aggregate_empty_result() {
     let tmp_dir = tempdir().unwrap();
     let uri = tmp_dir.path().to_str().unwrap();

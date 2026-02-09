@@ -3,6 +3,8 @@
 
 use arrow_schema::Schema as ArrowSchema;
 use datafusion::{execution::SessionState, logical_expr::Expr};
+
+use crate::aggregate::Aggregate;
 use datafusion_common::DFSchema;
 use datafusion_substrait::extensions::Extensions;
 use datafusion_substrait::logical_plan::consumer::{
@@ -328,15 +330,6 @@ pub async fn parse_substrait(
     }
 
     Ok(expr_container.exprs.pop().unwrap().0)
-}
-
-/// Aggregate specification with group by and aggregate expressions.
-#[derive(Debug, Clone)]
-pub struct Aggregate {
-    pub group_by: Vec<Expr>,
-    pub aggregates: Vec<Expr>,
-    /// Output column names in order: group_by columns first, then aggregates.
-    pub output_names: Vec<String>,
 }
 
 /// Parse Substrait Plan bytes containing an AggregateRel.

@@ -53,6 +53,7 @@ use lance_core::utils::address::RowAddress;
 use lance_core::utils::mask::{RowAddrMask, RowAddrTreeMap};
 use lance_core::utils::tokio::get_num_compute_intensive_cpus;
 use lance_core::{ROW_ADDR, ROW_ID, ROW_OFFSET};
+use lance_datafusion::aggregate::Aggregate;
 use lance_datafusion::exec::{
     analyze_plan, execute_plan, LanceExecutionOptions, OneShotExec, StrictBatchSizeExec,
 };
@@ -494,16 +495,16 @@ impl AggregateExpr {
         }
     }
 
-    #[cfg(feature = "substrait")]
     fn to_aggregate(
         &self,
-        schema: Arc<ArrowSchema>,
-    ) -> Result<lance_datafusion::substrait::Aggregate> {
-        use lance_datafusion::exec::{get_session_context, LanceExecutionOptions};
-        use lance_datafusion::substrait::{parse_substrait_aggregate, Aggregate};
-
+        #[allow(unused_variables)] schema: Arc<ArrowSchema>,
+    ) -> Result<Aggregate> {
         match self {
+            #[cfg(feature = "substrait")]
             Self::Substrait(bytes) => {
+                use lance_datafusion::exec::{get_session_context, LanceExecutionOptions};
+                use lance_datafusion::substrait::parse_substrait_aggregate;
+
                 let ctx = get_session_context(&LanceExecutionOptions::default());
                 parse_substrait_aggregate(bytes, schema, &ctx.state())
                     .now_or_never()
@@ -1838,8 +1839,7 @@ impl Scanner {
 
     /// Create an execution plan with aggregation.
     ///
-    /// Requires `aggregate_substrait()` or `aggregate_expr()` to be called first.
-    #[cfg(feature = "substrait")]
+    /// Requires `aggregate()` to be called first.
     pub fn create_aggregate_plan(&self) -> BoxFuture<'_, Result<Arc<dyn ExecutionPlan>>> {
         use datafusion_physical_expr::aggregate::AggregateFunctionExpr;
 
@@ -1902,7 +1902,6 @@ impl Scanner {
         .boxed()
     }
 
-    #[cfg(feature = "substrait")]
     fn build_physical_aggregate_expr_with_alias(
         &self,
         expr: &Expr,
@@ -1930,7 +1929,6 @@ impl Scanner {
     }
 
     /// Apply type coercion to aggregate arguments for UserDefined signature functions.
-    #[cfg(feature = "substrait")]
     fn coerce_aggregate_expr(&self, expr: &Expr, schema: &DFSchema) -> Result<Expr> {
         use datafusion::logical_expr::{expr::AggregateFunction, Expr, TypeSignature};
 

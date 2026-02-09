@@ -622,7 +622,7 @@ async fn test_aggregate_with_filter() {
 
     // Filter x >= 50 matches rows 50..99 (50 rows)
     assert_eq!(batch.column(0).as_primitive::<Int64Type>().value(0), 50); // COUNT
-    // SUM(50..99) = (50+99)*50/2 = 3725
+                                                                          // SUM(50..99) = (50+99)*50/2 = 3725
     assert_eq!(batch.column(1).as_primitive::<Int64Type>().value(0), 3725); // SUM
     assert_eq!(batch.column(2).as_primitive::<Int64Type>().value(0), 50); // MIN
     assert_eq!(batch.column(3).as_primitive::<Int64Type>().value(0), 99); // MAX

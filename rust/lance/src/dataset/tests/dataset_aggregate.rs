@@ -23,8 +23,9 @@ use datafusion_substrait::substrait::proto::{
     },
     function_argument::ArgType,
     rel::RelType,
+    sort_field::SortKind,
     AggregateFunction, AggregateRel, Expression, FunctionArgument, Plan, PlanRel, Rel, RelRoot,
-    Version,
+    SortField, Version,
 };
 use futures::TryStreamExt;
 use lance_datafusion::exec::{execute_plan, LanceExecutionOptions};
@@ -157,6 +158,42 @@ fn simple_agg_measure(function_ref: u32, column_index: i32) -> Measure {
             output_type: None,
             phase: 0,
             sorts: vec![],
+            invocation: AggregationInvocation::All as i32,
+            #[allow(deprecated)]
+            args: vec![],
+        }),
+        filter: None,
+    }
+}
+
+/// Create an ordered aggregate measure (e.g., FIRST_VALUE with ORDER BY)
+fn ordered_agg_measure(
+    function_ref: u32,
+    column_index: i32,
+    sort_column_index: i32,
+    ascending: bool,
+) -> Measure {
+    use datafusion_substrait::substrait::proto::sort_field::SortDirection;
+
+    let sort_direction = if ascending {
+        SortDirection::AscNullsLast
+    } else {
+        SortDirection::DescNullsLast
+    };
+
+    Measure {
+        measure: Some(AggregateFunction {
+            function_reference: function_ref,
+            arguments: vec![FunctionArgument {
+                arg_type: Some(ArgType::Value(field_ref(column_index))),
+            }],
+            options: vec![],
+            output_type: None,
+            phase: 0,
+            sorts: vec![SortField {
+                expr: Some(field_ref(sort_column_index)),
+                sort_kind: Some(SortKind::Direction(sort_direction as i32)),
+            }],
             invocation: AggregationInvocation::All as i32,
             #[allow(deprecated)]
             args: vec![],
@@ -782,4 +819,103 @@ async fn test_group_by_with_aliases() {
     assert_eq!(schema.fields().len(), 2);
     assert_eq!(schema.field(0).name(), "group_key");
     assert_eq!(schema.field(1).name(), "total_sum");
+}
+
+#[tokio::test]
+async fn test_first_value_with_order_by() {
+    let tmp_dir = tempdir().unwrap();
+    let uri = tmp_dir.path().to_str().unwrap();
+    let ds = create_numeric_dataset(uri, 1, 9).await;
+
+    // FIRST_VALUE(x) ORDER BY x ASC GROUP BY category
+    // x = 0..8, category cycles 1,2,3,1,2,3,1,2,3
+    // category 1 has x values: 0, 3, 6 -> first_value(ORDER BY x ASC) = 0
+    // category 2 has x values: 1, 4, 7 -> first_value(ORDER BY x ASC) = 1
+    // category 3 has x values: 2, 5, 8 -> first_value(ORDER BY x ASC) = 2
+    let agg_bytes = create_aggregate_rel(
+        vec![ordered_agg_measure(1, 0, 0, true)], // FIRST_VALUE(x) ORDER BY x ASC
+        vec![field_ref(2)],                       // GROUP BY category
+        vec![Grouping {
+            #[allow(deprecated)]
+            grouping_expressions: vec![],
+            expression_references: vec![0],
+        }],
+        vec![agg_extension(1, "first_value")],
+        vec![],
+    );
+
+    let results = execute_aggregate(&ds, &agg_bytes).await.unwrap();
+    assert!(!results.is_empty());
+
+    let batch = arrow::compute::concat_batches(&results[0].schema(), &results).unwrap();
+    assert_eq!(batch.num_rows(), 3);
+
+    let categories: Vec<i64> = batch
+        .column(0)
+        .as_primitive::<Int64Type>()
+        .values()
+        .to_vec();
+    let first_values: Vec<i64> = batch
+        .column(1)
+        .as_primitive::<Int64Type>()
+        .values()
+        .to_vec();
+
+    let mut results_map = std::collections::HashMap::new();
+    for (cat, val) in categories.iter().zip(first_values.iter()) {
+        results_map.insert(*cat, *val);
+    }
+
+    assert_eq!(results_map.get(&1), Some(&0));
+    assert_eq!(results_map.get(&2), Some(&1));
+    assert_eq!(results_map.get(&3), Some(&2));
+}
+
+#[tokio::test]
+async fn test_first_value_with_order_by_desc() {
+    let tmp_dir = tempdir().unwrap();
+    let uri = tmp_dir.path().to_str().unwrap();
+    let ds = create_numeric_dataset(uri, 1, 9).await;
+
+    // FIRST_VALUE(x) ORDER BY x DESC GROUP BY category
+    // category 1 has x values: 0, 3, 6 -> first_value(ORDER BY x DESC) = 6
+    // category 2 has x values: 1, 4, 7 -> first_value(ORDER BY x DESC) = 7
+    // category 3 has x values: 2, 5, 8 -> first_value(ORDER BY x DESC) = 8
+    let agg_bytes = create_aggregate_rel(
+        vec![ordered_agg_measure(1, 0, 0, false)], // FIRST_VALUE(x) ORDER BY x DESC
+        vec![field_ref(2)],                        // GROUP BY category
+        vec![Grouping {
+            #[allow(deprecated)]
+            grouping_expressions: vec![],
+            expression_references: vec![0],
+        }],
+        vec![agg_extension(1, "first_value")],
+        vec![],
+    );
+
+    let results = execute_aggregate(&ds, &agg_bytes).await.unwrap();
+    assert!(!results.is_empty());
+
+    let batch = arrow::compute::concat_batches(&results[0].schema(), &results).unwrap();
+    assert_eq!(batch.num_rows(), 3);
+
+    let categories: Vec<i64> = batch
+        .column(0)
+        .as_primitive::<Int64Type>()
+        .values()
+        .to_vec();
+    let first_values: Vec<i64> = batch
+        .column(1)
+        .as_primitive::<Int64Type>()
+        .values()
+        .to_vec();
+
+    let mut results_map = std::collections::HashMap::new();
+    for (cat, val) in categories.iter().zip(first_values.iter()) {
+        results_map.insert(*cat, *val);
+    }
+
+    assert_eq!(results_map.get(&1), Some(&6));
+    assert_eq!(results_map.get(&2), Some(&7));
+    assert_eq!(results_map.get(&3), Some(&8));
 }

@@ -77,6 +77,22 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler libssl-dev
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: |
+          pip install maturin ruff pytest pyarrow pandas polars
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+          cache: maven
+
       - name: Configure git user
         run: |
           git config user.name "lance-community"
@@ -126,7 +142,11 @@ jobs:
           6. After making fixes, verify them locally:
              - Run "cargo fmt --all" to ensure formatting is correct
              - Run "cargo clippy --workspace --tests --benches -- -D warnings" to check for issues
-             - Run the specific failing tests to confirm they pass now
+             - Run ONLY the specific failing tests to confirm they pass now:
+               - For Rust test failures: Run the specific test with "cargo test -p <crate> <test_name>"
+               - For Python test failures: Build with "cd python && maturin develop" then run "pytest <specific_test_file>::<test_name>"
+               - For Java test failures: Run "cd java && mvn test -Dtest=<TestClass>#<testMethod>"
+               - Do NOT run the full test suite - only run the tests that were failing
 
           7. If the additional guidelines are provided, follow them as well.
 

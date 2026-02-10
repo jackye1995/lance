@@ -76,6 +76,22 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler libssl-dev
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: |
+          pip install maturin ruff pytest pyarrow pandas polars
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+          cache: maven
+
       - name: Configure git user
         run: |
           git config user.name "lance-community"
@@ -123,7 +139,13 @@ jobs:
 
           9. Run "cargo clippy --workspace --tests --benches -- -D warnings" to check for issues. Fix any warnings and rerun until clean.
 
-          10. Run "cargo test --workspace" to verify all tests pass. If tests fail, investigate and fix issues.
+          10. Run ONLY the tests related to the changes in this PR:
+              - Use "git diff --name-only HEAD~1" to see which files were changed.
+              - For Rust changes: Run tests for the affected crates only (e.g., "cargo test -p lance-core" if lance-core files changed).
+              - For Python changes (python/** files): Build with "cd python && maturin develop" then run "pytest" on the specific test files that were modified, or related test files.
+              - For Java changes (java/** files): Run "cd java && mvn test" for the affected modules.
+              - If test files themselves were modified, run those specific tests.
+              - Do NOT run the full test suite - only run tests related to the changed files.
 
           11. If additional guidelines are provided, follow them as well when making decisions or resolving issues.
 

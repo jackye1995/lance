@@ -353,6 +353,9 @@ public class Dataset implements Closeable {
     dataset.selfManagedAllocator = selfManagedAllocator;
     if (effectiveSession != null) {
       dataset.session = effectiveSession;
+    } else {
+      dataset.session = Session.fromHandle(dataset.nativeGetSessionHandle());
+      dataset.ownsSession = true;
     }
     return dataset;
   }
@@ -987,13 +990,6 @@ public class Dataset implements Closeable {
   public Session session() {
     try (LockManager.ReadLock readLock = lockManager.acquireReadLock()) {
       Preconditions.checkArgument(nativeDatasetHandle != 0, "Dataset is closed");
-      if (session == null) {
-        long handle = nativeGetSessionHandle();
-        if (handle != 0) {
-          session = Session.fromHandle(handle);
-          ownsSession = true;
-        }
-      }
       return session;
     }
   }

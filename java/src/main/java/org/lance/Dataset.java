@@ -76,7 +76,8 @@ public class Dataset implements Closeable {
 
   private BufferAllocator allocator;
   private boolean selfManagedAllocator = false;
-  private Session session; // cached session from native layer
+  private Session session;
+  private boolean ownsSession = false;
 
   private final LockManager lockManager = new LockManager();
 
@@ -331,13 +332,11 @@ public class Dataset implements Closeable {
     Preconditions.checkNotNull(allocator);
     Preconditions.checkNotNull(options);
 
-    // Determine session handle: use provided session, then options session, then 0 (no session)
-    long sessionHandle = 0;
-    if (session != null) {
-      sessionHandle = session.getNativeHandle();
-    } else if (options.getSession().isPresent()) {
-      sessionHandle = options.getSession().get().getNativeHandle();
+    Session effectiveSession = session;
+    if (effectiveSession == null && options.getSession().isPresent()) {
+      effectiveSession = options.getSession().get();
     }
+    long sessionHandle = effectiveSession != null ? effectiveSession.getNativeHandle() : 0;
 
     Dataset dataset =
         openNative(
@@ -352,6 +351,9 @@ public class Dataset implements Closeable {
             sessionHandle);
     dataset.allocator = allocator;
     dataset.selfManagedAllocator = selfManagedAllocator;
+    if (effectiveSession != null) {
+      dataset.session = effectiveSession;
+    }
     return dataset;
   }
 
@@ -989,6 +991,7 @@ public class Dataset implements Closeable {
         long handle = nativeGetSessionHandle();
         if (handle != 0) {
           session = Session.fromHandle(handle);
+          ownsSession = true;
         }
       }
       return session;
@@ -1301,6 +1304,11 @@ public class Dataset implements Closeable {
       }
       if (selfManagedAllocator) {
         allocator.close();
+      }
+      if (ownsSession && session != null) {
+        session.close();
+        session = null;
+        ownsSession = false;
       }
     }
   }

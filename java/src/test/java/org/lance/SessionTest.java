@@ -195,6 +195,58 @@ public class SessionTest {
   }
 
   @Test
+  void testInternalSessionClosedWithDataset(@TempDir Path tempDir) {
+    String datasetPath = tempDir.resolve("dataset_internal_session").toString();
+
+    try (BufferAllocator allocator = new RootAllocator()) {
+      TestUtils.SimpleTestDataset testDataset =
+          new TestUtils.SimpleTestDataset(allocator, datasetPath);
+      testDataset.createEmptyDataset().close();
+
+      // Open dataset WITHOUT providing a session - internal session will be created
+      Dataset ds = Dataset.open().allocator(allocator).uri(datasetPath).build();
+
+      // Get the internal session
+      Session internalSession = ds.session();
+      assertNotNull(internalSession);
+      assertFalse(internalSession.isClosed());
+
+      // Close the dataset - internal session should be closed too
+      ds.close();
+
+      // The internal session should now be closed
+      assertTrue(internalSession.isClosed());
+    }
+  }
+
+  @Test
+  void testUserProvidedSessionNotClosedWithDataset(@TempDir Path tempDir) {
+    String datasetPath = tempDir.resolve("dataset_user_session").toString();
+
+    try (BufferAllocator allocator = new RootAllocator();
+        Session userSession = Session.builder().build()) {
+      TestUtils.SimpleTestDataset testDataset =
+          new TestUtils.SimpleTestDataset(allocator, datasetPath);
+      testDataset.createEmptyDataset().close();
+
+      // Open dataset WITH user-provided session
+      Dataset ds =
+          Dataset.open().allocator(allocator).uri(datasetPath).session(userSession).build();
+
+      // Get the session from dataset - should be the same as user-provided
+      Session datasetSession = ds.session();
+      assertTrue(datasetSession.isSameAs(userSession));
+
+      // Close the dataset
+      ds.close();
+
+      // User-provided session should NOT be closed
+      assertFalse(userSession.isClosed());
+      assertTrue(userSession.sizeBytes() >= 0);
+    }
+  }
+
+  @Test
   void testSessionToString() {
     try (Session session = Session.builder().build()) {
       String str = session.toString();

@@ -60,11 +60,11 @@ public class Session implements Closeable {
     JniLoader.ensureLoaded();
   }
 
-  /** Default index cache size: 1 GiB */
-  public static final long DEFAULT_INDEX_CACHE_SIZE_BYTES = 1L * 1024 * 1024 * 1024;
+  /** Default index cache size: 6 GiB */
+  public static final long DEFAULT_INDEX_CACHE_SIZE_BYTES = 6L * 1024 * 1024 * 1024;
 
-  /** Default metadata cache size: 256 MiB */
-  public static final long DEFAULT_METADATA_CACHE_SIZE_BYTES = 256L * 1024 * 1024;
+  /** Default metadata cache size: 1 GiB */
+  public static final long DEFAULT_METADATA_CACHE_SIZE_BYTES = 1L * 1024 * 1024 * 1024;
 
   private long nativeSessionHandle;
 

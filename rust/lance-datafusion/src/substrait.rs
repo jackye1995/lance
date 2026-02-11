@@ -345,7 +345,23 @@ pub async fn parse_substrait_aggregate(
     let mut agg =
         parse_aggregate_rel_with_extensions(&aggregate_rel, input_schema, state, &extensions)
             .await?;
-    agg.output_names = output_names;
+
+    // Apply aliases from RelRoot.names to expressions
+    if !output_names.is_empty() {
+        let num_groups = agg.group_by.len();
+        for (i, expr) in agg.group_by.iter_mut().enumerate() {
+            if i < output_names.len() {
+                *expr = expr.clone().alias(&output_names[i]);
+            }
+        }
+        for (i, expr) in agg.aggregates.iter_mut().enumerate() {
+            let name_idx = num_groups + i;
+            if name_idx < output_names.len() {
+                *expr = expr.clone().alias(&output_names[name_idx]);
+            }
+        }
+    }
+
     Ok(agg)
 }
 
@@ -401,7 +417,6 @@ pub async fn parse_aggregate_rel_with_extensions(
     Ok(Aggregate {
         group_by,
         aggregates,
-        output_names: vec![],
     })
 }
 

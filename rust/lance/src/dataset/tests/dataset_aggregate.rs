@@ -210,7 +210,7 @@ async fn execute_aggregate(
     let mut scanner = dataset.scan();
     scanner.aggregate(AggregateExpr::substrait(aggregate_bytes));
 
-    let plan = scanner.create_aggregate_plan().await?;
+    let plan = scanner.create_plan().await?;
     let stream = execute_plan(plan, LanceExecutionOptions::default())?;
     stream.try_collect().await.map_err(|e| e.into())
 }
@@ -225,7 +225,7 @@ async fn execute_aggregate_on_fragments(
     scanner.with_fragments(fragments);
     scanner.aggregate(AggregateExpr::substrait(aggregate_bytes));
 
-    let plan = scanner.create_aggregate_plan().await?;
+    let plan = scanner.create_plan().await?;
     let stream = execute_plan(plan, LanceExecutionOptions::default())?;
     stream.try_collect().await.map_err(|e| e.into())
 }
@@ -649,7 +649,7 @@ async fn test_aggregate_with_filter() {
     );
     scanner.aggregate(AggregateExpr::substrait(agg_bytes));
 
-    let plan = scanner.create_aggregate_plan().await.unwrap();
+    let plan = scanner.create_plan().await.unwrap();
     let stream = execute_plan(plan, LanceExecutionOptions::default()).unwrap();
     let results: Vec<RecordBatch> = stream.try_collect().await.unwrap();
 
@@ -686,7 +686,7 @@ async fn test_aggregate_empty_result() {
     );
     scanner.aggregate(AggregateExpr::substrait(agg_bytes));
 
-    let plan = scanner.create_aggregate_plan().await.unwrap();
+    let plan = scanner.create_plan().await.unwrap();
     let stream = execute_plan(plan, LanceExecutionOptions::default()).unwrap();
     let results: Vec<RecordBatch> = stream.try_collect().await.unwrap();
 

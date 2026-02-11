@@ -8,8 +8,9 @@ use datafusion::logical_expr::Expr;
 /// Aggregate specification with group by and aggregate expressions.
 #[derive(Debug, Clone)]
 pub struct Aggregate {
+    /// Expressions to group by (e.g., column references).
     pub group_by: Vec<Expr>,
+    /// Aggregate function expressions (e.g., SUM, COUNT, AVG).
+    /// Use `.alias()` on the expression to set output column names.
     pub aggregates: Vec<Expr>,
-    /// Output column names in order: group_by columns first, then aggregates.
-    pub output_names: Vec<String>,
 }

@@ -76,6 +76,7 @@ public class Dataset implements Closeable {
 
   private BufferAllocator allocator;
   private boolean selfManagedAllocator = false;
+  private Session session; // cached session from native layer
 
   private final LockManager lockManager = new LockManager();
 
@@ -266,7 +267,8 @@ public class Dataset implements Closeable {
    */
   @Deprecated
   public static Dataset open(String path) {
-    return open(new RootAllocator(Long.MAX_VALUE), true, path, new ReadOptions.Builder().build());
+    return open(
+        new RootAllocator(Long.MAX_VALUE), true, path, new ReadOptions.Builder().build(), null);
   }
 
   /**
@@ -280,7 +282,7 @@ public class Dataset implements Closeable {
    */
   @Deprecated
   public static Dataset open(String path, ReadOptions options) {
-    return open(new RootAllocator(Long.MAX_VALUE), true, path, options);
+    return open(new RootAllocator(Long.MAX_VALUE), true, path, options, null);
   }
 
   /**
@@ -309,7 +311,7 @@ public class Dataset implements Closeable {
    */
   @Deprecated
   public static Dataset open(BufferAllocator allocator, String path, ReadOptions options) {
-    return open(allocator, false, path, options);
+    return open(allocator, false, path, options, null);
   }
 
   /**
@@ -320,10 +322,23 @@ public class Dataset implements Closeable {
    * @return Dataset
    */
   static Dataset open(
-      BufferAllocator allocator, boolean selfManagedAllocator, String path, ReadOptions options) {
+      BufferAllocator allocator,
+      boolean selfManagedAllocator,
+      String path,
+      ReadOptions options,
+      Session session) {
     Preconditions.checkNotNull(path);
     Preconditions.checkNotNull(allocator);
     Preconditions.checkNotNull(options);
+
+    // Determine session handle: use provided session, then options session, then 0 (no session)
+    long sessionHandle = 0;
+    if (session != null) {
+      sessionHandle = session.getNativeHandle();
+    } else if (options.getSession().isPresent()) {
+      sessionHandle = options.getSession().get().getNativeHandle();
+    }
+
     Dataset dataset =
         openNative(
             path,
@@ -333,7 +348,8 @@ public class Dataset implements Closeable {
             options.getMetadataCacheSizeBytes(),
             options.getStorageOptions(),
             options.getSerializedManifest(),
-            options.getStorageOptionsProvider());
+            options.getStorageOptionsProvider(),
+            sessionHandle);
     dataset.allocator = allocator;
     dataset.selfManagedAllocator = selfManagedAllocator;
     return dataset;
@@ -347,7 +363,8 @@ public class Dataset implements Closeable {
       long metadataCacheSizeBytes,
       Map<String, String> storageOptions,
       Optional<ByteBuffer> serializedManifest,
-      Optional<StorageOptionsProvider> storageOptionsProvider);
+      Optional<StorageOptionsProvider> storageOptionsProvider,
+      long sessionHandle);
 
   /**
    * Creates a builder for opening a dataset.
@@ -953,6 +970,32 @@ public class Dataset implements Closeable {
   }
 
   private native long nativeCountRows(Optional<String> filter);
+
+  /**
+   * Returns the session associated with this dataset.
+   *
+   * <p>The session holds runtime state for the dataset, including index and metadata caches. If a
+   * session was provided when opening the dataset, that session is returned. Otherwise, a new
+   * session was created automatically.
+   *
+   * <p>The returned session can be used to open other datasets to share caches.
+   *
+   * @return the session associated with this dataset
+   */
+  public Session session() {
+    try (LockManager.ReadLock readLock = lockManager.acquireReadLock()) {
+      Preconditions.checkArgument(nativeDatasetHandle != 0, "Dataset is closed");
+      if (session == null) {
+        long handle = nativeGetSessionHandle();
+        if (handle != 0) {
+          session = Session.fromHandle(handle);
+        }
+      }
+      return session;
+    }
+  }
+
+  private native long nativeGetSessionHandle();
 
   /**
    * Count rows matching a filter using a specific scalar index. This directly queries the index and

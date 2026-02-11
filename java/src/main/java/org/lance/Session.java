@@ -118,7 +118,7 @@ public class Session implements Closeable {
     /**
      * Sets the size of the index cache in bytes.
      *
-     * @param indexCacheSizeBytes the size of the index cache in bytes (must be >= 0)
+     * @param indexCacheSizeBytes the size of the index cache in bytes (must be non-negative)
      * @return this builder instance
      */
     public Builder indexCacheSizeBytes(long indexCacheSizeBytes) {
@@ -130,7 +130,7 @@ public class Session implements Closeable {
     /**
      * Sets the size of the metadata cache in bytes.
      *
-     * @param metadataCacheSizeBytes the size of the metadata cache in bytes (must be >= 0)
+     * @param metadataCacheSizeBytes the size of the metadata cache in bytes (must be non-negative)
      * @return this builder instance
      */
     public Builder metadataCacheSizeBytes(long metadataCacheSizeBytes) {

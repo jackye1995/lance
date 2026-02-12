@@ -168,7 +168,8 @@ jobs:
                 - Link to the failing workflow run
                 - Summary of what failed
                 - Description of the fixes applied
-              - Then run "gh pr create --base ${BRANCH} --body-file /tmp/pr-body.md".
+              - Then run "gh pr create --base ${BRANCH} --title '<ci: short summary of fix>' --body-file /tmp/pr-body.md".
+              - IMPORTANT: You MUST include the --title flag with a specific "ci: ..." title describing your fix.
 
           13. Display the new PR URL, "git status --short", and a summary of what was fixed.
 

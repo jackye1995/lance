@@ -1143,10 +1143,6 @@ async fn test_vector_search_with_sum_aggregate() {
     assert_eq!(results.num_columns(), 2);
 }
 
-// ============================================================================
-// Scanner::count_rows() tests
-// ============================================================================
-
 #[tokio::test]
 async fn test_scanner_count_rows() {
     let ds = create_numeric_dataset("memory://test_count_rows", 2, 50).await;

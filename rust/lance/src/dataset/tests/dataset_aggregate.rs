@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Float64Type, Int64Type};
-use arrow_array::{RecordBatch, RecordBatchIterator};
+use arrow_array::{
+    FixedSizeListArray, Float32Array, Int64Array, RecordBatch, RecordBatchIterator, StringArray,
+};
 use arrow_schema::{DataType, Field, Schema as ArrowSchema};
 use datafusion_substrait::substrait::proto::{
     aggregate_function::AggregationInvocation,
@@ -35,8 +37,14 @@ use prost::Message;
 use tempfile::tempdir;
 
 use crate::dataset::scanner::AggregateExpr;
+use crate::index::vector::VectorIndexParams;
 use crate::utils::test::{DatagenExt, FragmentCount, FragmentRowCount};
 use crate::Dataset;
+use lance_arrow::FixedSizeListArrayExt;
+use lance_index::scalar::inverted::InvertedIndexParams;
+use lance_index::scalar::FullTextSearchQuery;
+use lance_index::{DatasetIndexExt, IndexType};
+use lance_linalg::distance::MetricType;
 
 /// Helper to create a field reference expression for a column index
 fn field_ref(field_index: i32) -> Expression {
@@ -918,4 +926,219 @@ async fn test_first_value_with_order_by_desc() {
     assert_eq!(results_map.get(&1), Some(&6));
     assert_eq!(results_map.get(&2), Some(&7));
     assert_eq!(results_map.get(&3), Some(&8));
+}
+
+/// Create a dataset with vectors, text, and category for vector search and FTS aggregate tests.
+/// Schema: id (i64), vec (fixed_size_list<f32>[4]), text (utf8), category (utf8)
+async fn create_vector_text_dataset(uri: &str, num_rows: i64) -> Dataset {
+    let schema = Arc::new(ArrowSchema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new(
+            "vec",
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 4),
+            true,
+        ),
+        Field::new("text", DataType::Utf8, false),
+        Field::new("category", DataType::Utf8, false),
+    ]));
+
+    let ids: Vec<i64> = (0..num_rows).collect();
+    let vectors: Vec<f32> = (0..num_rows).flat_map(|i| vec![i as f32; 4]).collect();
+    let texts: Vec<String> = (0..num_rows).map(|i| format!("document {}", i)).collect();
+    let categories: Vec<String> = (0..num_rows)
+        .map(|i| match i % 3 {
+            0 => "category_a".to_string(),
+            1 => "category_b".to_string(),
+            _ => "category_c".to_string(),
+        })
+        .collect();
+
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int64Array::from(ids)),
+            Arc::new(
+                FixedSizeListArray::try_new_from_values(Float32Array::from(vectors), 4).unwrap(),
+            ),
+            Arc::new(StringArray::from(texts)),
+            Arc::new(StringArray::from(categories)),
+        ],
+    )
+    .unwrap();
+
+    let reader = RecordBatchIterator::new(vec![Ok(batch)], schema);
+    Dataset::write(reader, uri, None).await.unwrap()
+}
+
+#[tokio::test]
+async fn test_vector_search_with_aggregate() {
+    let tmp_dir = tempdir().unwrap();
+    let uri = tmp_dir.path().to_str().unwrap();
+    let mut dataset = create_vector_text_dataset(uri, 100).await;
+
+    // Create vector index
+    let params = VectorIndexParams::ivf_flat(2, MetricType::L2);
+    dataset
+        .create_index(&["vec"], IndexType::Vector, None, &params, true)
+        .await
+        .unwrap();
+
+    // Vector search for top 30 results, then aggregate by category with COUNT(*)
+    // Query vector close to id=50 (vec=[50,50,50,50])
+    let query_vector = Float32Array::from(vec![50.0f32, 50.0, 50.0, 50.0]);
+
+    // COUNT(*) GROUP BY category (column index 3)
+    let agg_bytes = create_aggregate_rel(
+        vec![count_star_measure(1)],
+        vec![field_ref(3)], // GROUP BY category
+        vec![Grouping {
+            #[allow(deprecated)]
+            grouping_expressions: vec![],
+            expression_references: vec![0],
+        }],
+        vec![agg_extension(1, "count")],
+        vec!["category".to_string(), "count".to_string()],
+    );
+
+    let mut scanner = dataset.scan();
+    scanner
+        .nearest("vec", &query_vector, 30)
+        .unwrap()
+        .project(&["id", "category"])
+        .unwrap()
+        .aggregate(AggregateExpr::substrait(agg_bytes));
+
+    let results = scanner.try_into_batch().await.unwrap();
+
+    // Should have 3 categories (or fewer if search results don't cover all)
+    assert!(
+        results.num_rows() >= 1 && results.num_rows() <= 3,
+        "Expected 1-3 rows but got {}",
+        results.num_rows()
+    );
+
+    // Total count should be 30 (top K results)
+    let counts: Vec<i64> = results
+        .column(1)
+        .as_primitive::<Int64Type>()
+        .values()
+        .to_vec();
+    let total: i64 = counts.iter().sum();
+    assert_eq!(total, 30);
+}
+
+#[tokio::test]
+async fn test_fts_with_aggregate() {
+    let tmp_dir = tempdir().unwrap();
+    let uri = tmp_dir.path().to_str().unwrap();
+    let mut dataset = create_vector_text_dataset(uri, 100).await;
+
+    // Create FTS index on text column
+    dataset
+        .create_index(
+            &["text"],
+            IndexType::Inverted,
+            None,
+            &InvertedIndexParams::default(),
+            true,
+        )
+        .await
+        .unwrap();
+
+    // FTS search for "document", then aggregate by category with COUNT(*)
+    // All documents match "document" so we should get all 100 rows
+    // COUNT(*) GROUP BY category (column index 3)
+    let agg_bytes = create_aggregate_rel(
+        vec![count_star_measure(1)],
+        vec![field_ref(3)], // GROUP BY category
+        vec![Grouping {
+            #[allow(deprecated)]
+            grouping_expressions: vec![],
+            expression_references: vec![0],
+        }],
+        vec![agg_extension(1, "count")],
+        vec!["category".to_string(), "count".to_string()],
+    );
+
+    let mut scanner = dataset.scan();
+    scanner
+        .full_text_search(FullTextSearchQuery::new("document".to_string()))
+        .unwrap()
+        .project(&["id", "category"])
+        .unwrap()
+        .aggregate(AggregateExpr::substrait(agg_bytes));
+
+    let results = scanner.try_into_batch().await.unwrap();
+
+    // Should have 3 categories
+    assert_eq!(
+        results.num_rows(),
+        3,
+        "Expected 3 rows but got {}",
+        results.num_rows()
+    );
+
+    // Total count should be 100 (all documents match "document")
+    let counts: Vec<i64> = results
+        .column(1)
+        .as_primitive::<Int64Type>()
+        .values()
+        .to_vec();
+    let total: i64 = counts.iter().sum();
+    assert_eq!(total, 100);
+
+    // Each category should have ~33 rows (100/3)
+    for count in &counts {
+        assert!(*count >= 33 && *count <= 34);
+    }
+}
+
+#[tokio::test]
+async fn test_vector_search_with_sum_aggregate() {
+    let tmp_dir = tempdir().unwrap();
+    let uri = tmp_dir.path().to_str().unwrap();
+    let mut dataset = create_vector_text_dataset(uri, 100).await;
+
+    // Create vector index
+    let params = VectorIndexParams::ivf_flat(2, MetricType::L2);
+    dataset
+        .create_index(&["vec"], IndexType::Vector, None, &params, true)
+        .await
+        .unwrap();
+
+    // Vector search for top 10 results, then SUM(id) GROUP BY category
+    let query_vector = Float32Array::from(vec![50.0f32, 50.0, 50.0, 50.0]);
+
+    // SUM(id) GROUP BY category
+    let agg_bytes = create_aggregate_rel(
+        vec![simple_agg_measure(1, 0)], // SUM(id) - column 0
+        vec![field_ref(3)],             // GROUP BY category
+        vec![Grouping {
+            #[allow(deprecated)]
+            grouping_expressions: vec![],
+            expression_references: vec![0],
+        }],
+        vec![agg_extension(1, "sum")],
+        vec!["category".to_string(), "sum_id".to_string()],
+    );
+
+    let mut scanner = dataset.scan();
+    scanner
+        .nearest("vec", &query_vector, 10)
+        .unwrap()
+        .project(&["id", "category"])
+        .unwrap()
+        .aggregate(AggregateExpr::substrait(agg_bytes));
+
+    let results = scanner.try_into_batch().await.unwrap();
+
+    // Should have results grouped by category (1-3 depending on which categories are in top K)
+    assert!(
+        results.num_rows() >= 1 && results.num_rows() <= 3,
+        "Expected 1-3 rows but got {}",
+        results.num_rows()
+    );
+
+    // Verify we have 2 columns: category and sum_id
+    assert_eq!(results.num_columns(), 2);
 }

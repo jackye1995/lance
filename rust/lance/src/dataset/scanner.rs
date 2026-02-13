@@ -487,7 +487,7 @@ impl AggregateExpr {
     ///     .build();
     /// scanner.aggregate(agg);
     /// ```
-    pub fn builder() -> AggregateExprBuilder {
+    pub fn builder() -> AggregateExprBuilder<false> {
         AggregateExprBuilder::new()
     }
 
@@ -533,81 +533,28 @@ impl AggregateExpr {
 }
 
 /// Builder for creating aggregate expressions without using DataFusion or Substrait directly.
-#[derive(Debug, Clone, Default)]
-pub struct AggregateExprBuilder {
+///
+/// The const generic `HAS_PENDING` tracks whether there's a pending aggregate that can be aliased.
+/// When `HAS_PENDING` is `true`, the last item in `aggregates` is the pending aggregate.
+#[derive(Debug, Clone)]
+pub struct AggregateExprBuilder<const HAS_PENDING: bool> {
     group_by: Vec<Expr>,
     aggregates: Vec<Expr>,
 }
 
-impl AggregateExprBuilder {
+impl Default for AggregateExprBuilder<false> {
+    fn default() -> Self {
+        Self {
+            group_by: Vec::new(),
+            aggregates: Vec::new(),
+        }
+    }
+}
+
+impl AggregateExprBuilder<false> {
     /// Create a new builder.
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Add a column to group by.
-    pub fn group_by(mut self, column: impl Into<String>) -> Self {
-        self.group_by.push(col(column.into()));
-        self
-    }
-
-    /// Add multiple columns to group by.
-    pub fn group_by_columns(
-        mut self,
-        columns: impl IntoIterator<Item = impl Into<String>>,
-    ) -> Self {
-        for column in columns {
-            self.group_by.push(col(column.into()));
-        }
-        self
-    }
-
-    /// Add COUNT(*) aggregate.
-    pub fn count_star(self) -> AggregateExprBuilderWithPendingAggregate {
-        AggregateExprBuilderWithPendingAggregate {
-            builder: self,
-            pending: functions_aggregate::count::count(lit(1)),
-        }
-    }
-
-    /// Add COUNT(column) aggregate.
-    pub fn count(self, column: impl Into<String>) -> AggregateExprBuilderWithPendingAggregate {
-        AggregateExprBuilderWithPendingAggregate {
-            builder: self,
-            pending: functions_aggregate::count::count(col(column.into())),
-        }
-    }
-
-    /// Add SUM(column) aggregate.
-    pub fn sum(self, column: impl Into<String>) -> AggregateExprBuilderWithPendingAggregate {
-        AggregateExprBuilderWithPendingAggregate {
-            builder: self,
-            pending: functions_aggregate::sum::sum(col(column.into())),
-        }
-    }
-
-    /// Add AVG(column) aggregate.
-    pub fn avg(self, column: impl Into<String>) -> AggregateExprBuilderWithPendingAggregate {
-        AggregateExprBuilderWithPendingAggregate {
-            builder: self,
-            pending: functions_aggregate::average::avg(col(column.into())),
-        }
-    }
-
-    /// Add MIN(column) aggregate.
-    pub fn min(self, column: impl Into<String>) -> AggregateExprBuilderWithPendingAggregate {
-        AggregateExprBuilderWithPendingAggregate {
-            builder: self,
-            pending: functions_aggregate::min_max::min(col(column.into())),
-        }
-    }
-
-    /// Add MAX(column) aggregate.
-    pub fn max(self, column: impl Into<String>) -> AggregateExprBuilderWithPendingAggregate {
-        AggregateExprBuilderWithPendingAggregate {
-            builder: self,
-            pending: functions_aggregate::min_max::max(col(column.into())),
-        }
     }
 
     /// Build the aggregate expression.
@@ -619,69 +566,117 @@ impl AggregateExprBuilder {
     }
 }
 
-/// Builder state with a pending aggregate that can be aliased.
-#[derive(Debug, Clone)]
-pub struct AggregateExprBuilderWithPendingAggregate {
-    builder: AggregateExprBuilder,
-    pending: Expr,
-}
-
-impl AggregateExprBuilderWithPendingAggregate {
-    /// Set an alias for the pending aggregate.
-    pub fn alias(mut self, name: impl Into<String>) -> AggregateExprBuilder {
-        self.builder
-            .aggregates
-            .push(self.pending.alias(name.into()));
-        self.builder
+impl<const HAS_PENDING: bool> AggregateExprBuilder<HAS_PENDING> {
+    /// Add a column to group by.
+    ///
+    /// Multiple invocations will add to the list (not replace it).
+    /// E.g. `.group_by("x").group_by("y")` will group by both `x` and `y`.
+    pub fn group_by(mut self, column: impl Into<String>) -> AggregateExprBuilder<false> {
+        self.group_by.push(col(column.into()));
+        AggregateExprBuilder {
+            group_by: self.group_by,
+            aggregates: self.aggregates,
+        }
     }
 
-    /// Add another group by column.
-    pub fn group_by(mut self, column: impl Into<String>) -> AggregateExprBuilder {
-        self.builder.aggregates.push(self.pending);
-        self.builder.group_by.push(col(column.into()));
-        self.builder
+    /// Add multiple columns to group by.
+    ///
+    /// Multiple invocations will add to the list (not replace it).
+    /// E.g. `.group_by("x").group_by_columns(["y", "z"])` will group by `x`, `y`, and `z`.
+    pub fn group_by_columns(
+        mut self,
+        columns: impl IntoIterator<Item = impl Into<String>>,
+    ) -> AggregateExprBuilder<false> {
+        for column in columns {
+            self.group_by.push(col(column.into()));
+        }
+        AggregateExprBuilder {
+            group_by: self.group_by,
+            aggregates: self.aggregates,
+        }
     }
 
-    /// Add COUNT(*) aggregate.
-    pub fn count_star(mut self) -> Self {
-        self.builder.aggregates.push(self.pending);
-        self.builder.count_star()
+    /// Add COUNT(*) aggregate that counts all rows.
+    pub fn count_star(mut self) -> AggregateExprBuilder<true> {
+        self.aggregates
+            .push(functions_aggregate::count::count(lit(1)));
+        AggregateExprBuilder {
+            group_by: self.group_by,
+            aggregates: self.aggregates,
+        }
     }
 
     /// Add COUNT(column) aggregate.
-    pub fn count(mut self, column: impl Into<String>) -> Self {
-        self.builder.aggregates.push(self.pending);
-        self.builder.count(column)
+    ///
+    /// Unlike `count_star`, this will only count the number of rows where `column`
+    /// is not NULL.
+    pub fn count(mut self, column: impl Into<String>) -> AggregateExprBuilder<true> {
+        self.aggregates
+            .push(functions_aggregate::count::count(col(column.into())));
+        AggregateExprBuilder {
+            group_by: self.group_by,
+            aggregates: self.aggregates,
+        }
     }
 
     /// Add SUM(column) aggregate.
-    pub fn sum(mut self, column: impl Into<String>) -> Self {
-        self.builder.aggregates.push(self.pending);
-        self.builder.sum(column)
+    pub fn sum(mut self, column: impl Into<String>) -> AggregateExprBuilder<true> {
+        self.aggregates
+            .push(functions_aggregate::sum::sum(col(column.into())));
+        AggregateExprBuilder {
+            group_by: self.group_by,
+            aggregates: self.aggregates,
+        }
     }
 
     /// Add AVG(column) aggregate.
-    pub fn avg(mut self, column: impl Into<String>) -> Self {
-        self.builder.aggregates.push(self.pending);
-        self.builder.avg(column)
+    pub fn avg(mut self, column: impl Into<String>) -> AggregateExprBuilder<true> {
+        self.aggregates
+            .push(functions_aggregate::average::avg(col(column.into())));
+        AggregateExprBuilder {
+            group_by: self.group_by,
+            aggregates: self.aggregates,
+        }
     }
 
     /// Add MIN(column) aggregate.
-    pub fn min(mut self, column: impl Into<String>) -> Self {
-        self.builder.aggregates.push(self.pending);
-        self.builder.min(column)
+    pub fn min(mut self, column: impl Into<String>) -> AggregateExprBuilder<true> {
+        self.aggregates
+            .push(functions_aggregate::min_max::min(col(column.into())));
+        AggregateExprBuilder {
+            group_by: self.group_by,
+            aggregates: self.aggregates,
+        }
     }
 
     /// Add MAX(column) aggregate.
-    pub fn max(mut self, column: impl Into<String>) -> Self {
-        self.builder.aggregates.push(self.pending);
-        self.builder.max(column)
+    pub fn max(mut self, column: impl Into<String>) -> AggregateExprBuilder<true> {
+        self.aggregates
+            .push(functions_aggregate::min_max::max(col(column.into())));
+        AggregateExprBuilder {
+            group_by: self.group_by,
+            aggregates: self.aggregates,
+        }
+    }
+}
+
+impl AggregateExprBuilder<true> {
+    /// Set an alias for the pending aggregate (the last added aggregate).
+    pub fn alias(mut self, name: impl Into<String>) -> AggregateExprBuilder<false> {
+        let pending = self.aggregates.pop().expect("pending aggregate must exist");
+        self.aggregates.push(pending.alias(name.into()));
+        AggregateExprBuilder {
+            group_by: self.group_by,
+            aggregates: self.aggregates,
+        }
     }
 
     /// Build the aggregate expression.
-    pub fn build(mut self) -> AggregateExpr {
-        self.builder.aggregates.push(self.pending);
-        self.builder.build()
+    pub fn build(self) -> AggregateExpr {
+        AggregateExpr::Datafusion {
+            group_by: self.group_by,
+            aggregates: self.aggregates,
+        }
     }
 }
 
@@ -2245,13 +2240,17 @@ impl Scanner {
         if self.aggregate.is_some() {
             if self.limit.is_some() || self.offset.is_some() {
                 return Err(Error::InvalidInput {
-                    source: "Cannot use limit/offset with aggregate. Apply limit after aggregation instead.".into(),
+                    source:
+                        "Cannot use limit/offset with aggregate. Apply limit to the result instead."
+                            .into(),
                     location: location!(),
                 });
             }
             if self.ordering.is_some() {
                 return Err(Error::InvalidInput {
-                    source: "Cannot use order_by with aggregate. Apply ordering after aggregation instead.".into(),
+                    source:
+                        "Cannot use order_by with aggregate. Apply ordering to the result instead."
+                            .into(),
                     location: location!(),
                 });
             }
@@ -2413,7 +2412,7 @@ impl Scanner {
         let mut filter_plan = self.create_filter_plan(use_scalar_index).await?;
 
         let mut use_limit_node = true;
-        // Stage 1: source (either an (K|A)NN search, full text search or or a (full|indexed) scan)
+        // Source: either a (K|A)NN search, full text search, or a (full|indexed) scan
         let mut plan: Arc<dyn ExecutionPlan> = match (&self.nearest, &self.full_text_query) {
             (Some(_), None) => self.vector_search_source(&mut filter_plan).await?,
             (None, Some(query)) => self.fts_search_source(&mut filter_plan, query).await?,
@@ -2471,8 +2470,7 @@ impl Scanner {
             }
         };
 
-        // Stage 1.5 load columns needed for stages 2 & 3
-        // Calculate the schema needed for the filter and ordering.
+        // Load columns needed for filter and ordering
         let mut pre_filter_projection = self.dataset.empty_projection();
 
         // We may need to take filter columns if we are going to refine
@@ -2498,17 +2496,17 @@ impl Scanner {
 
         plan = self.take(plan, pre_filter_projection)?;
 
-        // Stage 2: filter
+        // Filter
         plan = filter_plan.refine_filter(plan, self).await?;
 
-        // Stage 2.5: aggregate (if set, applies aggregate and returns early)
+        // Aggregate (if set, applies aggregate and returns early)
         if let Some(agg_spec) = &self.aggregate {
             // Take columns needed for aggregation
             plan = self.take(plan, self.projection_plan.physical_projection.clone())?;
             return self.apply_aggregate(plan, agg_spec).await;
         }
 
-        // Stage 3: sort
+        // Sort
         if let Some(ordering) = &self.ordering {
             let ordering_columns = ordering.iter().map(|col| &col.column_name);
             let projection_with_ordering = self
@@ -2540,25 +2538,25 @@ impl Scanner {
             ));
         }
 
-        // Stage 4: limit / offset
+        // Limit / offset
         if use_limit_node && (self.limit.unwrap_or(0) > 0 || self.offset.is_some()) {
             plan = self.limit_node(plan);
         }
 
-        // Stage 5: take remaining columns required for projection
+        // Take remaining columns required for projection
         plan = self.take(plan, self.projection_plan.physical_projection.clone())?;
 
-        // Stage 6: Add system columns, if requested
+        // Add system columns, if requested
         if self.projection_plan.must_add_row_offset {
             plan = Arc::new(AddRowOffsetExec::try_new(plan, self.dataset.clone()).await?);
         }
 
-        // Stage 7: final projection
+        // Final projection
         let final_projection = self.calculate_final_projection(plan.schema().as_ref())?;
 
         plan = Arc::new(DFProjectionExec::try_new(final_projection, plan)?);
 
-        // Stage 8: If requested, apply a strict batch size to the final output
+        // If requested, apply a strict batch size to the final output
         if self.strict_batch_size {
             plan = Arc::new(StrictBatchSizeExec::new(plan, self.get_batch_size()));
         }

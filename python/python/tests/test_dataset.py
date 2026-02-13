@@ -1168,7 +1168,9 @@ def test_count_rows_via_scanner(tmp_path: Path):
     ds = lance.write_dataset(pa.table({"a": range(100), "b": range(100)}), tmp_path)
 
     assert ds.scanner(filter="a < 50", columns=[], with_row_id=True).count_rows() == 50
-    assert ds.scanner(filter="a < 50", columns=["a"], with_row_id=True).count_rows() == 50
+    assert (
+        ds.scanner(filter="a < 50", columns=["a"], with_row_id=True).count_rows() == 50
+    )
     assert ds.scanner(with_row_id=True).count_rows() == 100
     assert ds.scanner(columns=[]).count_rows() == 100
     assert ds.scanner().count_rows() == 100

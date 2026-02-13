@@ -414,10 +414,7 @@ pub async fn parse_aggregate_rel_with_extensions(
     let group_by = parse_groupings(aggregate_rel, &df_schema, &consumer).await?;
     let aggregates = parse_measures(aggregate_rel, &df_schema, &consumer).await?;
 
-    Ok(Aggregate {
-        group_by,
-        aggregates,
-    })
+    Ok(Aggregate::new(group_by, aggregates))
 }
 
 /// Parse an AggregateRel proto with default extensions.

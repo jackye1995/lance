@@ -525,27 +525,9 @@ impl AggregateExpr {
             Self::Datafusion {
                 group_by,
                 aggregates,
-            } => Ok(Aggregate {
-                group_by,
-                aggregates,
-            }),
+            } => Ok(Aggregate::new(group_by, aggregates)),
         }
     }
-}
-
-/// Returns the column names required by an aggregate.
-///
-/// For COUNT(*) / count(1), this returns an empty set since it doesn't need any columns.
-/// For other aggregates like SUM(x), COUNT(x), GROUP BY y, etc., this returns the
-/// columns referenced.
-fn aggregate_required_columns(agg: &Aggregate) -> Vec<String> {
-    let mut columns = Vec::new();
-    for expr in agg.group_by.iter().chain(agg.aggregates.iter()) {
-        columns.extend(Planner::column_names_in_expr(expr));
-    }
-    columns.sort();
-    columns.dedup();
-    columns
 }
 
 /// Builder for creating aggregate expressions without using DataFusion or Substrait directly.
@@ -2476,13 +2458,12 @@ impl Scanner {
         if let Some(agg) = &self.aggregate {
             // Take only columns needed by the aggregate, not the full projection.
             // For COUNT(*), this is empty. For SUM(x), this is just [x].
-            let agg_columns = aggregate_required_columns(agg);
-            let agg_projection = if agg_columns.is_empty() {
+            let agg_projection = if agg.required_columns.is_empty() {
                 self.dataset.empty_projection()
             } else {
                 self.dataset
                     .empty_projection()
-                    .union_columns(&agg_columns, OnMissing::Error)?
+                    .union_columns(&agg.required_columns, OnMissing::Error)?
             };
             plan = self.take(plan, agg_projection)?;
             return self.apply_aggregate(plan, agg).await;
@@ -2806,15 +2787,14 @@ impl Scanner {
         // If we have an aggregate, we only need the columns referenced by the aggregate,
         // not all the columns from the projection plan.
         let effective_projection = if let Some(agg) = &self.aggregate {
-            let agg_columns = aggregate_required_columns(agg);
-            if agg_columns.is_empty() {
+            if agg.required_columns.is_empty() {
                 // COUNT(*) or similar - no columns needed
                 self.dataset.empty_projection()
             } else {
                 // Aggregate needs specific columns
                 self.dataset
                     .empty_projection()
-                    .union_columns(&agg_columns, OnMissing::Error)?
+                    .union_columns(&agg.required_columns, OnMissing::Error)?
             }
         } else {
             self.projection_plan.physical_projection.clone()

@@ -611,6 +611,135 @@ impl BatchStore {
             .map(|b| (b.data.clone(), b.row_offset))
             .collect()
     }
+
+    // =========================================================================
+    // Row Offset Trailing API
+    // =========================================================================
+
+    /// Find the batch index containing a specific row offset.
+    ///
+    /// Uses binary search for O(log n) performance.
+    /// Returns `None` if the row_offset is beyond the current data.
+    ///
+    /// # Returns
+    ///
+    /// Returns the batch index containing the given row offset.
+    pub fn find_batch_for_row(&self, row_offset: u64) -> Option<usize> {
+        let len = self.committed_len.load(Ordering::Acquire);
+        if len == 0 {
+            return None;
+        }
+
+        // Check if row_offset is beyond current data
+        let total = self.total_rows.load(Ordering::Relaxed) as u64;
+        if row_offset >= total {
+            return None;
+        }
+
+        // Binary search for the batch containing row_offset
+        let mut low = 0;
+        let mut high = len;
+
+        while low < high {
+            let mid = low + (high - low) / 2;
+            let batch = self.get(mid)?;
+
+            if row_offset < batch.row_offset {
+                high = mid;
+            } else if row_offset >= batch.row_offset + batch.num_rows as u64 {
+                low = mid + 1;
+            } else {
+                // row_offset is within this batch
+                return Some(mid);
+            }
+        }
+
+        None
+    }
+
+    /// Get the batch containing a specific row offset.
+    ///
+    /// Returns `None` if the row_offset is beyond the current data.
+    pub fn get_batch_for_row(&self, row_offset: u64) -> Option<&StoredBatch> {
+        self.find_batch_for_row(row_offset)
+            .and_then(|idx| self.get(idx))
+    }
+
+    /// Create an iterator starting from a specific row offset.
+    ///
+    /// The iterator will yield all batches from the batch containing
+    /// `from_row_offset` to the end of the store (at snapshot time).
+    ///
+    /// Returns `None` if `from_row_offset` is beyond the current data.
+    pub fn iter_from_row_offset(
+        &self,
+        from_row_offset: u64,
+    ) -> Option<BatchStoreIterFromOffset<'_>> {
+        let len = self.committed_len.load(Ordering::Acquire);
+        if len == 0 {
+            return None;
+        }
+
+        let start_batch_idx = self.find_batch_for_row(from_row_offset)?;
+
+        Some(BatchStoreIterFromOffset {
+            store: self,
+            current: start_batch_idx,
+            len,
+            from_row_offset,
+            first_batch: true,
+        })
+    }
+
+    /// Read batches starting from a row offset, up to a maximum number of rows.
+    ///
+    /// Returns the collected batches and the next row offset to continue from.
+    /// This is useful for paginated reads.
+    ///
+    /// # Arguments
+    ///
+    /// * `from_row_offset` - Starting row offset (inclusive)
+    /// * `max_rows` - Maximum number of rows to return
+    /// * `max_row_offset` - Maximum row offset to read up to (exclusive, for visibility)
+    ///
+    /// # Returns
+    ///
+    /// * `Some((batches, next_offset))` - Batches and the next offset to continue from
+    /// * `None` - If from_row_offset is beyond current data
+    pub fn read_rows_from(
+        &self,
+        from_row_offset: u64,
+        max_rows: usize,
+        max_row_offset: Option<u64>,
+    ) -> Option<(Vec<RecordBatch>, u64)> {
+        let iter = self.iter_from_row_offset(from_row_offset)?;
+        let max_row_offset = max_row_offset.unwrap_or(u64::MAX);
+
+        let mut batches = Vec::new();
+        let mut rows_collected = 0usize;
+        let mut next_offset = from_row_offset;
+
+        for batch in iter {
+            // Check visibility limit
+            if batch.row_offset >= max_row_offset {
+                break;
+            }
+
+            // Calculate effective end of this batch (respecting visibility)
+            let batch_end = (batch.row_offset + batch.num_rows as u64).min(max_row_offset);
+
+            // Clone the batch data
+            batches.push(batch.data.clone());
+            rows_collected += batch.num_rows;
+            next_offset = batch_end;
+
+            if rows_collected >= max_rows {
+                break;
+            }
+        }
+
+        Some((batches, next_offset))
+    }
 }
 
 impl Drop for BatchStore {
@@ -704,6 +833,55 @@ impl<'a> Iterator for BatchStoreIterReversed<'a> {
 }
 
 impl ExactSizeIterator for BatchStoreIterReversed<'_> {}
+
+/// Iterator over batches starting from a specific row offset.
+///
+/// This iterator is used for trailing/tailing the WAL, starting from
+/// a consumer's current offset position.
+pub struct BatchStoreIterFromOffset<'a> {
+    store: &'a BatchStore,
+    current: usize,
+    len: usize,
+    /// The row offset we're starting from (used for first batch filtering)
+    from_row_offset: u64,
+    /// Whether we're on the first batch (which may need partial reading)
+    first_batch: bool,
+}
+
+impl<'a> BatchStoreIterFromOffset<'a> {
+    /// Get the row offset within the first batch where reading should start.
+    ///
+    /// For the first batch, the `from_row_offset` may be in the middle of the batch.
+    /// This returns the offset within that batch.
+    pub fn first_batch_row_offset(&self) -> u64 {
+        self.from_row_offset
+    }
+}
+
+impl<'a> Iterator for BatchStoreIterFromOffset<'a> {
+    type Item = &'a StoredBatch;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current >= self.len {
+            return None;
+        }
+
+        // SAFETY: current < len, which was captured with Acquire ordering
+        let batch = unsafe {
+            let slot_ptr = self.store.slots[self.current].get();
+            (*slot_ptr).assume_init_ref()
+        };
+
+        self.current += 1;
+        self.first_batch = false;
+        Some(batch)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.len - self.current;
+        (remaining, Some(remaining))
+    }
+}
 
 // =========================================================================
 // Tests

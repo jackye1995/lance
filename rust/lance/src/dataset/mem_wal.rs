@@ -36,6 +36,7 @@ mod api;
 mod index;
 mod manifest;
 pub mod memtable;
+pub mod read;
 pub mod scanner;
 mod util;
 mod wal;
@@ -43,7 +44,9 @@ pub mod write;
 
 pub use api::{DatasetMemWalExt, MemWalConfig};
 pub use manifest::RegionManifestStore;
+pub use memtable::batch_store::{BatchStoreIterFromOffset, StoredBatch};
 pub use memtable::scanner::MemTableScanner;
+pub use read::{TrailingWalReader, TrailingWalReaderConfig};
 pub use scanner::{LsmDataSource, LsmGeneration, LsmScanner, RegionSnapshot};
 pub use write::RegionWriter;
 pub use write::RegionWriterConfig;

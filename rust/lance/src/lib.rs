@@ -7,7 +7,7 @@
 //! automatic versioning, optimized for computer vision, bioinformatics, spatial and ML data.
 //! [Apache Arrow](https://arrow.apache.org/) and DuckDB compatible.
 //!
-//! Note: This version includes breaking API changes.
+//! Note: This version includes breaking API changes. See migration guide for details.
 //!
 //!
 //! # Create a Dataset

@@ -113,3 +113,4 @@ pub mod deps {
 // Feature 1
 // Feature 2
 // Breaking change 1
+// Breaking change 2

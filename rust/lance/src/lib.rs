@@ -115,3 +115,5 @@ pub mod deps {
 // Breaking change 1
 // Feature 3 for v4.1
 // Feature 4 for v4.1
+// Feature 5 for v4.1
+// Feature 6 for v4.1

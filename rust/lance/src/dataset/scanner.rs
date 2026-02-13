@@ -1922,12 +1922,6 @@ impl Scanner {
     pub fn count_rows(&self) -> BoxFuture<'_, Result<u64>> {
         // Future intentionally boxed here to avoid large futures on the stack
         async move {
-            if self.limit.is_some() || self.offset.is_some() {
-                log::warn!(
-                    "count_rows called with limit or offset which could have surprising results"
-                );
-            }
-
             let mut scanner = self.clone();
             scanner.aggregate(AggregateExpr::builder().count_star().build())?;
 
@@ -2458,12 +2452,13 @@ impl Scanner {
         if let Some(agg) = &self.aggregate {
             // Take only columns needed by the aggregate, not the full projection.
             // For COUNT(*), this is empty. For SUM(x), this is just [x].
-            let agg_projection = if agg.required_columns.is_empty() {
+            let required_columns = agg.required_columns();
+            let agg_projection = if required_columns.is_empty() {
                 self.dataset.empty_projection()
             } else {
                 self.dataset
                     .empty_projection()
-                    .union_columns(&agg.required_columns, OnMissing::Error)?
+                    .union_columns(&required_columns, OnMissing::Error)?
             };
             plan = self.take(plan, agg_projection)?;
             return self.apply_aggregate(plan, agg).await;
@@ -2787,14 +2782,15 @@ impl Scanner {
         // If we have an aggregate, we only need the columns referenced by the aggregate,
         // not all the columns from the projection plan.
         let effective_projection = if let Some(agg) = &self.aggregate {
-            if agg.required_columns.is_empty() {
+            let required_columns = agg.required_columns();
+            if required_columns.is_empty() {
                 // COUNT(*) or similar - no columns needed
                 self.dataset.empty_projection()
             } else {
                 // Aggregate needs specific columns
                 self.dataset
                     .empty_projection()
-                    .union_columns(&agg.required_columns, OnMissing::Error)?
+                    .union_columns(&required_columns, OnMissing::Error)?
             }
         } else {
             self.projection_plan.physical_projection.clone()

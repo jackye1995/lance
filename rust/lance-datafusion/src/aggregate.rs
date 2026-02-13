@@ -15,24 +15,27 @@ pub struct Aggregate {
     /// Aggregate function expressions (e.g., SUM, COUNT, AVG).
     /// Use `.alias()` on the expression to set output column names.
     pub aggregates: Vec<Expr>,
-    /// Column names required by this aggregate (computed at construction).
-    /// For COUNT(*), this is empty. For SUM(x), GROUP BY y, this contains [x, y].
-    pub required_columns: Vec<String>,
 }
 
 impl Aggregate {
-    /// Create a new Aggregate, computing required columns from the expressions.
+    /// Create a new Aggregate.
     pub fn new(group_by: Vec<Expr>, aggregates: Vec<Expr>) -> Self {
+        Self {
+            group_by,
+            aggregates,
+        }
+    }
+
+    /// Compute column names required by this aggregate.
+    ///
+    /// For COUNT(*), this returns empty. For SUM(x), GROUP BY y, this returns [x, y].
+    pub fn required_columns(&self) -> Vec<String> {
         let mut required_columns = Vec::new();
-        for expr in group_by.iter().chain(aggregates.iter()) {
+        for expr in self.group_by.iter().chain(self.aggregates.iter()) {
             required_columns.extend(Planner::column_names_in_expr(expr));
         }
         required_columns.sort();
         required_columns.dedup();
-        Self {
-            group_by,
-            aggregates,
-            required_columns,
-        }
+        required_columns
     }
 }

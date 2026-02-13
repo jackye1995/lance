@@ -42,7 +42,7 @@ bump_and_commit_version() {
 # Returns: previous tag name or empty string
 #
 # For major/minor releases (PATCH=0):
-#   - Checks for minor-release-base tag (minor release from release branch)
+#   - Checks for minor-release-root tag (minor release from release branch)
 #   - Otherwise uses release-root tag (standard flow from main)
 # For patch releases (PATCH>0):
 #   - Compares against previous patch stable tag
@@ -53,12 +53,12 @@ determine_previous_tag() {
     local TAG_PREFIX=${4:-"v"}
 
     if [ "${PATCH}" = "0" ]; then
-        # Major/Minor release: check for minor-release-base tag first
+        # Major/Minor release: check for minor-release-root tag first
         # This tag is created when a minor release is cut from a release branch
-        local MINOR_RELEASE_BASE_TAG="minor-release-base/${MAJOR}.${MINOR}.0"
-        if git rev-parse "${MINOR_RELEASE_BASE_TAG}" >/dev/null 2>&1; then
+        local MINOR_RELEASE_ROOT_TAG="minor-release-root/${MAJOR}.${MINOR}.0"
+        if git rev-parse "${MINOR_RELEASE_ROOT_TAG}" >/dev/null 2>&1; then
             # Read the source tag from the tag message
-            local SOURCE_TAG=$(git tag -l --format='%(contents:subject)' "${MINOR_RELEASE_BASE_TAG}")
+            local SOURCE_TAG=$(git tag -l --format='%(contents:subject)' "${MINOR_RELEASE_ROOT_TAG}")
             if [ -n "${SOURCE_TAG}" ]; then
                 echo "${SOURCE_TAG}"
                 return

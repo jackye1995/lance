@@ -52,15 +52,15 @@ jobs:
         git push origin "${{ steps.create_branch.outputs.RELEASE_BRANCH }}"
         git push origin "${{ steps.create_branch.outputs.RC_TAG }}"
         # When creating from main: push main and release root tag
-        # When creating from release branch: push minor release base tag
+        # When creating from release branch: push minor release root tag
         if [ -z "${{ inputs.source_release_branch }}" ]; then
           git push origin main
           # Push release root tag (may already exist remotely if created during beta publish)
           git push origin "${{ steps.create_branch.outputs.RELEASE_ROOT_TAG }}" || echo "Release root tag already exists remotely"
         else
-          # Push minor release base tag if it was created
-          if [ -n "${{ steps.create_branch.outputs.MINOR_RELEASE_BASE_TAG }}" ]; then
-            git push origin "${{ steps.create_branch.outputs.MINOR_RELEASE_BASE_TAG }}"
+          # Push minor release root tag if it was created
+          if [ -n "${{ steps.create_branch.outputs.MINOR_RELEASE_ROOT_TAG }}" ]; then
+            git push origin "${{ steps.create_branch.outputs.MINOR_RELEASE_ROOT_TAG }}"
           fi
         fi
 
@@ -128,8 +128,8 @@ jobs:
         else
           echo "- **Source Branch:** ${{ inputs.source_release_branch }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Release Notes Base:** ${{ steps.create_branch.outputs.PREVIOUS_TAG }}" >> $GITHUB_STEP_SUMMARY
-          if [ -n "${{ steps.create_branch.outputs.MINOR_RELEASE_BASE_TAG }}" ]; then
-            echo "- **Minor Release Base Tag:** ${{ steps.create_branch.outputs.MINOR_RELEASE_BASE_TAG }}" >> $GITHUB_STEP_SUMMARY
+          if [ -n "${{ steps.create_branch.outputs.MINOR_RELEASE_ROOT_TAG }}" ]; then
+            echo "- **Minor Release Root Tag:** ${{ steps.create_branch.outputs.MINOR_RELEASE_ROOT_TAG }}" >> $GITHUB_STEP_SUMMARY
           fi
         fi
         echo "- **Dry Run:** ${{ inputs.dry_run }}" >> $GITHUB_STEP_SUMMARY

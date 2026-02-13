@@ -43,8 +43,6 @@ gitGraph
 
 ```
 
-**Diagram explanation**: When main has breaking changes and moves to `2.0.0-beta.1`, a new minor release `v1.5.0` can be cut from `release/v1.4` (after cherry-picking features from main) instead of from main.
-
 ## Version Semantics
 
 Lance uses version numbers inspired by semantic versioning, but with flexibility for practical release management. Specifically, minor releases can be cut from existing release branches when the main branch is targeting a major release.
@@ -262,11 +260,11 @@ Release root tags mark the base commits for breaking change detection. The tag n
 - **No additional bumps**: When at 2.0.0-beta.1, we detect breaking changes but see major already bumped (2 > 1), so just increment beta
 - **Beta reset on major bump**: When bumping major version, beta number resets to 1 (e.g., 1.4.0-beta.5 → 2.0.0-beta.1)
 
-### Minor Release Base Tag
+### Minor Release Root Tag
 
-When a minor release is created from an existing release branch (not from main), a `minor-release-base` tag is created to track the comparison base for release notes.
+When a minor release is created from an existing release branch (not from main), a `minor-release-root` tag is created to track the comparison base for release notes.
 
-**Tag Format**: `minor-release-base/{major}.{minor}.0`
+**Tag Format**: `minor-release-root/{major}.{minor}.0`
 
 - Created when using `create-release-branch` workflow with `source_release_branch` parameter
 - Tag message contains the source stable tag (e.g., `v1.3.1`)
@@ -274,7 +272,7 @@ When a minor release is created from an existing release branch (not from main),
 
 **Example**: When creating `release/v1.4` from `release/v1.3` (where latest stable is v1.3.1):
 
-- Creates `minor-release-base/1.4.0` with message `v1.3.1`
+- Creates `minor-release-root/1.4.0` with message `v1.3.1`
 - Release notes for v1.4.0-rc.N and v1.4.0 will compare against v1.3.1
 
 ### Detection Process

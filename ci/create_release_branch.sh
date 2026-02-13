@@ -117,11 +117,11 @@ Created from ${SOURCE_RELEASE_BRANCH}"
         PREVIOUS_TAG="${LATEST_STABLE_TAG}"
         echo "Release notes will compare against latest stable: ${PREVIOUS_TAG}"
 
-        # Create minor-release-base tag to mark this as a minor release from a release branch
+        # Create minor-release-root tag to mark this as a minor release from a release branch
         # This tag stores the source stable tag for use by determine_previous_tag
-        MINOR_RELEASE_BASE_TAG="minor-release-base/${RC_MAJOR}.${RC_MINOR}.0"
-        echo "Creating minor release base tag: ${MINOR_RELEASE_BASE_TAG}"
-        git tag -a "${MINOR_RELEASE_BASE_TAG}" -m "${PREVIOUS_TAG}"
+        MINOR_RELEASE_ROOT_TAG="minor-release-root/${RC_MAJOR}.${RC_MINOR}.0"
+        echo "Creating minor release root tag: ${MINOR_RELEASE_ROOT_TAG}"
+        git tag -a "${MINOR_RELEASE_ROOT_TAG}" -m "${PREVIOUS_TAG}"
     else
         echo "Warning: No stable tag found for ${SOURCE_MAJOR}.${SOURCE_MINOR}.* series"
         PREVIOUS_TAG=""
@@ -134,14 +134,14 @@ Created from ${SOURCE_RELEASE_BRANCH}"
     echo "PREVIOUS_TAG=${PREVIOUS_TAG}" >> $GITHUB_OUTPUT 2>/dev/null || true
     echo "RELEASE_TYPE=${RELEASE_TYPE}" >> $GITHUB_OUTPUT 2>/dev/null || true
     echo "SOURCE_RELEASE_BRANCH=${SOURCE_RELEASE_BRANCH}" >> $GITHUB_OUTPUT 2>/dev/null || true
-    echo "MINOR_RELEASE_BASE_TAG=${MINOR_RELEASE_BASE_TAG:-}" >> $GITHUB_OUTPUT 2>/dev/null || true
+    echo "MINOR_RELEASE_ROOT_TAG=${MINOR_RELEASE_ROOT_TAG:-}" >> $GITHUB_OUTPUT 2>/dev/null || true
 
     echo "Successfully created minor RC from release branch!"
     echo "  RC Tag: ${RC_TAG}"
     echo "  Release Branch: ${RELEASE_BRANCH}"
     echo "  Source Branch: ${SOURCE_RELEASE_BRANCH}"
     echo "  Release Notes Base: ${PREVIOUS_TAG}"
-    echo "  Minor Release Base Tag: ${MINOR_RELEASE_BASE_TAG:-none}"
+    echo "  Minor Release Root Tag: ${MINOR_RELEASE_ROOT_TAG:-none}"
 
 else
     #

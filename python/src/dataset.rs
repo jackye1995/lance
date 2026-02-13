@@ -1094,7 +1094,9 @@ impl Dataset {
                 .map_err(|err| PyValueError::new_err(err.to_string()))?;
         }
         if let Some(aggregate_bytes) = substrait_aggregate {
-            scanner.aggregate(AggregateExpr::substrait(aggregate_bytes));
+            scanner
+                .aggregate(AggregateExpr::substrait(aggregate_bytes))
+                .map_err(|err| PyValueError::new_err(err.to_string()))?;
         }
         let scan = Arc::new(scanner);
         Ok(Scanner::new(scan))

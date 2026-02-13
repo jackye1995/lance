@@ -381,7 +381,7 @@ fn inner_create_scanner<'local>(
 
     let substrait_aggregate_opt = env.get_bytes_opt(&substrait_aggregate_obj)?;
     if let Some(substrait_aggregate) = substrait_aggregate_opt {
-        scanner.aggregate(AggregateExpr::substrait(substrait_aggregate));
+        scanner.aggregate(AggregateExpr::substrait(substrait_aggregate))?;
     }
 
     let scanner = BlockingScanner::create(scanner);

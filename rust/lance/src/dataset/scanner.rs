@@ -504,10 +504,13 @@ impl AggregateExpr {
         }
     }
 
-    fn to_aggregate(
-        &self,
-        #[allow(unused_variables)] schema: Arc<ArrowSchema>,
-    ) -> Result<Aggregate> {
+    /// Parse into a unified Aggregate structure.
+    ///
+    /// For Substrait, this parses the bytes into DataFusion expressions.
+    /// For DataFusion, this just wraps the expressions.
+    ///
+    /// The schema is used to resolve field references in Substrait expressions.
+    fn parse(self, #[allow(unused_variables)] schema: Arc<ArrowSchema>) -> Result<Aggregate> {
         match self {
             #[cfg(feature = "substrait")]
             Self::Substrait(bytes) => {
@@ -515,7 +518,7 @@ impl AggregateExpr {
                 use lance_datafusion::substrait::parse_substrait_aggregate;
 
                 let ctx = get_session_context(&LanceExecutionOptions::default());
-                parse_substrait_aggregate(bytes, schema, &ctx.state())
+                parse_substrait_aggregate(&bytes, schema, &ctx.state())
                     .now_or_never()
                     .expect("could not parse the Substrait aggregate in a synchronous fashion")
             }
@@ -523,11 +526,26 @@ impl AggregateExpr {
                 group_by,
                 aggregates,
             } => Ok(Aggregate {
-                group_by: group_by.clone(),
-                aggregates: aggregates.clone(),
+                group_by,
+                aggregates,
             }),
         }
     }
+}
+
+/// Returns the column names required by an aggregate.
+///
+/// For COUNT(*) / count(1), this returns an empty set since it doesn't need any columns.
+/// For other aggregates like SUM(x), COUNT(x), GROUP BY y, etc., this returns the
+/// columns referenced.
+fn aggregate_required_columns(agg: &Aggregate) -> Vec<String> {
+    let mut columns = Vec::new();
+    for expr in agg.group_by.iter().chain(agg.aggregates.iter()) {
+        columns.extend(Planner::column_names_in_expr(expr));
+    }
+    columns.sort();
+    columns.dedup();
+    columns
 }
 
 /// Builder for creating aggregate expressions without using DataFusion or Substrait directly.
@@ -786,7 +804,7 @@ pub struct Scanner {
     /// File reader options to use when reading data files.
     file_reader_options: Option<FileReaderOptions>,
 
-    aggregate: Option<AggregateExpr>,
+    aggregate: Option<Aggregate>,
 
     // Legacy fields to help migrate some old projection behavior to new behavior
     //
@@ -1237,9 +1255,14 @@ impl Scanner {
     }
 
     /// Set aggregation.
-    pub fn aggregate(&mut self, aggregate: AggregateExpr) -> &mut Self {
-        self.aggregate = Some(aggregate);
-        self
+    ///
+    /// The aggregate expression is parsed immediately using the dataset schema.
+    /// For Substrait aggregates, this converts them to DataFusion expressions.
+    pub fn aggregate(&mut self, aggregate: AggregateExpr) -> Result<&mut Self> {
+        let schema: Arc<ArrowSchema> = Arc::new(self.dataset.schema().into());
+        let parsed = aggregate.parse(schema)?;
+        self.aggregate = Some(parsed);
+        Ok(self)
     }
 
     /// Set the batch size.
@@ -1924,7 +1947,7 @@ impl Scanner {
             }
 
             let mut scanner = self.clone();
-            scanner.aggregate(AggregateExpr::builder().count_star().build());
+            scanner.aggregate(AggregateExpr::builder().count_star().build())?;
 
             let plan = scanner.create_plan().await?;
             let mut stream = execute_plan(plan, LanceExecutionOptions::default())?;
@@ -1969,12 +1992,11 @@ impl Scanner {
     async fn apply_aggregate(
         &self,
         plan: Arc<dyn ExecutionPlan>,
-        agg_spec: &AggregateExpr,
+        agg: &Aggregate,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         use datafusion_physical_expr::aggregate::AggregateFunctionExpr;
 
         let schema = plan.schema();
-        let agg = agg_spec.to_aggregate(schema.clone())?;
         let df_schema = DFSchema::try_from(schema.as_ref().clone())?;
 
         let group_exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = agg
@@ -2451,10 +2473,19 @@ impl Scanner {
         plan = filter_plan.refine_filter(plan, self).await?;
 
         // Aggregate (if set, applies aggregate and returns early)
-        if let Some(agg_spec) = &self.aggregate {
-            // Take columns needed for aggregation
-            plan = self.take(plan, self.projection_plan.physical_projection.clone())?;
-            return self.apply_aggregate(plan, agg_spec).await;
+        if let Some(agg) = &self.aggregate {
+            // Take only columns needed by the aggregate, not the full projection.
+            // For COUNT(*), this is empty. For SUM(x), this is just [x].
+            let agg_columns = aggregate_required_columns(agg);
+            let agg_projection = if agg_columns.is_empty() {
+                self.dataset.empty_projection()
+            } else {
+                self.dataset
+                    .empty_projection()
+                    .union_columns(&agg_columns, OnMissing::Error)?
+            };
+            plan = self.take(plan, agg_projection)?;
+            return self.apply_aggregate(plan, agg).await;
         }
 
         // Sort
@@ -2770,16 +2801,35 @@ impl Scanner {
         filter_plan: &mut ExprFilterPlan,
     ) -> Result<PlannedFilteredScan> {
         log::trace!("source is a filtered read");
+
+        // Compute the effective projection based on what's actually needed.
+        // If we have an aggregate, we only need the columns referenced by the aggregate,
+        // not all the columns from the projection plan.
+        let effective_projection = if let Some(agg) = &self.aggregate {
+            let agg_columns = aggregate_required_columns(agg);
+            if agg_columns.is_empty() {
+                // COUNT(*) or similar - no columns needed
+                self.dataset.empty_projection()
+            } else {
+                // Aggregate needs specific columns
+                self.dataset
+                    .empty_projection()
+                    .union_columns(&agg_columns, OnMissing::Error)?
+            }
+        } else {
+            self.projection_plan.physical_projection.clone()
+        };
+
         let mut projection = if filter_plan.has_refine() {
             // If the filter plan has two steps (a scalar indexed portion and a refine portion) then
             // it makes sense to grab cheap columns during the first step to avoid taking them for
             // the second step.
-            self.calc_eager_projection(filter_plan, &self.projection_plan.physical_projection)?
+            self.calc_eager_projection(filter_plan, &effective_projection)?
                 .with_row_id()
         } else {
             // If the filter plan only has one step then we just do a filtered read of all the
             // columns that the user asked for.
-            self.projection_plan.physical_projection.clone()
+            effective_projection
         };
 
         if projection.is_empty() {

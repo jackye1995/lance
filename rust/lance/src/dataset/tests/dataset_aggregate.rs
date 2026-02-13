@@ -216,7 +216,7 @@ async fn execute_aggregate(
     aggregate_bytes: &[u8],
 ) -> crate::Result<Vec<RecordBatch>> {
     let mut scanner = dataset.scan();
-    scanner.aggregate(AggregateExpr::substrait(aggregate_bytes));
+    scanner.aggregate(AggregateExpr::substrait(aggregate_bytes))?;
 
     let plan = scanner.create_plan().await?;
     let stream = execute_plan(plan, LanceExecutionOptions::default())?;
@@ -231,7 +231,7 @@ async fn execute_aggregate_on_fragments(
 ) -> crate::Result<Vec<RecordBatch>> {
     let mut scanner = dataset.scan();
     scanner.with_fragments(fragments);
-    scanner.aggregate(AggregateExpr::substrait(aggregate_bytes));
+    scanner.aggregate(AggregateExpr::substrait(aggregate_bytes))?;
 
     let plan = scanner.create_plan().await?;
     let stream = execute_plan(plan, LanceExecutionOptions::default())?;
@@ -266,6 +266,20 @@ async fn test_count_star_single_fragment() {
         vec![agg_extension(1, "count")],
         vec![],
     );
+
+    // Verify COUNT(*) has empty projection optimization
+    let mut scanner = ds.scan();
+    scanner
+        .aggregate(AggregateExpr::substrait(agg_bytes.clone()))
+        .unwrap();
+    let plan = scanner.create_plan().await.unwrap();
+    assert_plan_node_equals(
+        plan,
+        "AggregateExec: mode=Single, gby=[], aggr=[count(...)]
+  LanceRead: uri=..., projection=[], num_fragments=1, range_before=None, range_after=None, row_id=false, row_addr=true, full_filter=--, refine_filter=--",
+    )
+    .await
+    .unwrap();
 
     let results = execute_aggregate(&ds, &agg_bytes).await.unwrap();
     assert_eq!(results.len(), 1);
@@ -342,6 +356,20 @@ async fn test_sum_single_fragment() {
         vec![agg_extension(1, "sum")],
         vec![],
     );
+
+    // Verify SUM(x) only reads column x
+    let mut scanner = ds.scan();
+    scanner
+        .aggregate(AggregateExpr::substrait(agg_bytes.clone()))
+        .unwrap();
+    let plan = scanner.create_plan().await.unwrap();
+    assert_plan_node_equals(
+        plan,
+        "AggregateExec: mode=Single, gby=[], aggr=[sum(...)]
+  LanceRead: uri=..., projection=[x], num_fragments=1, range_before=None, range_after=None, row_id=false, row_addr=false, full_filter=--, refine_filter=--",
+    )
+    .await
+    .unwrap();
 
     let results = execute_aggregate(&ds, &agg_bytes).await.unwrap();
     assert_eq!(results.len(), 1);
@@ -485,6 +513,20 @@ async fn test_group_by_with_count() {
         vec![agg_extension(1, "count")],
         vec![],
     );
+
+    // Verify GROUP BY category only reads category column
+    let mut scanner = ds.scan();
+    scanner
+        .aggregate(AggregateExpr::substrait(agg_bytes.clone()))
+        .unwrap();
+    let plan = scanner.create_plan().await.unwrap();
+    assert_plan_node_equals(
+        plan,
+        "AggregateExec: mode=Single, gby=[category@0 as category], aggr=[count(...)]
+  LanceRead: uri=..., projection=[category], num_fragments=4, range_before=None, range_after=None, row_id=false, row_addr=false, full_filter=--, refine_filter=--",
+    )
+    .await
+    .unwrap();
 
     let results = execute_aggregate(&ds, &agg_bytes).await.unwrap();
     assert!(!results.is_empty());
@@ -655,7 +697,9 @@ async fn test_aggregate_with_filter() {
         ],
         vec![],
     );
-    scanner.aggregate(AggregateExpr::substrait(agg_bytes));
+    scanner
+        .aggregate(AggregateExpr::substrait(agg_bytes))
+        .unwrap();
 
     let plan = scanner.create_plan().await.unwrap();
     let stream = execute_plan(plan, LanceExecutionOptions::default()).unwrap();
@@ -692,7 +736,9 @@ async fn test_aggregate_empty_result() {
         vec![agg_extension(1, "count")],
         vec![],
     );
-    scanner.aggregate(AggregateExpr::substrait(agg_bytes));
+    scanner
+        .aggregate(AggregateExpr::substrait(agg_bytes))
+        .unwrap();
 
     let plan = scanner.create_plan().await.unwrap();
     let stream = execute_plan(plan, LanceExecutionOptions::default()).unwrap();
@@ -1006,7 +1052,8 @@ async fn test_vector_search_with_aggregate() {
         .unwrap()
         .project(&["id", "category"])
         .unwrap()
-        .aggregate(AggregateExpr::substrait(agg_bytes));
+        .aggregate(AggregateExpr::substrait(agg_bytes))
+        .unwrap();
 
     let results = scanner.try_into_batch().await.unwrap();
 
@@ -1066,7 +1113,8 @@ async fn test_fts_with_aggregate() {
         .unwrap()
         .project(&["id", "category"])
         .unwrap()
-        .aggregate(AggregateExpr::substrait(agg_bytes));
+        .aggregate(AggregateExpr::substrait(agg_bytes))
+        .unwrap();
 
     let results = scanner.try_into_batch().await.unwrap();
 
@@ -1128,7 +1176,8 @@ async fn test_vector_search_with_sum_aggregate() {
         .unwrap()
         .project(&["id", "category"])
         .unwrap()
-        .aggregate(AggregateExpr::substrait(agg_bytes));
+        .aggregate(AggregateExpr::substrait(agg_bytes))
+        .unwrap();
 
     let results = scanner.try_into_batch().await.unwrap();
 
@@ -1149,13 +1198,16 @@ async fn test_scanner_count_rows() {
 
     // Check plan structure
     let mut scanner = ds.scan();
-    scanner.aggregate(AggregateExpr::builder().count_star().build());
+    scanner
+        .aggregate(AggregateExpr::builder().count_star().build())
+        .unwrap();
     let plan = scanner.create_plan().await.unwrap();
 
+    // COUNT(*) should have empty projection (optimized to not read any columns)
     assert_plan_node_equals(
         plan.clone(),
         "AggregateExec: mode=Single, gby=[], aggr=[count(Int32(1))]
-  LanceRead: uri=..., projection=[x, y, category], num_fragments=2, range_before=None, range_after=None, row_id=false, row_addr=false, full_filter=--, refine_filter=--",
+  LanceRead: uri=..., projection=[], num_fragments=2, range_before=None, range_after=None, row_id=false, row_addr=true, full_filter=--, refine_filter=--",
     )
     .await
     .unwrap();
@@ -1177,13 +1229,16 @@ async fn test_scanner_count_rows_with_filter() {
     // Check plan structure
     let mut scanner = ds.scan();
     scanner.filter("x >= 50").unwrap();
-    scanner.aggregate(AggregateExpr::builder().count_star().build());
+    scanner
+        .aggregate(AggregateExpr::builder().count_star().build())
+        .unwrap();
     let plan = scanner.create_plan().await.unwrap();
 
+    // COUNT(*) with filter: filter columns are needed, but no data columns for the aggregate
     assert_plan_node_equals(
         plan.clone(),
         "AggregateExec: mode=Single, gby=[], aggr=[count(Int32(1))]
-  LanceRead: uri=..., projection=[x, y, category], num_fragments=1, range_before=None, range_after=None, row_id=true, row_addr=false, full_filter=x >= Int64(50), refine_filter=x >= Int64(50)",
+  LanceRead: uri=..., projection=[x], num_fragments=1, range_before=None, range_after=None, row_id=true, row_addr=false, full_filter=x >= Int64(50), refine_filter=x >= Int64(50)",
     )
     .await
     .unwrap();
@@ -1228,17 +1283,17 @@ async fn test_scanner_count_rows_with_vector_search() {
     // Check plan structure
     let mut scanner = dataset.scan();
     scanner.nearest("vec", &query_vector, 30).unwrap();
-    scanner.aggregate(AggregateExpr::builder().count_star().build());
+    scanner
+        .aggregate(AggregateExpr::builder().count_star().build())
+        .unwrap();
     let plan = scanner.create_plan().await.unwrap();
 
     assert_plan_node_equals(
         plan.clone(),
         "AggregateExec: mode=Single, gby=[], aggr=[count(Int32(1))]
-  Take: ...
-    CoalesceBatchesExec: ...
-      SortExec: TopK(fetch=30), ...
-        ANNSubIndex: ...
-          ANNIvfPartition: ...deltas=1",
+  SortExec: TopK(fetch=30), ...
+    ANNSubIndex: ...
+      ANNIvfPartition: ...deltas=1",
     )
     .await
     .unwrap();
@@ -1276,15 +1331,15 @@ async fn test_scanner_count_rows_with_fts() {
     scanner
         .full_text_search(FullTextSearchQuery::new("document".to_string()))
         .unwrap();
-    scanner.aggregate(AggregateExpr::builder().count_star().build());
+    scanner
+        .aggregate(AggregateExpr::builder().count_star().build())
+        .unwrap();
     let plan = scanner.create_plan().await.unwrap();
 
     assert_plan_node_equals(
         plan.clone(),
         "AggregateExec: mode=Single, gby=[], aggr=[count(Int32(1))]
-  Take: ...
-    ...
-      MatchQuery: column=text, query=document",
+  MatchQuery: column=text, query=document",
     )
     .await
     .unwrap();

@@ -261,7 +261,7 @@ Starting from v1.3.0-rc.1 cut, main at 1.4.0-beta.0 with `release-root/1.4.0-bet
 
 ## Create a Patch / Bugfix Release
 
-**Purpose**: Release critical bug fixes for an existing release.
+**Purpose**: Release critical bug fixes for an existing release. Patch releases have no voting duration requirement.
 
 **Steps**:
 1. Checkout the release branch (e.g., `release/v1.3`)

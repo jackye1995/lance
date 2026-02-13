@@ -121,3 +121,4 @@ pub mod deps {
 // Bugfix 1 for v4.1.1
 // Fix for v4.2.0-rc.2
 // Feature 8 for v4.2.1 beta
+// Bugfix 2 for v4.2.1

@@ -140,6 +140,8 @@ flowchart LR
 
 **Result**: Creates a beta tag (e.g., `v1.4.0-beta.1`) and publishes preview artifacts to fury.io, Maven Central, and Buf Schema Registry.
 
+**Release Notes**: For the first beta (beta.1), release notes include all changes since the last RC. For subsequent betas (beta.2+), release notes only include incremental changes since the previous beta.
+
 <details>
 <summary>How beta versioning works</summary>
 

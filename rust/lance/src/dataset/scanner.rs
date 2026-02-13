@@ -14,7 +14,6 @@ use async_recursion::async_recursion;
 use chrono::Utc;
 use datafusion::common::{exec_datafusion_err, DFSchema, JoinType, NullEquality, SchemaExt};
 use datafusion::functions_aggregate;
-use datafusion::functions_aggregate::count::count_udaf;
 use datafusion::logical_expr::{col, lit, Expr, ScalarUDF};
 use datafusion::physical_expr::PhysicalSortExpr;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
@@ -24,7 +23,6 @@ use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::{
     aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy},
     display::DisplayableExecutionPlan,
-    expressions::Literal,
     limit::GlobalLimitExec,
     repartition::RepartitionExec,
     union::UnionExec,
@@ -1911,62 +1909,6 @@ impl Scanner {
         Ok(concat_batches(&schema, &batches)?)
     }
 
-    pub fn create_count_plan(&self) -> BoxFuture<'_, Result<Arc<dyn ExecutionPlan>>> {
-        // Future intentionally boxed here to avoid large futures on the stack
-        async move {
-            if self.projection_plan.physical_projection.is_empty() {
-                return Err(Error::invalid_input("count_rows called but with_row_id is false".to_string(), location!()));
-            }
-            if !self.projection_plan.physical_projection.is_metadata_only() {
-                let physical_schema = self.projection_plan.physical_projection.to_schema();
-                let columns: Vec<&str> = physical_schema.fields
-                .iter()
-                .map(|field| field.name.as_str())
-                .collect();
-
-                let msg = format!(
-                    "count_rows should not be called on a plan selecting columns. selected columns: [{}]",
-                    columns.join(", ")
-                );
-
-                return Err(Error::invalid_input(msg, location!()));
-            }
-
-            if self.limit.is_some() || self.offset.is_some() {
-                log::warn!(
-                    "count_rows called with limit or offset which could have surprising results"
-                );
-            }
-
-            let plan = self.create_plan().await?;
-            // Datafusion interprets COUNT(*) as COUNT(1)
-            let one = Arc::new(Literal::new(ScalarValue::UInt8(Some(1))));
-
-            let input_phy_exprs: &[Arc<dyn PhysicalExpr>] = &[one];
-            let schema = plan.schema();
-
-            let mut builder = datafusion_physical_expr::aggregate::AggregateExprBuilder::new(
-                count_udaf(),
-                input_phy_exprs.to_vec(),
-            );
-            builder = builder.schema(schema);
-            builder = builder.alias("count_rows".to_string());
-
-            let count_expr = builder.build()?;
-
-            let plan_schema = plan.schema();
-            Ok(Arc::new(AggregateExec::try_new(
-                AggregateMode::Single,
-                PhysicalGroupBy::new_single(Vec::new()),
-                vec![Arc::new(count_expr)],
-                vec![None],
-                plan,
-                plan_schema,
-            )?) as Arc<dyn ExecutionPlan>)
-        }
-        .boxed()
-    }
-
     /// Scan and return the number of matching rows
     ///
     /// Note: calling [`Dataset::count_rows`] can be more efficient than calling this method
@@ -1975,8 +1917,17 @@ impl Scanner {
     pub fn count_rows(&self) -> BoxFuture<'_, Result<u64>> {
         // Future intentionally boxed here to avoid large futures on the stack
         async move {
-            let count_plan = self.create_count_plan().await?;
-            let mut stream = execute_plan(count_plan, LanceExecutionOptions::default())?;
+            if self.limit.is_some() || self.offset.is_some() {
+                log::warn!(
+                    "count_rows called with limit or offset which could have surprising results"
+                );
+            }
+
+            let mut scanner = self.clone();
+            scanner.aggregate(AggregateExpr::builder().count_star().build());
+
+            let plan = scanner.create_plan().await?;
+            let mut stream = execute_plan(plan, LanceExecutionOptions::default())?;
 
             // A count plan will always return a single batch with a single row.
             if let Some(first_batch) = stream.next().await {
@@ -1986,7 +1937,7 @@ impl Scanner {
                     .as_any()
                     .downcast_ref::<Int64Array>()
                     .ok_or(Error::invalid_input(
-                        "Count plan did not return a UInt64Array".to_string(),
+                        "Count plan did not return an Int64Array".to_string(),
                         location!(),
                     ))?;
                 Ok(array.value(0) as u64)
@@ -7371,56 +7322,6 @@ mod test {
         plan(&mut scan)?;
         let exec_plan = scan.create_plan().await?;
         assert_plan_node_equals(exec_plan, expected).await
-    }
-
-    #[tokio::test]
-    async fn test_count_plan() {
-        // A count rows operation should load the minimal amount of data
-        let dim = 256;
-        let fixture = TestVectorDataset::new_with_dimension(LanceFileVersion::Stable, true, dim)
-            .await
-            .unwrap();
-
-        // By default, all columns are returned, this is bad for a count_rows op
-        let err = fixture
-            .dataset
-            .scan()
-            .create_count_plan()
-            .await
-            .unwrap_err();
-        assert!(matches!(err, Error::InvalidInput { .. }));
-
-        let mut scan = fixture.dataset.scan();
-        scan.project(&Vec::<String>::default()).unwrap();
-
-        // with_row_id needs to be specified
-        let err = scan.create_count_plan().await.unwrap_err();
-        assert!(matches!(err, Error::InvalidInput { .. }));
-
-        scan.with_row_id();
-
-        let plan = scan.create_count_plan().await.unwrap();
-
-        assert_plan_node_equals(
-            plan,
-            "AggregateExec: mode=Single, gby=[], aggr=[count_rows]
-  LanceRead: uri=..., projection=[], num_fragments=2, range_before=None, range_after=None, row_id=true, row_addr=false, full_filter=--, refine_filter=--",
-        )
-        .await
-        .unwrap();
-
-        scan.filter("s == ''").unwrap();
-
-        let plan = scan.create_count_plan().await.unwrap();
-
-        assert_plan_node_equals(
-            plan,
-            "AggregateExec: mode=Single, gby=[], aggr=[count_rows]
-  ProjectionExec: expr=[_rowid@1 as _rowid]
-    LanceRead: uri=..., projection=[s], num_fragments=2, range_before=None, range_after=None, row_id=true, row_addr=false, full_filter=s = Utf8(\"\"), refine_filter=s = Utf8(\"\")",
-        )
-        .await
-        .unwrap();
     }
 
     #[tokio::test]

@@ -38,7 +38,7 @@ use tempfile::tempdir;
 
 use crate::dataset::scanner::AggregateExpr;
 use crate::index::vector::VectorIndexParams;
-use crate::utils::test::{DatagenExt, FragmentCount, FragmentRowCount};
+use crate::utils::test::{assert_plan_node_equals, DatagenExt, FragmentCount, FragmentRowCount};
 use crate::Dataset;
 use lance_arrow::FixedSizeListArrayExt;
 use lance_index::scalar::inverted::InvertedIndexParams;
@@ -1141,4 +1141,193 @@ async fn test_vector_search_with_sum_aggregate() {
 
     // Verify we have 2 columns: category and sum_id
     assert_eq!(results.num_columns(), 2);
+}
+
+// ============================================================================
+// Scanner::count_rows() tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_scanner_count_rows() {
+    let ds = create_numeric_dataset("memory://test_count_rows", 2, 50).await;
+
+    // Check plan structure
+    let mut scanner = ds.scan();
+    scanner.aggregate(AggregateExpr::builder().count_star().build());
+    let plan = scanner.create_plan().await.unwrap();
+
+    assert_plan_node_equals(
+        plan.clone(),
+        "AggregateExec: mode=Single, gby=[], aggr=[count(Int32(1))]
+  LanceRead: uri=..., projection=[x, y, category], num_fragments=2, range_before=None, range_after=None, row_id=false, row_addr=false, full_filter=--, refine_filter=--",
+    )
+    .await
+    .unwrap();
+
+    // Execute and verify result
+    let stream = execute_plan(plan, LanceExecutionOptions::default()).unwrap();
+    let batches: Vec<RecordBatch> = stream.try_collect().await.unwrap();
+    assert_eq!(batches.len(), 1);
+    assert_eq!(
+        batches[0].column(0).as_primitive::<Int64Type>().value(0),
+        100 // 2 fragments * 50 rows
+    );
+}
+
+#[tokio::test]
+async fn test_scanner_count_rows_with_filter() {
+    let ds = create_numeric_dataset("memory://test_count_rows_filter", 1, 100).await;
+
+    // Check plan structure
+    let mut scanner = ds.scan();
+    scanner.filter("x >= 50").unwrap();
+    scanner.aggregate(AggregateExpr::builder().count_star().build());
+    let plan = scanner.create_plan().await.unwrap();
+
+    assert_plan_node_equals(
+        plan.clone(),
+        "AggregateExec: mode=Single, gby=[], aggr=[count(Int32(1))]
+  LanceRead: uri=..., projection=[x, y, category], num_fragments=1, range_before=None, range_after=None, row_id=true, row_addr=false, full_filter=x >= Int64(50), refine_filter=x >= Int64(50)",
+    )
+    .await
+    .unwrap();
+
+    // Execute and verify result
+    let stream = execute_plan(plan, LanceExecutionOptions::default()).unwrap();
+    let batches: Vec<RecordBatch> = stream.try_collect().await.unwrap();
+    assert_eq!(batches.len(), 1);
+    // x ranges from 0 to 99, so x >= 50 matches rows 50..99 (50 rows)
+    assert_eq!(
+        batches[0].column(0).as_primitive::<Int64Type>().value(0),
+        50
+    );
+}
+
+#[tokio::test]
+async fn test_scanner_count_rows_empty_result() {
+    let ds = create_numeric_dataset("memory://test_count_rows_empty", 1, 100).await;
+
+    let mut scanner = ds.scan();
+    scanner.filter("x > 1000").unwrap(); // No rows match
+    let count = scanner.count_rows().await.unwrap();
+
+    assert_eq!(count, 0);
+}
+
+#[tokio::test]
+async fn test_scanner_count_rows_with_vector_search() {
+    let tmp_dir = tempdir().unwrap();
+    let uri = tmp_dir.path().to_str().unwrap();
+    let mut dataset = create_vector_text_dataset(uri, 100).await;
+
+    // Create vector index
+    let params = VectorIndexParams::ivf_flat(2, MetricType::L2);
+    dataset
+        .create_index(&["vec"], IndexType::Vector, None, &params, true)
+        .await
+        .unwrap();
+
+    let query_vector = Float32Array::from(vec![50.0f32, 50.0, 50.0, 50.0]);
+
+    // Check plan structure
+    let mut scanner = dataset.scan();
+    scanner.nearest("vec", &query_vector, 30).unwrap();
+    scanner.aggregate(AggregateExpr::builder().count_star().build());
+    let plan = scanner.create_plan().await.unwrap();
+
+    assert_plan_node_equals(
+        plan.clone(),
+        "AggregateExec: mode=Single, gby=[], aggr=[count(Int32(1))]
+  Take: ...
+    CoalesceBatchesExec: ...
+      SortExec: TopK(fetch=30), ...
+        ANNSubIndex: ...
+          ANNIvfPartition: ...deltas=1",
+    )
+    .await
+    .unwrap();
+
+    // Execute and verify result
+    let stream = execute_plan(plan, LanceExecutionOptions::default()).unwrap();
+    let batches: Vec<RecordBatch> = stream.try_collect().await.unwrap();
+    assert_eq!(batches.len(), 1);
+    assert_eq!(
+        batches[0].column(0).as_primitive::<Int64Type>().value(0),
+        30 // top K results
+    );
+}
+
+#[tokio::test]
+async fn test_scanner_count_rows_with_fts() {
+    let tmp_dir = tempdir().unwrap();
+    let uri = tmp_dir.path().to_str().unwrap();
+    let mut dataset = create_vector_text_dataset(uri, 100).await;
+
+    // Create FTS index on text column
+    dataset
+        .create_index(
+            &["text"],
+            IndexType::Inverted,
+            None,
+            &InvertedIndexParams::default(),
+            true,
+        )
+        .await
+        .unwrap();
+
+    // Check plan structure
+    let mut scanner = dataset.scan();
+    scanner
+        .full_text_search(FullTextSearchQuery::new("document".to_string()))
+        .unwrap();
+    scanner.aggregate(AggregateExpr::builder().count_star().build());
+    let plan = scanner.create_plan().await.unwrap();
+
+    assert_plan_node_equals(
+        plan.clone(),
+        "AggregateExec: mode=Single, gby=[], aggr=[count(Int32(1))]
+  Take: ...
+    ...
+      MatchQuery: column=text, query=document",
+    )
+    .await
+    .unwrap();
+
+    // Execute and verify result
+    let stream = execute_plan(plan, LanceExecutionOptions::default()).unwrap();
+    let batches: Vec<RecordBatch> = stream.try_collect().await.unwrap();
+    assert_eq!(batches.len(), 1);
+    // All 100 documents contain "document"
+    assert_eq!(
+        batches[0].column(0).as_primitive::<Int64Type>().value(0),
+        100
+    );
+}
+
+#[tokio::test]
+async fn test_scanner_count_rows_with_vector_search_and_filter() {
+    let tmp_dir = tempdir().unwrap();
+    let uri = tmp_dir.path().to_str().unwrap();
+    let mut dataset = create_vector_text_dataset(uri, 100).await;
+
+    // Create vector index
+    let params = VectorIndexParams::ivf_flat(2, MetricType::L2);
+    dataset
+        .create_index(&["vec"], IndexType::Vector, None, &params, true)
+        .await
+        .unwrap();
+
+    // Vector search for top 50 results, then filter by category
+    let query_vector = Float32Array::from(vec![50.0f32, 50.0, 50.0, 50.0]);
+
+    let mut scanner = dataset.scan();
+    scanner
+        .nearest("vec", &query_vector, 50)
+        .unwrap()
+        .filter("category = 'category_a'")
+        .unwrap();
+    let count = scanner.count_rows().await.unwrap();
+
+    // Only ~1/3 of the top 50 results should be in category_a
+    assert!(count > 0 && count <= 50);
 }

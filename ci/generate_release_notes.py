@@ -77,10 +77,22 @@ def get_commits_between_tags(previous_tag: str, current_tag: str) -> list[str]:
 
 
 def extract_pr_number(commit_message: str) -> int | None:
-    """Extract PR number from commit message like 'fix: something (#1234)'."""
+    """Extract PR number from commit message.
+
+    Supports formats:
+    - 'fix: something (#1234)' - squash merge format
+    - 'Merge pull request #1234 from ...' - merge commit format
+    """
+    # Try squash merge format first: (#1234)
     match = re.search(r"\(#(\d+)\)", commit_message)
     if match:
         return int(match.group(1))
+
+    # Try merge commit format: Merge pull request #1234
+    match = re.search(r"Merge pull request #(\d+)", commit_message)
+    if match:
+        return int(match.group(1))
+
     return None
 
 

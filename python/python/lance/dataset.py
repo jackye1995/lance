@@ -5077,9 +5077,6 @@ class ScannerBuilder:
         """
         Set a Substrait aggregate expression for the scanner.
 
-        This allows engines like Spark and Trino to push down aggregate operations
-        (e.g., SUM, COUNT, MIN, MAX) into the Lance scanner for distributed execution.
-
         Parameters
         ----------
         aggregate : bytes

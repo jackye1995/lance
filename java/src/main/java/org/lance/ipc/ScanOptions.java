@@ -416,9 +416,6 @@ public class ScanOptions {
     /**
      * Set the substrait aggregate expression.
      *
-     * <p>This allows engines like Spark and Trino to push down aggregate operations (e.g., SUM,
-     * COUNT, MIN, MAX) into the Lance scanner for distributed execution.
-     *
      * @param substraitAggregate Substrait aggregate expression.
      * @return Builder instance for method chaining.
      */

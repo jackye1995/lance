@@ -126,7 +126,7 @@ flowchart LR
 1. **publish-beta.yml** - Publish beta preview releases from any branch
 2. **create-release-branch.yml** - Create release branch with initial RC for new major/minor version
 3. **create-rc.yml** - Create RC on existing release branch (for new patch release RC or iterations of an existing RC)
-4. **approve-rc.yml** - Approve any RC to stable (works for all release types)
+4. **approve-rc.yml** - Approve any RC to stable (works for all release types: major, minor, patch)
 
 ## Create a Beta / Preview Release
 

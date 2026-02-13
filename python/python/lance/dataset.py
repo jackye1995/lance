@@ -4699,6 +4699,7 @@ class ScannerBuilder:
         self._strict_batch_size = False
         self._orderings = None
         self._disable_scoring_autoprojection = False
+        self._substrait_aggregate = None
 
     def apply_defaults(self, default_opts: Dict[str, Any]) -> ScannerBuilder:
         for key, value in default_opts.items():
@@ -5072,6 +5073,26 @@ class ScannerBuilder:
         self._disable_scoring_autoprojection = disable
         return self
 
+    def substrait_aggregate(self, aggregate: bytes) -> ScannerBuilder:
+        """
+        Set a Substrait aggregate expression for the scanner.
+
+        This allows engines like Spark and Trino to push down aggregate operations
+        (e.g., SUM, COUNT, MIN, MAX) into the Lance scanner for distributed execution.
+
+        Parameters
+        ----------
+        aggregate : bytes
+            The serialized Substrait Aggregate plan bytes.
+
+        Returns
+        -------
+        ScannerBuilder
+            This builder for method chaining.
+        """
+        self._substrait_aggregate = aggregate
+        return self
+
     def to_scanner(self) -> LanceScanner:
         scanner = self.ds._ds.scanner(
             self._columns,
@@ -5102,6 +5123,7 @@ class ScannerBuilder:
             self._strict_batch_size,
             self._orderings,
             self._disable_scoring_autoprojection,
+            self._substrait_aggregate,
         )
         return LanceScanner(scanner, self.ds)
 

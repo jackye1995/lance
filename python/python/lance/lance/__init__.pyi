@@ -245,6 +245,11 @@ class _Dataset:
         blob_handling: Optional[str] = None,
         use_scalar_index: Optional[bool] = None,
         include_deleted_rows: Optional[bool] = None,
+        scan_stats_callback: Optional[Callable[[Any], None]] = None,
+        strict_batch_size: Optional[bool] = None,
+        order_by: Optional[List[Any]] = None,
+        disable_scoring_autoprojection: Optional[bool] = None,
+        substrait_aggregate: Optional[bytes] = None,
     ) -> _Scanner: ...
     def count_rows(self, filter: Optional[str] = None) -> int: ...
     def take(

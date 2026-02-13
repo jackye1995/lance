@@ -36,8 +36,8 @@ use snafu::location;
 use lance::dataset::cleanup::CleanupPolicyBuilder;
 use lance::dataset::refs::{Ref, TagContents};
 use lance::dataset::scanner::{
-    ColumnOrdering, DatasetRecordBatchStream, ExecutionStatsCallback, MaterializationStyle,
-    QueryFilter,
+    AggregateExpr, ColumnOrdering, DatasetRecordBatchStream, ExecutionStatsCallback,
+    MaterializationStyle, QueryFilter,
 };
 use lance::dataset::statistics::{DataStatistics, DatasetStatisticsExt};
 use lance::dataset::AutoCleanupParams;
@@ -765,7 +765,7 @@ impl Dataset {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature=(columns=None, columns_with_transform=None, filter=None, search_filter=None, prefilter=None, limit=None, offset=None, nearest=None, batch_size=None, io_buffer_size=None, batch_readahead=None, fragment_readahead=None, scan_in_order=None, fragments=None, with_row_id=None, with_row_address=None, use_stats=None, substrait_filter=None, fast_search=None, full_text_query=None, late_materialization=None, blob_handling=None, use_scalar_index=None, include_deleted_rows=None, scan_stats_callback=None, strict_batch_size=None, order_by=None, disable_scoring_autoprojection=None))]
+    #[pyo3(signature=(columns=None, columns_with_transform=None, filter=None, search_filter=None, prefilter=None, limit=None, offset=None, nearest=None, batch_size=None, io_buffer_size=None, batch_readahead=None, fragment_readahead=None, scan_in_order=None, fragments=None, with_row_id=None, with_row_address=None, use_stats=None, substrait_filter=None, fast_search=None, full_text_query=None, late_materialization=None, blob_handling=None, use_scalar_index=None, include_deleted_rows=None, scan_stats_callback=None, strict_batch_size=None, order_by=None, disable_scoring_autoprojection=None, substrait_aggregate=None))]
     fn scanner(
         self_: PyRef<'_, Self>,
         columns: Option<Vec<String>>,
@@ -796,6 +796,7 @@ impl Dataset {
         strict_batch_size: Option<bool>,
         order_by: Option<Vec<PyLance<ColumnOrdering>>>,
         disable_scoring_autoprojection: Option<bool>,
+        substrait_aggregate: Option<Vec<u8>>,
     ) -> PyResult<Scanner> {
         let mut scanner: LanceScanner = self_.ds.scan();
 
@@ -1091,6 +1092,9 @@ impl Dataset {
             scanner
                 .order_by(Some(orderings.into_iter().map(|o| o.0).collect()))
                 .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        }
+        if let Some(aggregate_bytes) = substrait_aggregate {
+            scanner.aggregate(AggregateExpr::substrait(aggregate_bytes));
         }
         let scan = Arc::new(scanner);
         Ok(Scanner::new(scan))

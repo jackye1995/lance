@@ -111,3 +111,4 @@ pub mod deps {
     pub use datafusion;
 }
 // Feature 1
+// Feature 2

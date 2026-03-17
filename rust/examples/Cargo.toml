@@ -35,7 +35,15 @@ path = "src/write_read_ds.rs"
 name = "memleak_repro"
 path = "src/memleak_repro.rs"
 
+[[example]]
+name = "memleak_profile"
+path = "src/memleak_profile.rs"
+
+[features]
+dhat-heap = ["dhat"]
+
 [dependencies]
+dhat = { version = "0.3", optional = true }
 arrow = { workspace = true }
 arrow-schema = { workspace = true }
 arrow-select = { workspace = true }

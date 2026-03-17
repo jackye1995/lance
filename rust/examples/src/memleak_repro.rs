@@ -87,7 +87,7 @@ fn get_rss_bytes() -> Option<u64> {
 /// Call malloc_trim on Linux to release memory back to OS
 #[cfg(target_os = "linux")]
 fn malloc_trim() -> bool {
-    extern "C" {
+    unsafe extern "C" {
         fn malloc_trim(pad: libc::size_t) -> libc::c_int;
     }
     unsafe { malloc_trim(0) != 0 }

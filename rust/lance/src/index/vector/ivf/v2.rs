@@ -248,7 +248,17 @@ impl<S: IvfSubIndex + 'static, Q: Quantization> IVFIndex<S, Q> {
             if let Some(part_idx) = self.index_cache.get_with_key(&cache_key).await {
                 part_idx
             } else {
-                let schema = Arc::new(self.reader.schema().as_ref().into());
+                // Create schema with only the partition's metadata, not the full index metadata.
+                // The index file schema contains a large JSON array with metadata for ALL partitions
+                // (~40K entries). Cloning this for every partition load would waste ~720MB per 100
+                // searches. Instead, we clear the metadata and add only what this partition needs.
+                let mut schema: arrow_schema::Schema = self.reader.schema().as_ref().into();
+                schema.metadata.clear();
+                schema.metadata.insert(
+                    S::metadata_key().to_owned(),
+                    self.sub_index_metadata[partition_id].clone(),
+                );
+                let schema = Arc::new(schema);
                 let batch = match self.reader.metadata().num_rows {
                     0 => RecordBatch::new_empty(schema),
                     _ => {
@@ -270,10 +280,6 @@ impl<S: IvfSubIndex + 'static, Q: Quantization> IVFIndex<S, Q> {
                         }
                     }
                 };
-                let batch = batch.add_metadata(
-                    S::metadata_key().to_owned(),
-                    self.sub_index_metadata[partition_id].clone(),
-                )?;
                 let idx = S::load(batch)?;
                 let storage = self.load_partition_storage(partition_id).await?;
                 let partition_entry = Arc::new(PartitionEntry::<S, Q> {

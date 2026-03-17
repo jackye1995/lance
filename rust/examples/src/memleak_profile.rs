@@ -278,6 +278,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("{}\n", "=".repeat(70));
 
+    #[cfg(feature = "dhat-heap")]
+    println!("TIMELINE,elapsed_s,searches,rss_bytes,cache_bytes,total_alloc_bytes,total_blocks,curr_bytes,max_bytes");
+
     let start = Instant::now();
 
     // Spawn worker tasks
@@ -338,6 +341,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let elapsed = start.elapsed().as_secs_f64();
                         let rss = get_rss_bytes().unwrap_or(0);
                         let cache_bytes = session.size_bytes();
+
+                        #[cfg(feature = "dhat-heap")]
+                        {
+                            let dhat_stats = dhat::HeapStats::get();
+                            // Output CSV format for timeline analysis
+                            println!(
+                                "TIMELINE,{:.1},{},{},{},{},{},{},{}",
+                                elapsed,
+                                done,
+                                rss,
+                                cache_bytes,
+                                dhat_stats.total_bytes,
+                                dhat_stats.total_blocks,
+                                dhat_stats.curr_bytes,
+                                dhat_stats.max_bytes
+                            );
+                        }
+                        #[cfg(not(feature = "dhat-heap"))]
                         println!(
                             "[{:6.1}s] searches={:5} rss={:.2}MB cache={:.1}MB",
                             elapsed,

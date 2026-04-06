@@ -1713,6 +1713,51 @@ impl Dataset {
         self.base.child(VERSIONS_DIR)
     }
 
+    /// Get the base path and its associated object store.
+    ///
+    /// # Arguments
+    ///
+    /// * `base_id` - Optional base path ID. If None, returns the main base path and object store.
+    ///   If Some(id), looks up the base path from the manifest's base_paths.
+    ///
+    /// # Returns
+    ///
+    /// A tuple of (Path, Arc<ObjectStore>) for the requested base.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the specified base_id is not found in the manifest.
+    pub async fn base_path_and_store(
+        &self,
+        base_id: Option<u32>,
+    ) -> Result<(Path, Arc<ObjectStore>)> {
+        match base_id {
+            None => {
+                // Return the main base path and object store
+                Ok((self.base.clone(), self.object_store.clone()))
+            }
+            Some(id) => {
+                // Look up the base path from manifest
+                let base_path_info = self.manifest.base_paths.get(&id).ok_or_else(|| {
+                    Error::invalid_input(format!("Dataset base path with ID {} not found", id))
+                })?;
+
+                // Extract the object store path from the URI
+                let path = base_path_info.extract_path(self.session.store_registry())?;
+
+                // Create an object store for this base
+                let (store, _) = ObjectStore::from_uri_and_params(
+                    self.session.store_registry(),
+                    &base_path_info.path,
+                    &self.store_params.as_deref().cloned().unwrap_or_default(),
+                )
+                .await?;
+
+                Ok((path, store))
+            }
+        }
+    }
+
     pub(crate) fn data_file_dir(&self, data_file: &DataFile) -> Result<Path> {
         match data_file.base_id.as_ref() {
             Some(base_id) => {

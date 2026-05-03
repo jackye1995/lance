@@ -12,7 +12,7 @@ mod partition;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, RwLock as StdRwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use arrow_array::{
     Array, ArrayRef, LargeBinaryArray, RecordBatch, RecordBatchIterator, StringArray, UInt64Array,
@@ -1040,8 +1040,20 @@ impl ConsumerGroup {
     ///
     /// `position` is 0-indexed and must be less than `total`. If `total` exceeds
     /// the topic's partition count, some consumers will be idle.
+    /// `assignment_refresh_interval` controls how often the consumer re-lists
+    /// shards to discover new producers. Default is 5 minutes.
     pub async fn consumer(&self, position: u32, total: u32) -> Result<Consumer> {
-        Consumer::open(self.clone(), position, total).await
+        Consumer::open(self.clone(), position, total, Duration::from_secs(300)).await
+    }
+
+    /// Create a consumer with a custom assignment refresh interval.
+    pub async fn consumer_with_refresh_interval(
+        &self,
+        position: u32,
+        total: u32,
+        assignment_refresh_interval: Duration,
+    ) -> Result<Consumer> {
+        Consumer::open(self.clone(), position, total, assignment_refresh_interval).await
     }
 }
 
@@ -1789,10 +1801,17 @@ pub struct Consumer {
     assigned_partitions: Vec<u32>,
     assigned_shards: Vec<(u32, String)>,
     next_entry_positions: HashMap<(u32, String), u64>,
+    assignment_refresh_interval: Duration,
+    last_assignment_refresh: Instant,
 }
 
 impl Consumer {
-    async fn open(consumer_group: ConsumerGroup, position: u32, total: u32) -> Result<Self> {
+    async fn open(
+        consumer_group: ConsumerGroup,
+        position: u32,
+        total: u32,
+        assignment_refresh_interval: Duration,
+    ) -> Result<Self> {
         if total == 0 {
             return Err(Error::invalid_input(
                 "total consumers must be greater than 0",
@@ -1831,6 +1850,8 @@ impl Consumer {
             assigned_partitions,
             assigned_shards,
             next_entry_positions,
+            assignment_refresh_interval,
+            last_assignment_refresh: Instant::now(),
         })
     }
 
@@ -1868,11 +1889,8 @@ impl Consumer {
     /// consumer keeps its previous in-memory offsets.
     pub async fn poll_with_options(&mut self, options: PollOptions) -> Result<Vec<TopicBatch>> {
         self.ensure_not_fenced()?;
-        if let Err(error) = self.refresh_assignment().await {
-            if is_fencing_error(&error) {
-                self.mark_fenced();
-            }
-            return Err(error);
+        if self.last_assignment_refresh.elapsed() >= self.assignment_refresh_interval {
+            self.try_refresh_assignment().await?;
         }
         let result = poll_shards(
             self.topic.clone(),
@@ -1918,8 +1936,19 @@ impl Consumer {
         Ok(())
     }
 
+    async fn try_refresh_assignment(&mut self) -> Result<()> {
+        if let Err(error) = self.refresh_assignment().await {
+            if is_fencing_error(&error) {
+                self.mark_fenced();
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
     async fn refresh_assignment(&mut self) -> Result<()> {
         self.topic.refresh_partitions().await?;
+        self.last_assignment_refresh = Instant::now();
         let assigned_shards =
             assigned_shards_for_partitions(&self.topic, &self.assigned_partitions)?;
         let assigned_shard_set = assigned_shards.iter().cloned().collect::<HashSet<_>>();
@@ -2325,7 +2354,7 @@ mod tests {
             .open_or_create()
             .await
             .unwrap()
-            .consumer(0, 1)
+            .consumer_with_refresh_interval(0, 1, Duration::ZERO)
             .await
             .unwrap()
     }
@@ -2935,7 +2964,10 @@ mod tests {
             .send(topic_message!("created-group-message", json!({ "value": 1 })).unwrap())
             .await
             .unwrap();
-        let mut consumer = reopened.consumer(0, 1).await.unwrap();
+        let mut consumer = reopened
+            .consumer_with_refresh_interval(0, 1, Duration::ZERO)
+            .await
+            .unwrap();
         let polled = consumer.poll().await.unwrap();
         assert_eq!(count_rows(&polled), 1);
         consumer.commit(&polled).await.unwrap();
@@ -2953,7 +2985,10 @@ mod tests {
             .await
             .unwrap();
 
-        let first = group.consumer(0, 1).await.unwrap();
+        let first = group
+            .consumer_with_refresh_interval(0, 1, Duration::ZERO)
+            .await
+            .unwrap();
         let shards = consumer_group_shards_from_mem_wal_listing(group.dataset())
             .await
             .unwrap();
@@ -2966,7 +3001,10 @@ mod tests {
             std::collections::HashSet::from([(0, 0), (0, 1)])
         );
 
-        let second = group.consumer(0, 1).await.unwrap();
+        let second = group
+            .consumer_with_refresh_interval(0, 1, Duration::ZERO)
+            .await
+            .unwrap();
         assert_eq!(second.position(), 0);
 
         let err = first.commit_current().await.unwrap_err();
@@ -2989,7 +3027,12 @@ mod tests {
         let total = 3u32;
         let mut consumers = Vec::new();
         for position in 0..total {
-            consumers.push(group.consumer(position, total).await.unwrap());
+            consumers.push(
+                group
+                    .consumer_with_refresh_interval(position, total, Duration::ZERO)
+                    .await
+                    .unwrap(),
+            );
         }
 
         let mut assigned = std::collections::HashSet::new();
@@ -3021,10 +3064,16 @@ mod tests {
             .await
             .unwrap();
 
-        let err = group.consumer(0, 0).await.unwrap_err();
+        let err = group
+            .consumer_with_refresh_interval(0, 0, Duration::ZERO)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("total"), "{}", err);
 
-        let err = group.consumer(3, 2).await.unwrap_err();
+        let err = group
+            .consumer_with_refresh_interval(3, 2, Duration::ZERO)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("position"), "{}", err);
     }
 
@@ -3044,7 +3093,12 @@ mod tests {
         let total = 3u32;
         let mut consumers = Vec::new();
         for position in 0..total {
-            consumers.push(group.consumer(position, total).await.unwrap());
+            consumers.push(
+                group
+                    .consumer_with_refresh_interval(position, total, Duration::ZERO)
+                    .await
+                    .unwrap(),
+            );
         }
 
         let mut total_rows = 0;
@@ -3059,7 +3113,10 @@ mod tests {
 
         let mut resumed_rows = 0;
         for position in 0..total {
-            let mut consumer = group.consumer(position, total).await.unwrap();
+            let mut consumer = group
+                .consumer_with_refresh_interval(position, total, Duration::ZERO)
+                .await
+                .unwrap();
             resumed_rows += count_rows(&consumer.poll().await.unwrap());
         }
         assert_eq!(resumed_rows, 0);
@@ -3236,7 +3293,7 @@ mod tests {
             .open_or_create()
             .await
             .unwrap()
-            .consumer(0, 1)
+            .consumer_with_refresh_interval(0, 1, Duration::ZERO)
             .await
             .unwrap();
         let polled = consumer.poll().await.unwrap();
@@ -3294,7 +3351,7 @@ mod tests {
             .open_or_create()
             .await
             .unwrap()
-            .consumer(0, 1)
+            .consumer_with_refresh_interval(0, 1, Duration::ZERO)
             .await
             .unwrap();
         let polled = consumer.poll().await.unwrap();
@@ -3379,7 +3436,7 @@ mod tests {
             .open_or_create()
             .await
             .unwrap()
-            .consumer(0, 1)
+            .consumer_with_refresh_interval(0, 1, Duration::ZERO)
             .await
             .unwrap();
         let polled = consumer.poll().await.unwrap();
@@ -3391,7 +3448,7 @@ mod tests {
             .open()
             .await
             .unwrap()
-            .consumer(0, 1)
+            .consumer_with_refresh_interval(0, 1, Duration::ZERO)
             .await
             .unwrap();
         assert!(resumed.poll().await.unwrap().is_empty());
@@ -3424,7 +3481,7 @@ mod tests {
             .open_or_create()
             .await
             .unwrap()
-            .consumer(0, 1)
+            .consumer_with_refresh_interval(0, 1, Duration::ZERO)
             .await
             .unwrap();
         let polled = consumer.poll().await.unwrap();
@@ -3472,8 +3529,14 @@ mod tests {
             .open_or_create()
             .await
             .unwrap();
-        let mut c0 = group.consumer(0, 2).await.unwrap();
-        let mut c1 = group.consumer(1, 2).await.unwrap();
+        let mut c0 = group
+            .consumer_with_refresh_interval(0, 2, Duration::ZERO)
+            .await
+            .unwrap();
+        let mut c1 = group
+            .consumer_with_refresh_interval(1, 2, Duration::ZERO)
+            .await
+            .unwrap();
 
         let mut all_partitions = std::collections::HashSet::new();
         for p in c0.assigned_partitions() {

@@ -719,13 +719,15 @@ impl WalAppender {
 /// Uses `wal_entry_position_last_seen` from the shard manifest as a cursor
 /// hint for `next_position()`, probing forward from the hint to find the true
 /// tip before falling back to a full directory listing.
+///
+/// Successful `read_entry` calls asynchronously update
+/// `wal_entry_position_last_seen` in the shard manifest (fire-and-forget).
 #[derive(Debug, Clone)]
 pub struct WalTailer {
     object_store: Arc<ObjectStore>,
     wal_dir: Path,
     manifest_store: Arc<ShardManifestStore>,
     shard_id: Uuid,
-    update_cursor: bool,
 }
 
 impl WalTailer {
@@ -742,20 +744,12 @@ impl WalTailer {
             wal_dir: shard_wal_path(&base_path, &shard_id),
             manifest_store,
             shard_id,
-            update_cursor: false,
         }
     }
 
-    /// Enable async best-effort cursor updates on read.
-    ///
-    /// When enabled, successful `read_entry` calls asynchronously update
-    /// `wal_entry_position_last_seen` in the shard manifest.
-    pub fn with_cursor_updates(mut self, enabled: bool) -> Self {
-        self.update_cursor = enabled;
-        self
-    }
-
     /// Read a WAL entry at the given position. Returns `None` if no entry exists.
+    /// On success, asynchronously updates `wal_entry_position_last_seen` in the
+    /// shard manifest as a best-effort cursor hint for future readers.
     pub async fn read_entry(&self, entry_position: u64) -> Result<Option<WalReadEntry>> {
         let path = self.wal_dir.child(wal_entry_filename(entry_position));
         let data = match self.object_store.inner.get(&path).await {
@@ -776,12 +770,10 @@ impl WalTailer {
         })?;
         let (writer_epoch, batches) = deserialize_appender_batches(bytes)?;
 
-        if self.update_cursor {
-            let ms = self.manifest_store.clone();
-            tokio::spawn(async move {
-                let _ = best_effort_cursor_update(&ms, entry_position).await;
-            });
-        }
+        let ms = self.manifest_store.clone();
+        tokio::spawn(async move {
+            let _ = best_effort_cursor_update(&ms, entry_position).await;
+        });
 
         Ok(Some(WalReadEntry {
             shard_id: self.shard_id,
@@ -1343,7 +1335,7 @@ mod tests {
         }
 
         let tailer =
-            WalTailer::new(store.clone(), base_path.clone(), shard_id).with_cursor_updates(true);
+            WalTailer::new(store.clone(), base_path.clone(), shard_id);
         let entry = tailer.read_entry(1).await.unwrap().unwrap();
         assert_eq!(entry.entry_position, 1);
 

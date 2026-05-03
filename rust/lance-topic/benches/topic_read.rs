@@ -25,7 +25,7 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema as ArrowSchema};
 use futures::future::try_join_all;
 use lance_core::{Error, Result};
-use lance_topic::{Producer, Topic, TopicBatch, WalTailer};
+use lance_topic::{Producer, Topic};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -33,12 +33,10 @@ const DEFAULT_PAYLOAD_BYTES: usize = 256;
 const DEFAULT_REPEATS: usize = 3;
 const EMBEDDING_DIM: i32 = 1024;
 const DEFAULT_CASES: &[(&str, u32, usize, usize, usize)] = &[
-    ("read_prod1_50k_poll32", 1, 50_000, 5_000, 32),
-    ("read_prod1_200k_poll1", 1, 200_000, 5_000, 1),
-    ("read_prod1_200k_poll8", 1, 200_000, 5_000, 8),
-    ("read_prod1_200k_poll32", 1, 200_000, 5_000, 32),
-    ("read_prod4_200k_poll32", 4, 200_000, 5_000, 32),
-    ("read_prod8_500k_poll32", 8, 500_000, 5_000, 32),
+    ("read_prod1_poll32", 1, 200_000, 5_000, 32),
+    ("read_prod4_poll32", 4, 200_000, 5_000, 32),
+    ("read_prod8_poll32", 8, 200_000, 5_000, 32),
+    ("read_prod16_poll32", 16, 200_000, 5_000, 32),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -342,19 +340,16 @@ async fn run_case(
     .await?;
     seed_topic(&producers, input).await?;
 
-    topic.refresh_partitions().await?;
-    let partitions = topic.partitions()?;
-    let os: Arc<lance_io::object_store::ObjectStore> = topic.dataset().object_store(None).await?;
-    let bp = topic.dataset().branch_location().path;
-    let tailers: Vec<WalTailer> = partitions
-        .iter()
-        .filter(|p| p.partition_id == 0)
-        .map(|p| WalTailer::new(os.clone(), bp.clone(), p.shard_id))
-        .collect();
-    let mut positions: Vec<u64> = Vec::new();
-    for t in &tailers {
-        positions.push(t.first_position().await?);
-    }
+    let group = topic
+        .consumer_group(format!("bench-{}-r{}", case.name, repeat))
+        .open_or_create()
+        .await?;
+    let mut consumer = group
+        .consumer_with_refresh_interval(0, 1, std::time::Duration::from_secs(600))
+        .await?;
+    let poll_options = lance_topic::PollOptions {
+        max_entries_per_partition: case.poll_entries,
+    };
 
     let start = Instant::now();
     let mut rows_read = 0usize;
@@ -362,41 +357,18 @@ async fn run_case(
     let mut arrow_batches_read = 0usize;
     let mut polls = 0usize;
     while rows_read < case.rows {
-        let read_futures = tailers.iter().enumerate().map(|(idx, tailer)| {
-            let pos = positions[idx];
-            async move {
-                let mut p = pos;
-                let mut entries = Vec::new();
-                for _ in 0..case.poll_entries {
-                    match tailer.read_entry(p).await? {
-                        Some(entry) => {
-                            p += 1;
-                            entries.push(entry);
-                        }
-                        None => break,
-                    }
-                }
-                Ok::<_, lance_core::Error>((idx, p, entries))
-            }
-        });
-        let results = try_join_all(read_futures).await?;
-        let mut any = false;
-        for (idx, new_pos, entries) in results {
-            positions[idx] = new_pos;
-            for entry in entries {
-                any = true;
-                let batch = TopicBatch::from_entry(entry, 0, String::new())?;
-                rows_read += batch.num_rows();
-                wal_entries_read += 1;
-                arrow_batches_read += batch.batches.len();
-            }
-        }
+        let batches = consumer.poll_with_options(poll_options.clone()).await?;
         polls += 1;
-        if !any {
+        if batches.is_empty() {
             return Err(Error::io(format!(
                 "case '{}' reached end of WAL after {} rows, expected {}",
                 case.name, rows_read, case.rows
             )));
+        }
+        for batch in batches {
+            rows_read += batch.num_rows();
+            wal_entries_read += 1;
+            arrow_batches_read += batch.batches.len();
         }
     }
     let elapsed = start.elapsed();

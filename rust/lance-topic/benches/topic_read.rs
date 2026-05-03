@@ -362,20 +362,33 @@ async fn run_case(
     let mut arrow_batches_read = 0usize;
     let mut polls = 0usize;
     while rows_read < case.rows {
-        let mut any = false;
-        for (idx, tailer) in tailers.iter().enumerate() {
-            for _ in 0..case.poll_entries {
-                match tailer.read_entry(positions[idx]).await? {
-                    Some(entry) => {
-                        any = true;
-                        positions[idx] += 1;
-                        let batch = TopicBatch::from_entry(entry, 0, String::new())?;
-                        rows_read += batch.num_rows();
-                        wal_entries_read += 1;
-                        arrow_batches_read += batch.batches.len();
+        let read_futures = tailers.iter().enumerate().map(|(idx, tailer)| {
+            let pos = positions[idx];
+            async move {
+                let mut p = pos;
+                let mut entries = Vec::new();
+                for _ in 0..case.poll_entries {
+                    match tailer.read_entry(p).await? {
+                        Some(entry) => {
+                            p += 1;
+                            entries.push(entry);
+                        }
+                        None => break,
                     }
-                    None => break,
                 }
+                Ok::<_, lance_core::Error>((idx, p, entries))
+            }
+        });
+        let results = try_join_all(read_futures).await?;
+        let mut any = false;
+        for (idx, new_pos, entries) in results {
+            positions[idx] = new_pos;
+            for entry in entries {
+                any = true;
+                let batch = TopicBatch::from_entry(entry, 0, String::new())?;
+                rows_read += batch.num_rows();
+                wal_entries_read += 1;
+                arrow_batches_read += batch.batches.len();
             }
         }
         polls += 1;

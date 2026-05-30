@@ -22,10 +22,13 @@
 //!     --concurrency 1,10,100 --operations 200
 
 use std::collections::HashMap;
+use std::fs;
 use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use arrow::array::{RecordBatch, RecordBatchIterator, StringArray};
 use arrow::datatypes::{DataType, Field, Schema as ArrowSchema};
@@ -514,6 +517,8 @@ async fn worker(
     table_count: usize,
     inline_optimization: bool,
     manifest_shard_count: usize,
+    ready_path: Option<&str>,
+    start_path: Option<&str>,
     storage_options: &HashMap<String, String>,
 ) {
     let ns = build_namespace(
@@ -532,6 +537,8 @@ async fn worker(
                 run_operation(ns.as_ref(), operation, worker_id, 0, table_count, &ipc_data).await;
         }
     }
+
+    wait_for_coordinator(ready_path, start_path);
 
     for i in 0..operations {
         let start = Instant::now();
@@ -610,9 +617,13 @@ async fn cold_read_worker(
     table_count: usize,
     inline_optimization: bool,
     manifest_shard_count: usize,
+    ready_path: Option<&str>,
+    start_path: Option<&str>,
     storage_options: &HashMap<String, String>,
 ) {
     let ipc_data = Bytes::from(create_test_ipc_data());
+
+    wait_for_coordinator(ready_path, start_path);
 
     for i in 0..operations {
         // Fresh namespace for each operation — simulates cold start
@@ -634,6 +645,18 @@ async fn cold_read_worker(
             error: err,
         };
         println!("{}", serde_json::to_string(&record).unwrap());
+    }
+}
+
+fn wait_for_coordinator(ready_path: Option<&str>, start_path: Option<&str>) {
+    if let Some(ready_path) = ready_path {
+        fs::write(ready_path, b"ready").expect("failed to write worker ready marker");
+    }
+    if let Some(start_path) = start_path {
+        let start_path = Path::new(start_path);
+        while !start_path.exists() {
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 }
 
@@ -666,9 +689,13 @@ fn run_workers(
         );
     }
 
-    let wall_start = Instant::now();
+    let sync_dir = create_sync_dir();
+    let start_path = sync_dir.join("start");
+    let ready_paths: Vec<_> = (0..concurrency)
+        .map(|worker_id| sync_dir.join(format!("ready_{}", worker_id)))
+        .collect();
 
-    let children: Vec<_> = (0..concurrency)
+    let mut children: Vec<_> = (0..concurrency)
         .map(|worker_id| {
             let mut cmd = Command::new(self_exe);
             let unique_worker_id = concurrency * 1_000_000 + worker_id;
@@ -688,7 +715,11 @@ fn run_workers(
                 .arg("--inline-optimization")
                 .arg(inline_optimization.to_string())
                 .arg("--manifest-shard-count")
-                .arg(manifest_shard_count.to_string());
+                .arg(manifest_shard_count.to_string())
+                .arg("--ready-path")
+                .arg(ready_paths[worker_id].to_string_lossy().to_string())
+                .arg("--start-path")
+                .arg(start_path.to_string_lossy().to_string());
             for (k, v) in storage_options {
                 cmd.arg("--storage-option").arg(format!("{}={}", k, v));
             }
@@ -698,6 +729,10 @@ fn run_workers(
                 .expect("Failed to spawn worker")
         })
         .collect();
+
+    wait_for_workers_ready(&mut children, &ready_paths);
+    let wall_start = Instant::now();
+    fs::write(&start_path, b"start").expect("failed to write worker start marker");
 
     let mut all_latencies = Vec::new();
     let mut total_errors = 0;
@@ -722,6 +757,7 @@ fn run_workers(
     }
 
     let wall_duration = wall_start.elapsed();
+    let _ = fs::remove_dir_all(&sync_dir);
     compute_result(
         variant,
         operation,
@@ -731,6 +767,44 @@ fn run_workers(
         all_latencies,
         total_errors,
     )
+}
+
+fn create_sync_dir() -> PathBuf {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is before unix epoch")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "manifest_bench_sync_{}_{}",
+        std::process::id(),
+        now
+    ));
+    fs::create_dir_all(&dir).expect("failed to create worker sync directory");
+    dir
+}
+
+fn wait_for_workers_ready(children: &mut [std::process::Child], ready_paths: &[PathBuf]) {
+    let start = Instant::now();
+    loop {
+        if ready_paths.iter().all(|path| path.exists()) {
+            return;
+        }
+
+        for child in children.iter_mut() {
+            if let Some(status) = child
+                .try_wait()
+                .expect("failed to check worker readiness status")
+            {
+                panic!("worker exited before benchmark start: {}", status);
+            }
+        }
+
+        if start.elapsed() > Duration::from_secs(30 * 60) {
+            panic!("timed out waiting for workers to open namespace");
+        }
+
+        thread::sleep(Duration::from_millis(50));
+    }
 }
 
 fn parse_concurrency_list(s: &str) -> Vec<usize> {
@@ -763,6 +837,8 @@ async fn main() {
     let mut inline_optimization = true;
     let mut manifest_shard_count: usize = 0;
     let mut variant = String::new();
+    let mut ready_path: Option<String> = None;
+    let mut start_path: Option<String> = None;
     let mut storage_options: HashMap<String, String> = HashMap::new();
 
     let mut i = 2;
@@ -814,6 +890,14 @@ async fn main() {
             }
             "--variant" => {
                 variant = args[i + 1].clone();
+                i += 2;
+            }
+            "--ready-path" => {
+                ready_path = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--start-path" => {
+                start_path = Some(args[i + 1].clone());
                 i += 2;
             }
             "--storage-option" => {
@@ -869,6 +953,8 @@ async fn main() {
                     table_count,
                     inline_optimization,
                     manifest_shard_count,
+                    ready_path.as_deref(),
+                    start_path.as_deref(),
                     &storage_options,
                 )
                 .await;
@@ -882,6 +968,8 @@ async fn main() {
                     table_count,
                     inline_optimization,
                     manifest_shard_count,
+                    ready_path.as_deref(),
+                    start_path.as_deref(),
                     &storage_options,
                 )
                 .await;

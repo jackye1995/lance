@@ -730,30 +730,46 @@ fn run_workers(
         })
         .collect();
 
+    let output_readers: Vec<_> = children
+        .iter_mut()
+        .map(|child| {
+            let stdout = child.stdout.take().unwrap();
+            thread::spawn(move || {
+                let reader = BufReader::new(stdout);
+                let mut latencies = Vec::new();
+                let mut errors = 0;
+                for line in reader.lines() {
+                    let line = line.expect("failed to read worker output");
+                    if let Ok(record) = serde_json::from_str::<LatencyRecord>(&line) {
+                        if record.error {
+                            errors += 1;
+                        } else {
+                            latencies.push(record.latency_ms);
+                        }
+                    }
+                }
+                (latencies, errors)
+            })
+        })
+        .collect();
+
     wait_for_workers_ready(&mut children, &ready_paths);
     let wall_start = Instant::now();
     fs::write(&start_path, b"start").expect("failed to write worker start marker");
 
-    let mut all_latencies = Vec::new();
-    let mut total_errors = 0;
-
     for mut child in children {
-        let stdout = child.stdout.take().unwrap();
-        let reader = BufReader::new(stdout);
-        for line in reader.lines() {
-            let line = line.expect("failed to read worker output");
-            if let Ok(record) = serde_json::from_str::<LatencyRecord>(&line) {
-                if record.error {
-                    total_errors += 1;
-                } else {
-                    all_latencies.push(record.latency_ms);
-                }
-            }
-        }
         let status = child.wait().expect("failed to wait for worker");
         if !status.success() {
             eprintln!("Worker exited with status: {}", status);
         }
+    }
+
+    let mut all_latencies = Vec::new();
+    let mut total_errors = 0;
+    for reader in output_readers {
+        let (mut latencies, errors) = reader.join().expect("failed to join worker output reader");
+        all_latencies.append(&mut latencies);
+        total_errors += errors;
     }
 
     let wall_duration = wall_start.elapsed();

@@ -21,10 +21,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use arrow_array::cast::AsArray;
-use arrow_array::types::Float32Type;
-use arrow_array::{
-    FixedSizeListArray, Float32Array, RecordBatch, RecordBatchIterator, UInt64Array,
-};
+use arrow_array::{FixedSizeListArray, Float32Array, RecordBatch, RecordBatchIterator};
 use arrow_schema::{DataType, Field, Schema};
 use clap::Parser;
 use futures::TryStreamExt;

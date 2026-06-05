@@ -272,6 +272,10 @@ name = "rabitq_vs_hnsw"
 harness = false
 
 [[bench]]
+name = "rq_real_index"
+harness = false
+
+[[bench]]
 name = "mem_wal_fts_bench"
 path = "benches/mem_wal/fts/mem_wal_fts_bench.rs"
 harness = false

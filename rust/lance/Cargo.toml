@@ -264,6 +264,10 @@ path = "benches/mem_wal/write/mem_wal_shard_writer_backpressure.rs"
 harness = false
 
 [[bench]]
+name = "rabitq_vs_hnsw"
+harness = false
+
+[[bench]]
 name = "mem_wal_fineweb_fts"
 path = "benches/mem_wal/fts/mem_wal_fineweb_fts.rs"
 harness = false

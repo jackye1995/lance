@@ -43,7 +43,7 @@ pub type RowPosition = u64;
 // Re-export public types used externally
 pub use btree::{BTreeIndexConfig, BTreeMemIndex};
 pub use fts::{FtsIndexConfig, FtsMemIndex, FtsQueryExpr, SearchOptions};
-pub use hnsw::{HnswIndexConfig, HnswMemIndex};
+pub use hnsw::{HnswIndexConfig, HnswMemIndex, mem_wal_hnsw_default};
 
 // ============================================================================
 // Index Store

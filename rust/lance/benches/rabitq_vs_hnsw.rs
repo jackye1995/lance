@@ -56,6 +56,10 @@ use lance_index::vector::{CENTROID_DIST_COLUMN, PART_ID_COLUMN};
 
 const VECTOR_COLUMN: &str = "vector";
 
+// All exact f32 distances (ground truth, rerank, brute, centroid selection) use
+// `l2_f32` — the AVX-512 dispatcher the in-memory HNSW hot path uses — so the
+// RaBitQ rerank and HNSW search are compared on the same SIMD footing.
+
 #[derive(Parser, Debug, Clone)]
 #[command(about = "MemTable HNSW vs RaBitQ (flat / base-IVF) benchmark")]
 struct Args {
@@ -211,7 +215,7 @@ fn exact_topk(base: &[f32], queries: &[f32], dim: usize, k: usize) -> Vec<Vec<u3
             let mut best: Vec<(f32, u32)> = base
                 .chunks_exact(dim)
                 .enumerate()
-                .map(|(id, v)| (lance_linalg::distance::l2_distance(q, v), id as u32))
+                .map(|(id, v)| (lance_linalg::distance::l2_f32(q, v), id as u32))
                 .collect();
             let kk = k.min(best.len());
             best.select_nth_unstable_by(kk - 1, |a, b| a.0.total_cmp(&b.0));
@@ -291,6 +295,17 @@ fn search_hnsw(
         .collect()
 }
 
+/// Estimated in-memory HNSW graph overhead per the mem_wal layout (M=16),
+/// excluding the shared f32 memtable vectors (held by reference, reported
+/// separately). Per node: ~2*M published neighbor ids (u32) plus the ranked
+/// ScoredPoint working buffers (8 B each) retained while the index stays
+/// queryable-during-build, plus per-node Vec/struct overhead. Dim-independent.
+/// This is an estimate, not a measurement — see RESULTS for the caveat.
+fn hnsw_index_bytes(n: usize) -> u64 {
+    const M: u64 = 16; // mem_wal_hnsw_default num_edges
+    n as u64 * (2 * M * 4 + 2 * M * 8 + 48)
+}
+
 // ----- RaBitQ shared: quantize a set of vectors against one centroid -----
 fn quantize_partition(
     vectors: &[f32],
@@ -346,7 +361,7 @@ fn rerank(base: &[f32], query: &[f32], dim: usize, cand: Vec<(f32, u32)>, k: usi
         .iter()
         .map(|&(_, id)| {
             (
-                lance_linalg::distance::l2_distance(
+                lance_linalg::distance::l2_f32(
                     query,
                     &base[id as usize * dim..(id as usize + 1) * dim],
                 ),
@@ -412,6 +427,9 @@ fn search_rq_flat(
         .storage
         .dist_calculator(Arc::new(Float32Array::from(qr)) as ArrayRef, dqc);
     let cand_n = (overfetch * k).min(idx.n);
+    if cand_n == 0 {
+        return vec![];
+    }
     let mut est: Vec<(f32, u32)> = (0..idx.n as u32)
         .map(|id| (calc.distance(id), id))
         .collect();
@@ -494,7 +512,7 @@ fn search_rq_ivf(
     let mut cdist: Vec<(f32, usize)> = (0..idx.nlist)
         .map(|p| {
             (
-                lance_linalg::distance::l2_distance(query, &idx.centroids[p * dim..(p + 1) * dim]),
+                lance_linalg::distance::l2_f32(query, &idx.centroids[p * dim..(p + 1) * dim]),
                 p,
             )
         })
@@ -529,7 +547,7 @@ fn search_brute(base: &[f32], query: &[f32], dim: usize, k: usize) -> Vec<u32> {
     let mut d: Vec<(f32, u32)> = (0..n)
         .map(|i| {
             (
-                lance_linalg::distance::l2_distance(query, &base[i * dim..(i + 1) * dim]),
+                lance_linalg::distance::l2_f32(query, &base[i * dim..(i + 1) * dim]),
                 i as u32,
             )
         })
@@ -589,6 +607,18 @@ fn main() {
     let nlists = parse_usize_list(&args.nlist);
     let nprobes = parse_usize_list(&args.nprobe);
     let variants = parse_str_list(&args.variants);
+    assert!(
+        !sizes.is_empty() && sizes.iter().all(|&n| n > 0),
+        "--sizes must be non-empty positive integers"
+    );
+    assert!(
+        !ks.is_empty() && ks.iter().all(|&k| k > 0),
+        "--k must be non-empty positive integers"
+    );
+    assert!(
+        n_queries > 0,
+        "no queries available (check --queries / query file)"
+    );
     let has = |v: &str| variants.iter().any(|x| x == v);
     let rotations: Vec<(&str, RQRotationType)> = match args.rotation.as_str() {
         "fast" => vec![("fast", RQRotationType::Fast)],
@@ -706,22 +736,14 @@ fn main() {
                     rs += recall(&r, &gtk[i], *k);
                 }
                 row(
-                    "brute",
-                    n,
-                    *k,
-                    "",
-                    "-",
-                    0.0,
-                    lat,
-                    rs,
-                    n_queries,
-                    (n as u64) * (dim as u64) * 4,
+                    "brute", n, *k, "", "-", 0.0, lat, rs, n_queries,
+                    0, // brute has no index; it is just the shared f32 memtable data
                 );
             }
         }
         if has("hnsw") {
             let (h, build) = build_hnsw(base, dim, dt, args.batch);
-            let bytes = (n as f64 * 16.0 * 3.0 * 4.0) as u64;
+            let bytes = hnsw_index_bytes(n);
             for (k, gtk) in &gt {
                 for &ef in &efs {
                     if ef < *k {

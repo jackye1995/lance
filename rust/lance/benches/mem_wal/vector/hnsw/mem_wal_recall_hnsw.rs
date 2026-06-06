@@ -391,6 +391,7 @@ async fn run_checkpoint(
         max_memtable_size: cp.saturating_mul(row_size_estimate).saturating_mul(4),
         max_memtable_rows: cp.saturating_mul(2),
         max_memtable_batches: total_batches_max.saturating_mul(2).max(8_000),
+        avg_rows_per_batch: 10,
         max_wal_flush_interval: Some(Duration::from_millis(200)),
         max_unflushed_memtable_bytes: usize::MAX / 2,
         hnsw_params,

@@ -19,7 +19,7 @@ use std::sync::{Arc, RwLock as StdRwLock};
 use std::time::{Duration, Instant};
 
 use arrow_array::RecordBatch;
-use arrow_schema::Schema as ArrowSchema;
+use arrow_schema::{DataType, Schema as ArrowSchema};
 use async_trait::async_trait;
 use lance_core::datatypes::Schema;
 use lance_core::{Error, Result};
@@ -108,24 +108,28 @@ pub struct ShardWriterConfig {
 
     /// Maximum MemTable size in bytes before triggering a flush to storage.
     ///
-    /// MemTable size is checked every `max_wal_flush_interval` (during WAL flush ticks).
-    /// Default: 256MB
+    /// Checked every `max_wal_flush_interval` (during WAL flush ticks).
+    /// `0` (the default) means **derive from the schema**: estimated bytes/row ×
+    /// [`Self::max_memtable_rows`]. Resolved once the schema is known (see
+    /// [`Self::resolve_defaults`]).
     pub max_memtable_size: usize,
 
-    /// Maximum number of rows in a MemTable.
+    /// Maximum number of rows in a MemTable — the primary capacity guideline.
     ///
-    /// Used to pre-allocate the in-memory HNSW graph and vector storage
-    /// capacity. When the memtable reaches capacity, it will be flushed.
-    /// Default: 100,000 rows
+    /// Sizes the in-memory index (HNSW graph / RaBitQ partitioning) and, when
+    /// `max_memtable_size`/`max_memtable_batches` are left at `0`, derives them.
+    /// Default: 1,000,000 rows.
     pub max_memtable_rows: usize,
 
     /// Maximum number of batches in a MemTable.
     ///
-    /// Used to pre-allocate batch storage. When this limit is reached,
-    /// memtable will be flushed. Sized for typical ML workloads with
-    /// 1024-dim vectors (~82KB per 20-row batch).
-    /// Default: 8,000 batches
+    /// `0` (the default) means **derive**: `max_memtable_rows / avg_rows_per_batch`.
+    /// Pre-allocates batch storage; reaching it triggers a flush.
     pub max_memtable_batches: usize,
+
+    /// Expected average rows per `RecordBatch`, used to derive
+    /// `max_memtable_batches` from `max_memtable_rows`. Default: 10.
+    pub avg_rows_per_batch: usize,
 
     /// Batch size for parallel HEAD requests when scanning for manifest versions.
     ///
@@ -227,9 +231,10 @@ impl Default for ShardWriterConfig {
             sync_indexed_write: true,
             max_wal_buffer_size: 10 * 1024 * 1024, // 10MB
             max_wal_flush_interval: Some(Duration::from_millis(100)), // 100ms
-            max_memtable_size: 256 * 1024 * 1024,  // 256MB
-            max_memtable_rows: 100_000,            // 100k rows
-            max_memtable_batches: 8_000,           // 8k batches
+            max_memtable_size: 0,                  // 0 = derive from schema × rows
+            max_memtable_rows: 1_000_000,          // 1M rows (capacity guideline)
+            max_memtable_batches: 0,               // 0 = derive from rows / avg_rows_per_batch
+            avg_rows_per_batch: 10,                // assumed rows per RecordBatch
             manifest_scan_batch_size: 2,
             max_unflushed_memtable_bytes: 1024 * 1024 * 1024, // 1GB
             backpressure_log_interval: Duration::from_secs(30),
@@ -239,6 +244,40 @@ impl Default for ShardWriterConfig {
             enable_memtable: true,
             hnsw_params: HashMap::new(),
         }
+    }
+}
+
+/// Estimate bytes per row from the Arrow schema — exact for fixed-width fields,
+/// a conservative constant for variable-length ones. Used to derive the MemTable
+/// byte cap from the row guideline.
+fn estimated_bytes_per_row(schema: &ArrowSchema) -> usize {
+    schema
+        .fields()
+        .iter()
+        .map(|f| estimated_field_bytes(f.data_type()))
+        .sum()
+}
+
+fn estimated_field_bytes(dt: &DataType) -> usize {
+    use DataType::*;
+    match dt {
+        Null => 0,
+        Boolean | Int8 | UInt8 => 1,
+        Int16 | UInt16 | Float16 => 2,
+        Int32 | UInt32 | Float32 | Date32 | Time32(_) => 4,
+        Int64 | UInt64 | Float64 | Date64 | Time64(_) | Timestamp(_, _) | Duration(_) => 8,
+        Decimal128(_, _) => 16,
+        Decimal256(_, _) => 32,
+        FixedSizeBinary(n) => *n as usize,
+        FixedSizeList(field, n) => (*n as usize) * estimated_field_bytes(field.data_type()),
+        // Variable-length: assume ~64 bytes (string/binary) or ~4 elements (list).
+        Utf8 | LargeUtf8 | Binary | LargeBinary => 64,
+        List(field) | LargeList(field) => 4 * estimated_field_bytes(field.data_type()),
+        Struct(fields) => fields
+            .iter()
+            .map(|f| estimated_field_bytes(f.data_type()))
+            .sum(),
+        _ => 8,
     }
 }
 
@@ -296,6 +335,28 @@ impl ShardWriterConfig {
     /// Set maximum MemTable batches for batch store pre-allocation.
     pub fn with_max_memtable_batches(mut self, batches: usize) -> Self {
         self.max_memtable_batches = batches;
+        self
+    }
+
+    /// Set the assumed average rows per `RecordBatch` (drives the derived batch cap).
+    pub fn with_avg_rows_per_batch(mut self, rows: usize) -> Self {
+        self.avg_rows_per_batch = rows.max(1);
+        self
+    }
+
+    /// Resolve schema-derived defaults. When `max_memtable_size` or
+    /// `max_memtable_batches` are left at `0`, derive them from
+    /// `max_memtable_rows`, the schema's estimated bytes/row, and
+    /// `avg_rows_per_batch`. Idempotent; called once the schema is known.
+    pub fn resolve_defaults(mut self, schema: &ArrowSchema) -> Self {
+        let rows = self.max_memtable_rows.max(1);
+        if self.max_memtable_size == 0 {
+            let bytes_per_row = estimated_bytes_per_row(schema).max(1);
+            self.max_memtable_size = bytes_per_row.saturating_mul(rows);
+        }
+        if self.max_memtable_batches == 0 {
+            self.max_memtable_batches = rows.div_ceil(self.avg_rows_per_batch.max(1));
+        }
         self
     }
 
@@ -1277,6 +1338,10 @@ impl ShardWriter {
         stats: SharedWriteStats,
         task_executor: &Arc<TaskExecutor>,
     ) -> Result<WriterMode> {
+        // Resolve schema-derived MemTable caps (byte size, batch count) from the
+        // row guideline before any of them are read.
+        let config = config.clone().resolve_defaults(schema);
+        let config = &config;
         // Create MemTable with primary key field IDs from schema
         let lance_schema = Schema::try_from(schema.as_ref())?;
         let pk_field_ids: Vec<i32> = lance_schema

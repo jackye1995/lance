@@ -20,17 +20,23 @@ use std::sync::{Arc, Mutex};
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Float32Type, UInt32Type};
-use arrow_array::{Array, FixedSizeListArray, Float32Array, RecordBatch, UInt32Array, UInt64Array};
+use arrow_array::{
+    Array, ArrayRef, FixedSizeListArray, Float32Array, RecordBatch, UInt32Array, UInt64Array,
+};
 use arrow_schema::{DataType, Field, Schema};
 use lance_arrow::RecordBatchExt;
 use lance_core::{Error, ROW_ID, Result};
 use lance_index::vector::PART_ID_COLUMN;
 use lance_index::vector::bq::builder::RabitQuantizer;
 use lance_index::vector::bq::storage::{RabitQuantizationMetadata, RabitQuantizationStorage};
+use lance_index::vector::flat::storage::FlatFloatStorage;
+use lance_index::vector::hnsw::HNSW;
+use lance_index::vector::hnsw::builder::{HnswBuildParams, HnswQueryParams};
 use lance_index::vector::ivf::{IvfTransformer, new_ivf_transformer_with_quantizer};
 use lance_index::vector::quantizer::{Quantization, Quantizer, QuantizerStorage};
 use lance_index::vector::storage::{DistCalculator, VectorStore};
 use lance_index::vector::transform::Transformer;
+use lance_index::vector::v3::subindex::IvfSubIndex;
 use lance_linalg::distance::DistanceType;
 use rayon::prelude::*;
 
@@ -70,17 +76,27 @@ pub struct RabitqMemIndex {
     ivf_transformer: IvfTransformer,
     /// Quantizer metadata (rotation), cached for query rotation + storage builds.
     metadata: RabitQuantizationMetadata,
-    /// `nlist` reused base centroids, flattened for query-time partition routing.
-    centroids_flat: Vec<f32>,
     /// `nlist` precomputed rotated centroids `R(c)` (each `rotated_dim` long), so
     /// search computes `R(q - c) = R(q) - R(c)` without re-rotating per partition.
     rotated_centroids: Vec<f32>,
     rotated_dim: usize,
+    /// HNSW over the centroids for query-time routing: find the nprobe nearest
+    /// centroids in ~O(log nlist) instead of a brute-force scan of all `nlist`.
+    /// This is Lance's [`SimpleIndex`] technique (already used for build-time
+    /// partition assignment) applied to the read path.
+    ///
+    /// [`SimpleIndex`]: lance_index::vector::utils
+    centroid_storage: FlatFloatStorage,
+    centroid_hnsw: HNSW,
     nlist: usize,
     dim: usize,
     parts: Vec<Mutex<PartitionBuf>>,
     len: AtomicUsize,
 }
+
+/// HNSW build parameters for the centroid routing index (small, fast to build).
+const CENTROID_HNSW_EDGES: usize = 16;
+const CENTROID_HNSW_EF_CONSTRUCTION: usize = 40;
 
 impl RabitqMemIndex {
     pub fn new(config: RabitqIndexConfig) -> Result<Self> {
@@ -114,15 +130,25 @@ impl RabitqMemIndex {
                 let c = Float32Array::from(centroids_flat[p * dim..(p + 1) * dim].to_vec());
                 metadata.rotate_into(&c, out);
             });
+        // Build an HNSW over the centroids for fast query-time routing.
+        let centroid_storage =
+            FlatFloatStorage::new(config.centroids.clone(), config.distance_type);
+        let centroid_hnsw = HNSW::index_vectors(
+            &centroid_storage,
+            HnswBuildParams::default()
+                .num_edges(CENTROID_HNSW_EDGES)
+                .ef_construction(CENTROID_HNSW_EF_CONSTRUCTION),
+        )?;
         Ok(Self {
             field_id: config.field_id,
             column: config.column,
             distance_type: config.distance_type,
             ivf_transformer,
             metadata,
-            centroids_flat,
             rotated_centroids,
             rotated_dim,
+            centroid_storage,
+            centroid_hnsw,
             nlist,
             dim,
             parts: (0..nlist)
@@ -165,10 +191,6 @@ impl RabitqMemIndex {
                     .sum::<usize>()
             })
             .sum()
-    }
-
-    fn centroid(&self, p: usize) -> &[f32] {
-        &self.centroids_flat[p * self.dim..(p + 1) * self.dim]
     }
 
     /// Append a batch of vectors. Runs the reused base IVF-RQ transform
@@ -290,16 +312,29 @@ impl RabitqMemIndex {
         let q = q.as_primitive::<Float32Type>();
         let qv = q.values();
 
-        // Route: pick nprobe nearest base centroids (dist_q_c = ||q - c||^2).
-        // Parallelized — the coarse scan over all centroids is otherwise a fixed
-        // single-threaded floor.
-        let mut cd: Vec<(f32, usize)> = (0..self.nlist)
-            .into_par_iter()
-            .map(|p| (lance_linalg::distance::l2_f32(qv, self.centroid(p)), p))
-            .collect();
+        // Route via the centroid HNSW: nprobe approximate-nearest centroids in
+        // ~O(log nlist) instead of a brute-force scan of all `nlist`. `nd.dist`
+        // is the centroid L2 distance (= dist_q_c). ef is widened past nprobe so
+        // routing stays accurate enough not to cost recall.
         let np = nprobe.min(self.nlist);
-        cd.select_nth_unstable_by(np - 1, |a, b| a.0.total_cmp(&b.0));
-        cd.truncate(np);
+        let route_q: ArrayRef = Arc::new(Float32Array::from(qv.to_vec()));
+        let route_params = HnswQueryParams {
+            ef: (np * 2).max(64),
+            lower_bound: None,
+            upper_bound: None,
+            dist_q_c: 0.0,
+        };
+        let routed = self.centroid_hnsw.search_basic(
+            route_q,
+            np,
+            &route_params,
+            None,
+            &self.centroid_storage,
+        )?;
+        let cd: Vec<(f32, usize)> = routed
+            .iter()
+            .map(|nd| (nd.dist.0, nd.id as usize))
+            .collect();
 
         // Rotate the query once: `R(q)`. Per partition we then subtract the
         // precomputed `R(c)` to get `R(q - c)` instead of re-rotating the query.

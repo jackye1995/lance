@@ -115,6 +115,17 @@ impl RabitQuantizationMetadata {
     pub fn binary_code_bytes(&self) -> usize {
         rabit_binary_code_bytes(self.rotated_dim())
     }
+
+    /// Rotate a raw vector into the RaBitQ code space (no residual subtraction),
+    /// writing `R(vector)` into `output` (length must be [`Self::rotated_dim`]).
+    ///
+    /// The rotation is linear, so `R(q - c) = R(q) - R(c)`: IVF search can rotate
+    /// the query once and precompute each centroid's rotation, then per probed
+    /// partition subtract instead of re-rotating (see
+    /// [`RabitQuantizationStorage::dist_calculator_with_rotated_query`]).
+    pub fn rotate_into(&self, vector: &dyn Array, output: &mut [f32]) {
+        self.rotate_vector_with_residual_into(vector, None, output);
+    }
 }
 
 fn default_rotation_type_compat() -> RQRotationType {
@@ -298,6 +309,43 @@ impl DeepSizeOf for RabitQuantizationStorage {
 impl RabitQuantizationStorage {
     fn code_dim(&self) -> usize {
         self.metadata.code_dim()
+    }
+
+    /// Build a distance calculator from a query already rotated into the code
+    /// space (i.e. `R(q - c)`), skipping the per-call rotation done by
+    /// [`Self::dist_calculator_with_scratch`]. `rotated_query.len()` must be at
+    /// least the rotated code dimension ([`RabitQuantizationMetadata::code_dim`]).
+    ///
+    /// The rotation is linear, so `R(q - c) = R(q) - R(c)`. IVF search can
+    /// exploit this: rotate the query once and precompute each centroid's
+    /// rotation (via [`RabitQuantizationMetadata::rotate_into`]), then per probed
+    /// partition subtract instead of re-rotating.
+    pub fn dist_calculator_with_rotated_query<'a>(
+        &'a self,
+        rotated_query: &[f32],
+        dist_q_c: f32,
+        f32_scratch: &'a mut Vec<f32>,
+    ) -> RabitDistCalculator<'a> {
+        let code_dim = self.code_dim();
+        let dist_table_len = code_dim * 4;
+        f32_scratch.resize(code_dim + dist_table_len, 0.0);
+        let sum_q = {
+            let (rotated_qr, dist_table) = f32_scratch.split_at_mut(code_dim);
+            rotated_qr.copy_from_slice(&rotated_query[..code_dim]);
+            build_dist_table_direct_into::<Float32Type>(rotated_qr, dist_table);
+            rotated_qr.iter().copied().sum()
+        };
+        let rotated_qr = self
+            .ex_codes
+            .is_some()
+            .then(|| Cow::Borrowed(&f32_scratch[..code_dim]));
+        self.distance_calculator_from_parts(
+            code_dim,
+            dist_q_c,
+            Cow::Borrowed(&f32_scratch[code_dim..code_dim + dist_table_len]),
+            rotated_qr,
+            sum_q,
+        )
     }
 
     fn query_factor(&self, dist_q_c: f32) -> f32 {

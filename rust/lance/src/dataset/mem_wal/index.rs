@@ -18,6 +18,7 @@ mod arena_skiplist;
 mod btree;
 mod fts;
 mod hnsw;
+mod rabitq;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -44,6 +45,7 @@ pub type RowPosition = u64;
 pub use btree::{BTreeIndexConfig, BTreeMemIndex};
 pub use fts::{FtsIndexConfig, FtsMemIndex, FtsQueryExpr, SearchOptions};
 pub use hnsw::{HnswIndexConfig, HnswMemIndex, mem_wal_hnsw_default};
+pub use rabitq::{RabitqIndexConfig, RabitqMemIndex};
 
 // ============================================================================
 // Index Store

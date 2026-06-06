@@ -63,6 +63,9 @@ struct Args {
     queries: usize,
     #[arg(long, default_value_t = 1024)]
     batch: usize,
+    /// MemTable capacity for centroid coarsening (0 = use base nlist verbatim).
+    #[arg(long, default_value_t = 0)]
+    coarsen_max_rows: usize,
     #[arg(long, default_value = "rq_memtable_bench.csv")]
     out: String,
     #[arg(long, hide = true, default_value_t = false)]
@@ -243,8 +246,10 @@ async fn run(args: Args) {
         distance_type: dt,
         centroids,
         quantizer,
+        max_rows: args.coarsen_max_rows,
     })
     .expect("build RabitqMemIndex");
+    println!("RabitqMemIndex partitions: {}", rq.nlist());
     let t = Instant::now();
     for (rb, off) in &batches {
         rq.insert(rb, *off).unwrap();

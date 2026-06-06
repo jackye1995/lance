@@ -24,7 +24,7 @@ use arrow_array::{
     Array, ArrayRef, FixedSizeListArray, Float32Array, RecordBatch, UInt32Array, UInt64Array,
 };
 use arrow_schema::{DataType, Field, Schema};
-use lance_arrow::RecordBatchExt;
+use lance_arrow::{FixedSizeListArrayExt, RecordBatchExt};
 use lance_core::{Error, ROW_ID, Result};
 use lance_index::vector::PART_ID_COLUMN;
 use lance_index::vector::bq::builder::RabitQuantizer;
@@ -33,6 +33,7 @@ use lance_index::vector::flat::storage::FlatFloatStorage;
 use lance_index::vector::hnsw::HNSW;
 use lance_index::vector::hnsw::builder::{HnswBuildParams, HnswQueryParams};
 use lance_index::vector::ivf::{IvfTransformer, new_ivf_transformer_with_quantizer};
+use lance_index::vector::kmeans::KMeans;
 use lance_index::vector::quantizer::{Quantization, Quantizer, QuantizerStorage};
 use lance_index::vector::storage::{DistCalculator, VectorStore};
 use lance_index::vector::transform::Transformer;
@@ -49,10 +50,41 @@ pub struct RabitqIndexConfig {
     pub field_id: i32,
     pub column: String,
     pub distance_type: DistanceType,
-    /// Base table IVF centroids (`nlist` rows of `dim` f32), reused verbatim.
+    /// Base table IVF centroids (`nlist` rows of `dim` f32).
     pub centroids: FixedSizeListArray,
     /// Base table RaBitQ quantizer (rotation + num_bits), reused verbatim.
     pub quantizer: RabitQuantizer,
+    /// MemTable row capacity. When the base centroid count exceeds what this
+    /// capacity warrants (`~sqrt(max_rows)`), the base centroids are coarsened
+    /// to that target so partitions stay dense and centroid overhead stays
+    /// bounded. `0` disables coarsening (use the base centroids verbatim).
+    pub max_rows: usize,
+}
+
+/// Minimum centroid count after coarsening — keep enough partitions to prune.
+const MIN_COARSE_CENTROIDS: usize = 64;
+/// K-means iterations when coarsening base centroids (small set, converges fast).
+const COARSEN_MAX_ITERS: u32 = 20;
+
+/// Partition count appropriate for `max_rows` rows: `~sqrt(max_rows)`, clamped to
+/// `[MIN_COARSE_CENTROIDS, base_nlist]`. `max_rows == 0` keeps the base count.
+fn target_nlist(max_rows: usize, base_nlist: usize) -> usize {
+    if max_rows == 0 {
+        return base_nlist;
+    }
+    let t = (max_rows as f64).sqrt().ceil() as usize;
+    t.clamp(MIN_COARSE_CENTROIDS, base_nlist)
+}
+
+/// Coarsen `base` centroids down to `target` via k-means over the centroids
+/// themselves (no data pass) — produces a MemTable-sized partitioning derived
+/// from the base k-means.
+fn coarsen_centroids(base: &FixedSizeListArray, target: usize) -> Result<FixedSizeListArray> {
+    let dim = base.value_length() as usize;
+    let km = KMeans::new(base, target, COARSEN_MAX_ITERS)
+        .map_err(|e| Error::index(format!("centroid coarsening k-means failed: {e}")))?;
+    let values = km.centroids.as_primitive::<Float32Type>().clone();
+    Ok(FixedSizeListArray::try_new_from_values(values, dim as i32)?)
 }
 
 #[derive(Default)]
@@ -101,9 +133,17 @@ const CENTROID_HNSW_EF_CONSTRUCTION: usize = 40;
 impl RabitqMemIndex {
     pub fn new(config: RabitqIndexConfig) -> Result<Self> {
         let dim = config.centroids.value_length() as usize;
-        let nlist = config.centroids.len();
-        let centroids_flat = config
-            .centroids
+        // Coarsen the base centroids when there are too many for the MemTable
+        // capacity, so partitions stay dense and centroid overhead stays bounded.
+        let base_nlist = config.centroids.len();
+        let target = target_nlist(config.max_rows, base_nlist);
+        let centroids = if target < base_nlist {
+            coarsen_centroids(&config.centroids, target)?
+        } else {
+            config.centroids.clone()
+        };
+        let nlist = centroids.len();
+        let centroids_flat = centroids
             .values()
             .as_primitive::<Float32Type>()
             .values()
@@ -111,7 +151,7 @@ impl RabitqMemIndex {
         // Build the production IVF-RQ transform once; this also trains the
         // HNSW-over-centroids assignment index when beneficial.
         let ivf_transformer = new_ivf_transformer_with_quantizer(
-            config.centroids.clone(),
+            centroids.clone(),
             config.distance_type,
             &config.column,
             Quantizer::Rabit(config.quantizer.clone()),
@@ -131,8 +171,7 @@ impl RabitqMemIndex {
                 metadata.rotate_into(&c, out);
             });
         // Build an HNSW over the centroids for fast query-time routing.
-        let centroid_storage =
-            FlatFloatStorage::new(config.centroids.clone(), config.distance_type);
+        let centroid_storage = FlatFloatStorage::new(centroids, config.distance_type);
         let centroid_hnsw = HNSW::index_vectors(
             &centroid_storage,
             HnswBuildParams::default()
@@ -169,6 +208,10 @@ impl RabitqMemIndex {
     }
     pub fn dim(&self) -> usize {
         self.dim
+    }
+    /// Number of partitions (centroids) after any coarsening.
+    pub fn nlist(&self) -> usize {
+        self.nlist
     }
     pub fn len(&self) -> usize {
         self.len.load(Ordering::Acquire)

@@ -55,6 +55,9 @@ struct Args {
     nlist: usize,
     #[arg(long, default_value = "8,32,128")]
     nprobe: String,
+    /// refine_factor sweep: 0 = full scan; N = 1-bit prefilter + refine top k*N.
+    #[arg(long, default_value = "0,4")]
+    refine: String,
     #[arg(long, default_value = "64,128,256")]
     ef: String,
     #[arg(long, default_value = "10,100")]
@@ -268,34 +271,38 @@ async fn run(args: Args) {
     let max_np = nps.iter().copied().max().unwrap_or(1);
     let warm_k = *ks.iter().max().unwrap_or(&10);
     for qf in &qfsls {
-        let _ = rq.search(qf, warm_k, max_np, (m - 1) as u64).unwrap();
+        let _ = rq.search(qf, warm_k, max_np, 0, (m - 1) as u64).unwrap();
     }
-    for &np in &nps {
-        for (k, gt) in &gts {
-            let mut lat = Vec::with_capacity(nq);
-            let mut rs = 0.0;
-            for (i, qf) in qfsls.iter().enumerate() {
-                let t = Instant::now();
-                let res = rq.search(qf, *k, np, (m - 1) as u64).unwrap();
-                lat.push(t.elapsed().as_secs_f64() * 1e6);
-                let ids: Vec<u32> = res.iter().map(|(_, r)| *r as u32).collect();
-                rs += recall(&ids, &gt[i], *k);
+    // refine_factor sweep: 0 = full scan; >0 = 1-bit prefilter + multi-bit refine
+    // of the global top k*rf.
+    for &rf in &pl(&args.refine) {
+        for &np in &nps {
+            for (k, gt) in &gts {
+                let mut lat = Vec::with_capacity(nq);
+                let mut rs = 0.0;
+                for (i, qf) in qfsls.iter().enumerate() {
+                    let t = Instant::now();
+                    let res = rq.search(qf, *k, np, rf, (m - 1) as u64).unwrap();
+                    lat.push(t.elapsed().as_secs_f64() * 1e6);
+                    let ids: Vec<u32> = res.iter().map(|(_, r)| *r as u32).collect();
+                    rs += recall(&ids, &gt[i], *k);
+                }
+                writeln!(
+                    out,
+                    "rq_ivf,rf{rf}np{np},{k},{:.4},{rq_build:.0},{:.1},{:.1},{:.1}",
+                    rs / nq as f64,
+                    pctl(&lat, 0.5),
+                    pctl(&lat, 0.95),
+                    pctl(&lat, 0.99)
+                )
+                .unwrap();
+                println!(
+                    "  rq rf={rf} np={np} k={k}: recall={:.4} p50={:.0}us p99={:.0}us",
+                    rs / nq as f64,
+                    pctl(&lat, 0.5),
+                    pctl(&lat, 0.99)
+                );
             }
-            writeln!(
-                out,
-                "rq_ivf,np{np},{k},{:.4},{rq_build:.0},{:.1},{:.1},{:.1}",
-                rs / nq as f64,
-                pctl(&lat, 0.5),
-                pctl(&lat, 0.95),
-                pctl(&lat, 0.99)
-            )
-            .unwrap();
-            println!(
-                "  rq np={np} k={k}: recall={:.4} p50={:.0}us p99={:.0}us",
-                rs / nq as f64,
-                pctl(&lat, 0.5),
-                pctl(&lat, 0.99)
-            );
         }
     }
 

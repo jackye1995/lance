@@ -348,6 +348,31 @@ impl RabitQuantizationStorage {
         )
     }
 
+    /// Like [`Self::dist_calculator_with_rotated_query`] but forces the **1-bit
+    /// (binary) estimator** even on multi-bit storage: `distance_all`/`distance`
+    /// skip the per-id ex-code dot (`compute_ex_code_dot`, O(rotated_dim)). Use
+    /// as a cheap prefilter, then refine the survivors with the full calculator.
+    pub fn dist_calculator_binary_with_rotated_query<'a>(
+        &'a self,
+        rotated_query: &[f32],
+        dist_q_c: f32,
+        f32_scratch: &'a mut Vec<f32>,
+    ) -> RabitDistCalculator<'a> {
+        let code_dim = self.code_dim();
+        let dist_table_len = code_dim * 4;
+        f32_scratch.resize(dist_table_len, 0.0);
+        build_dist_table_direct_into::<Float32Type>(&rotated_query[..code_dim], f32_scratch);
+        let sum_q = rotated_query[..code_dim].iter().copied().sum();
+        // rotated_qr = None => is_split_code() is false => binary estimator.
+        self.distance_calculator_from_parts(
+            code_dim,
+            dist_q_c,
+            Cow::Borrowed(&f32_scratch[..dist_table_len]),
+            None,
+            sum_q,
+        )
+    }
+
     fn query_factor(&self, dist_q_c: f32) -> f32 {
         match self.distance_type {
             DistanceType::L2 => dist_q_c,

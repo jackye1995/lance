@@ -169,7 +169,7 @@ impl RabitqMemIndex {
     pub fn dim(&self) -> usize {
         self.dim
     }
-    /// Number of partitions (centroids) after any coarsening.
+    /// Number of partitions (reused base centroids).
     pub fn nlist(&self) -> usize {
         self.nlist
     }
@@ -295,14 +295,19 @@ impl RabitqMemIndex {
         Ok(g.storage.clone())
     }
 
-    /// Search `nprobe` nearest partitions with the production split-code
-    /// estimator (no f32 refine). Returns `(distance, row_position)` sorted by
-    /// distance, MVCC-filtered to `max_row_position`.
+    /// Search the `nprobe` nearest partitions. With `refine_factor == 0`, scores
+    /// every probed code with the full split-code estimator. With
+    /// `refine_factor > 0`, runs a cheap 1-bit prefilter over all probed codes,
+    /// keeps the global top `k * refine_factor`, and refines only those with the
+    /// full estimator — skipping the per-id ex-code dot for the bulk. Returns
+    /// `(distance, row_position)` sorted by distance, MVCC-filtered to
+    /// `max_row_position`. No f32 refine in either mode.
     pub fn search(
         &self,
         query: &FixedSizeListArray,
         k: usize,
         nprobe: usize,
+        refine_factor: usize,
         max_row_position: RowPosition,
     ) -> Result<Vec<(f32, RowPosition)>> {
         if k == 0 || self.is_empty() {
@@ -345,25 +350,52 @@ impl RabitqMemIndex {
         let mut rotated_query = vec![0f32; self.rotated_dim];
         self.metadata.rotate_into(&query_arr, &mut rotated_query);
 
-        // Scan probed partitions in parallel — they are independent, and the
-        // per-partition `distance_all` flat scan is the dominant read cost. (HNSW
-        // cannot parallelize a single query's graph walk.) `map_init` reuses a
-        // residual + scratch buffer per worker thread.
-        let cand: Vec<(f32, RowPosition)> = cd
+        let rd = self.rotated_dim;
+        if refine_factor == 0 {
+            // Single-tier: full split-code estimator over every probed code, in
+            // parallel (partitions are independent; HNSW can't parallelize a
+            // single query's graph walk). `map_init` reuses per-thread buffers.
+            let cand: Vec<(f32, RowPosition)> = cd
+                .par_iter()
+                .map_init(
+                    || (vec![0f32; rd], Vec::<f32>::new()),
+                    |(residual, scratch), &(dist_q_c, p)| -> Result<Vec<(f32, RowPosition)>> {
+                        let Some(storage) = self.partition_storage(p)? else {
+                            return Ok(Vec::new());
+                        };
+                        residual_into(residual, &rotated_query, &self.rotated_centroids, p, rd);
+                        let calc = storage.dist_calculator_with_rotated_query(
+                            residual.as_slice(),
+                            dist_q_c,
+                            scratch,
+                        );
+                        let dists = calc.distance_all(0);
+                        Ok(collect_finite(&dists, &storage, max_row_position))
+                    },
+                )
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .flatten()
+                .collect();
+            return Ok(top_k(cand, k));
+        }
+
+        // Two-tier: cheap 1-bit prefilter over all probed codes, keep the global
+        // top `k * refine_factor`, then refine only those with the full estimator
+        // (skips the per-id ex-code dot for the bulk).
+        let kprime = k.saturating_mul(refine_factor).max(k);
+        let mut prelim: Vec<(f32, usize, u32, RowPosition)> = cd
             .par_iter()
             .map_init(
-                || (vec![0f32; self.rotated_dim], Vec::<f32>::new()),
-                |(residual, scratch), &(dist_q_c, p)| -> Result<Vec<(f32, RowPosition)>> {
+                || (vec![0f32; rd], Vec::<f32>::new()),
+                |(residual, scratch),
+                 &(dist_q_c, p)|
+                 -> Result<Vec<(f32, usize, u32, RowPosition)>> {
                     let Some(storage) = self.partition_storage(p)? else {
                         return Ok(Vec::new());
                     };
-                    let rc =
-                        &self.rotated_centroids[p * self.rotated_dim..(p + 1) * self.rotated_dim];
-                    for (r, (&rq, &rcv)) in residual.iter_mut().zip(rotated_query.iter().zip(rc)) {
-                        *r = rq - rcv;
-                    }
-                    // Pre-rotated path: R(q - c) = R(q) - R(c), no re-rotation.
-                    let calc = storage.dist_calculator_with_rotated_query(
+                    residual_into(residual, &rotated_query, &self.rotated_centroids, p, rd);
+                    let calc = storage.dist_calculator_binary_with_rotated_query(
                         residual.as_slice(),
                         dist_q_c,
                         scratch,
@@ -373,7 +405,7 @@ impl RabitqMemIndex {
                     for (local, &d) in dists.iter().enumerate() {
                         let row = storage.row_id(local as u32);
                         if row <= max_row_position && d.is_finite() {
-                            out.push((d, row));
+                            out.push((d, p, local as u32, row));
                         }
                     }
                     Ok(out)
@@ -383,15 +415,90 @@ impl RabitqMemIndex {
             .into_iter()
             .flatten()
             .collect();
-
-        let mut cand = cand;
-        let take = k.min(cand.len());
+        let take = kprime.min(prelim.len());
         if take == 0 {
             return Ok(Vec::new());
         }
-        cand.select_nth_unstable_by(take - 1, |a, b| a.0.total_cmp(&b.0));
-        cand.truncate(take);
-        cand.sort_by(|a, b| a.0.total_cmp(&b.0));
-        Ok(cand)
+        prelim.select_nth_unstable_by(take - 1, |a, b| a.0.total_cmp(&b.0));
+        prelim.truncate(take);
+
+        // Refine survivors with the full estimator, grouped by partition.
+        let dist_q_c_by_part: HashMap<usize, f32> = cd.iter().map(|&(d, p)| (p, d)).collect();
+        let mut by_part: HashMap<usize, Vec<(u32, RowPosition)>> = HashMap::new();
+        for &(_, p, local, row) in &prelim {
+            by_part.entry(p).or_default().push((local, row));
+        }
+        let groups: Vec<(usize, Vec<(u32, RowPosition)>)> = by_part.into_iter().collect();
+        let cand: Vec<(f32, RowPosition)> = groups
+            .par_iter()
+            .map_init(
+                || (vec![0f32; rd], Vec::<f32>::new()),
+                |(residual, scratch), (p, cands)| -> Result<Vec<(f32, RowPosition)>> {
+                    let Some(storage) = self.partition_storage(*p)? else {
+                        return Ok(Vec::new());
+                    };
+                    residual_into(residual, &rotated_query, &self.rotated_centroids, *p, rd);
+                    let dist_q_c = dist_q_c_by_part.get(p).copied().unwrap_or(0.0);
+                    let calc = storage.dist_calculator_with_rotated_query(
+                        residual.as_slice(),
+                        dist_q_c,
+                        scratch,
+                    );
+                    Ok(cands
+                        .iter()
+                        .map(|&(local, row)| (calc.distance(local), row))
+                        .filter(|(d, _)| d.is_finite())
+                        .collect())
+                },
+            )
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .collect();
+        Ok(top_k(cand, k))
     }
+}
+
+/// Write `R(q) - R(c_p)` (the rotated query residual for partition `p`) into `out`.
+#[inline]
+fn residual_into(
+    out: &mut [f32],
+    rotated_query: &[f32],
+    rotated_centroids: &[f32],
+    p: usize,
+    rd: usize,
+) {
+    let rc = &rotated_centroids[p * rd..(p + 1) * rd];
+    for (r, (&rq, &rcv)) in out.iter_mut().zip(rotated_query.iter().zip(rc)) {
+        *r = rq - rcv;
+    }
+}
+
+/// Collect finite per-code distances within the MVCC bound as `(dist, row)`.
+#[inline]
+fn collect_finite(
+    dists: &[f32],
+    storage: &RabitQuantizationStorage,
+    max_row_position: RowPosition,
+) -> Vec<(f32, RowPosition)> {
+    let mut out = Vec::new();
+    for (local, &d) in dists.iter().enumerate() {
+        let row = storage.row_id(local as u32);
+        if row <= max_row_position && d.is_finite() {
+            out.push((d, row));
+        }
+    }
+    out
+}
+
+/// Top-`k` `(dist, row)` by ascending distance.
+fn top_k(mut cand: Vec<(f32, RowPosition)>, k: usize) -> Vec<(f32, RowPosition)> {
+    let take = k.min(cand.len());
+    if take == 0 {
+        return Vec::new();
+    }
+    cand.select_nth_unstable_by(take - 1, |a, b| a.0.total_cmp(&b.0));
+    cand.truncate(take);
+    cand.sort_by(|a, b| a.0.total_cmp(&b.0));
+    cand
 }

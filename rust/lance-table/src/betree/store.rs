@@ -9,23 +9,19 @@
 //!
 //! Leaves are tabular Lance v2 files with **one row per data file** and each
 //! `DataFile` field in its own column (path, versions, size, base_id, field
-//! ids). Decomposing the fragment into per-field columns — rather than one
-//! opaque `DataFragment` protobuf blob per row — lets Lance compress each column
+//! ids). Decomposing the data files into columns lets Lance compress each column
 //! independently (identical file versions RLE to ~nothing, sizes cluster, paths
 //! dictionary/FSST-encode), which is the columnar win @Xuanwo measured. A
-//! fragment's `id`/`physical_rows` are repeated on each of its rows (RLE-cheap).
-//!
-//! Limitation (prototype): a fragment must have ≥1 data file to round-trip (it
-//! has no row otherwise), and overlays / deletion / row-id metadata are not
-//! persisted here — neither occurs in the benchmark workload.
+//! fragment's metadata is encoded once on its first row. A fragment with no data
+//! files gets one explicit marker row, so every fragment can round-trip.
 
 use std::num::NonZero;
 use std::sync::Arc;
 
-use arrow_array::builder::{Int32Builder, ListBuilder};
+use arrow_array::builder::{BinaryBuilder, Int32Builder, ListBuilder};
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Int32Type, UInt32Type, UInt64Type};
-use arrow_array::{Array, RecordBatch, StringArray, UInt32Array, UInt64Array};
+use arrow_array::{Array, BooleanArray, RecordBatch, StringArray, UInt32Array, UInt64Array};
 use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema};
 use futures::TryStreamExt;
 use prost::Message;
@@ -35,17 +31,20 @@ use crate::format::pb;
 use crate::format::{DataFile, Fragment};
 use lance_core::cache::LanceCache;
 use lance_core::datatypes::Schema as LanceSchema;
+use lance_core::error::box_error;
 use lance_core::{Error, Result};
 use lance_encoding::decoder::{DecoderPlugins, FilterExpression};
 use lance_file::reader::{FileReader, FileReaderOptions};
 use lance_file::writer::{FileWriter, FileWriterOptions};
 use lance_io::ReadBatchParams;
+use lance_io::object_reader::SmallReader;
 use lance_io::object_store::ObjectStore;
 use lance_io::scheduler::ScanScheduler;
-use lance_io::utils::CachedFileSize;
 use object_store::path::Path;
-use object_store::{GetOptions, ObjectStore as OSObjectStore, PutOptions, PutPayload};
-use serde::{Deserialize, Serialize};
+use object_store::{
+    Error as ObjectStoreError, GetOptions, ObjectStore as OSObjectStore, PutMode, PutOptions,
+    PutPayload,
+};
 use uuid::Uuid;
 
 const READ_BATCH_ROWS: u32 = 16 * 1024;
@@ -56,11 +55,6 @@ const READ_BATCH_READAHEAD: u32 = 16;
 pub struct Written {
     pub child_ref: pb::ChildRef,
     pub io_bytes: u64,
-}
-
-#[derive(Serialize, Deserialize)]
-struct VersionHint {
-    version: u64,
 }
 
 /// Reads and writes Bε-tree node files against an object store.
@@ -80,6 +74,11 @@ fn leaf_arrow_schema() -> Arc<ArrowSchema> {
     Arc::new(ArrowSchema::new(vec![
         ArrowField::new("frag_id", DataType::UInt64, false),
         ArrowField::new("physical_rows", DataType::UInt64, false), // 0 = unknown
+        // Full fragment metadata with `files` cleared, present on the first row
+        // for each fragment. This retains deletion, row-id, version, and overlay
+        // metadata without duplicating the separately columnized data files.
+        ArrowField::new("fragment_meta", DataType::Binary, true),
+        ArrowField::new("has_data_file", DataType::Boolean, false),
         ArrowField::new("path", DataType::Utf8, false),
         ArrowField::new("field_ids", int_list_type(), false),
         ArrowField::new("column_indices", int_list_type(), false),
@@ -126,46 +125,69 @@ impl NodeStore {
             .join("root")
             .join(format!("{version}.root"))
     }
-    fn hint_path(&self) -> Path {
-        self.base
-            .clone()
-            .join("_bt")
-            .join("root")
-            .join("latest_hint.json")
+    fn root_dir(&self) -> Path {
+        self.base.clone().join("_bt").join("root")
     }
 
-    /// Write a leaf (sorted fragments) as a columnar Lance file: one row per data
-    /// file. Returns a leaf `ChildRef` (logical byte size) + actual bytes written.
+    /// Write a leaf (sorted fragments) as a columnar Lance file.
+    ///
+    /// Each data file occupies one row. A fragment with no data files occupies
+    /// one marker row, and full non-file metadata is stored once per fragment.
+    /// Returns a leaf `ChildRef` (logical byte size) + actual bytes written.
     pub async fn write_leaf(&self, fragments: &[Fragment]) -> Result<Written> {
-        let num_files: usize = fragments.iter().map(|f| f.files.len()).sum();
-        let mut frag_ids = Vec::with_capacity(num_files);
-        let mut physical = Vec::with_capacity(num_files);
-        let mut paths = Vec::with_capacity(num_files);
-        let mut major = Vec::with_capacity(num_files);
-        let mut minor = Vec::with_capacity(num_files);
-        let mut sizes = Vec::with_capacity(num_files);
-        let mut base_ids: Vec<Option<u32>> = Vec::with_capacity(num_files);
+        let num_rows: usize = fragments.iter().map(|f| f.files.len().max(1)).sum();
+        let mut frag_ids = Vec::with_capacity(num_rows);
+        let mut physical = Vec::with_capacity(num_rows);
+        let mut fragment_meta = BinaryBuilder::new();
+        let mut has_data_file = Vec::with_capacity(num_rows);
+        let mut paths = Vec::with_capacity(num_rows);
+        let mut major = Vec::with_capacity(num_rows);
+        let mut minor = Vec::with_capacity(num_rows);
+        let mut sizes = Vec::with_capacity(num_rows);
+        let mut base_ids: Vec<Option<u32>> = Vec::with_capacity(num_rows);
         let mut field_builder = ListBuilder::new(Int32Builder::new());
         let mut col_builder = ListBuilder::new(Int32Builder::new());
 
         for f in fragments {
             let pr = f.physical_rows.unwrap_or(0) as u64;
-            for df in &f.files {
+            let mut metadata = pb::DataFragment::from(f);
+            metadata.files.clear();
+            let metadata = metadata.encode_to_vec();
+
+            let mut append_row = |df: Option<&DataFile>, is_first: bool| {
                 frag_ids.push(f.id);
                 physical.push(pr);
-                paths.push(df.path.clone());
-                major.push(df.file_major_version);
-                minor.push(df.file_minor_version);
-                sizes.push(df.file_size_bytes.get().map(|n| n.get()).unwrap_or(0));
-                base_ids.push(df.base_id);
-                for &v in df.fields.iter() {
-                    field_builder.values().append_value(v);
+                if is_first {
+                    fragment_meta.append_value(&metadata);
+                } else {
+                    fragment_meta.append_null();
+                }
+                has_data_file.push(df.is_some());
+                paths.push(df.map(|file| file.path.clone()).unwrap_or_default());
+                major.push(df.map(|file| file.file_major_version).unwrap_or_default());
+                minor.push(df.map(|file| file.file_minor_version).unwrap_or_default());
+                sizes.push(
+                    df.and_then(|file| file.file_size_bytes.get())
+                        .map(|size| size.get())
+                        .unwrap_or_default(),
+                );
+                base_ids.push(df.and_then(|file| file.base_id));
+                for &field_id in df.into_iter().flat_map(|file| file.fields.iter()) {
+                    field_builder.values().append_value(field_id);
                 }
                 field_builder.append(true);
-                for &v in df.column_indices.iter() {
-                    col_builder.values().append_value(v);
+                for &column_index in df.into_iter().flat_map(|file| file.column_indices.iter()) {
+                    col_builder.values().append_value(column_index);
                 }
                 col_builder.append(true);
+            };
+
+            if f.files.is_empty() {
+                append_row(None, true);
+            } else {
+                for (index, data_file) in f.files.iter().enumerate() {
+                    append_row(Some(data_file), index == 0);
+                }
             }
         }
 
@@ -175,6 +197,8 @@ impl NodeStore {
             vec![
                 Arc::new(UInt64Array::from(frag_ids)),
                 Arc::new(UInt64Array::from(physical)),
+                Arc::new(fragment_meta.finish()),
+                Arc::new(BooleanArray::from(has_data_file)),
                 Arc::new(StringArray::from(paths)),
                 Arc::new(field_builder.finish()),
                 Arc::new(col_builder.finish()),
@@ -195,7 +219,7 @@ impl NodeStore {
 
         let logical = node::leaf_logical_bytes(fragments);
         Ok(Written {
-            child_ref: node::leaf_ref(path.to_string(), fragments, logical),
+            child_ref: node::leaf_ref(path.to_string(), fragments, logical, summary.size_bytes)?,
             io_bytes: summary.size_bytes,
         })
     }
@@ -203,10 +227,19 @@ impl NodeStore {
     /// Read a columnar leaf back into a fragment list (rows grouped by frag_id).
     pub async fn read_leaf(&self, child: &pb::ChildRef) -> Result<Vec<Fragment>> {
         let path = Path::from(child.node_path.as_str());
-        let file_scheduler = self
-            .scheduler
-            .open_file(&path, &CachedFileSize::unknown())
-            .await?;
+        let object_size = usize::try_from(child.object_size).map_err(|_| {
+            Error::invalid_input(format!(
+                "leaf object_size does not fit usize: node_path={}, object_size={}",
+                child.node_path, child.object_size
+            ))
+        })?;
+        let reader = Arc::new(SmallReader::new(
+            self.object_store.inner.clone(),
+            path,
+            3,
+            object_size,
+        ));
+        let file_scheduler = self.scheduler.open_reader(reader);
         let reader = FileReader::try_open(
             file_scheduler,
             None,
@@ -232,7 +265,8 @@ impl NodeStore {
                     .ok_or_else(|| Error::invalid_input(format!("leaf missing column {name}")))
             };
             let frag_ids = col("frag_id")?.as_primitive::<UInt64Type>();
-            let physical = col("physical_rows")?.as_primitive::<UInt64Type>();
+            let fragment_meta = col("fragment_meta")?.as_binary::<i32>();
+            let has_data_file = col("has_data_file")?.as_boolean();
             let paths = col("path")?.as_string::<i32>();
             let field_ids = col("field_ids")?.as_list::<i32>();
             let col_indices = col("column_indices")?.as_list::<i32>();
@@ -244,10 +278,29 @@ impl NodeStore {
             for row in 0..batch.num_rows() {
                 let fid = frag_ids.value(row);
                 if fragments.last().map(|f| f.id) != Some(fid) {
-                    let mut frag = Fragment::new(fid);
-                    let pr = physical.value(row);
-                    frag.physical_rows = (pr != 0).then_some(pr as usize);
-                    fragments.push(frag);
+                    if fragment_meta.is_null(row) {
+                        return Err(Error::invalid_input(format!(
+                            "leaf fragment frag_id={fid} is missing fragment_meta on its first row"
+                        )));
+                    }
+                    let fragment_pb = pb::DataFragment::decode(fragment_meta.value(row))?;
+                    let fragment = Fragment::try_from(fragment_pb)?;
+                    if fragment.id != fid {
+                        return Err(Error::invalid_input(format!(
+                            "leaf row frag_id={fid} does not match fragment_meta id={}",
+                            fragment.id
+                        )));
+                    }
+                    if !fragment.files.is_empty() {
+                        return Err(Error::invalid_input(format!(
+                            "leaf fragment_meta for frag_id={fid} unexpectedly contains {} data files",
+                            fragment.files.len()
+                        )));
+                    }
+                    fragments.push(fragment);
+                }
+                if !has_data_file.value(row) {
+                    continue;
                 }
                 let fields = field_ids
                     .value(row)
@@ -269,7 +322,12 @@ impl NodeStore {
                     NonZero::new(sizes.value(row)),
                     base,
                 );
-                fragments.last_mut().unwrap().files.push(df);
+                let Some(fragment) = fragments.last_mut() else {
+                    return Err(Error::invalid_input(format!(
+                        "leaf data-file row has no fragment for frag_id={fid}"
+                    )));
+                };
+                fragment.files.push(df);
             }
         }
         Ok(fragments)
@@ -294,7 +352,13 @@ impl NodeStore {
             .put_opts(&path, PutPayload::from(bytes), PutOptions::default())
             .await?;
         Ok(Written {
-            child_ref: node::internal_ref(path.to_string(), &children, logical),
+            child_ref: node::internal_ref(
+                path.to_string(),
+                &children,
+                &node.buffer,
+                logical,
+                io_bytes,
+            )?,
             io_bytes,
         })
     }
@@ -316,7 +380,11 @@ impl NodeStore {
         })
     }
 
-    /// Write the root object and update the latest-version hint. Returns bytes written.
+    /// Atomically publish a root version. Returns bytes written.
+    ///
+    /// The deterministic root path is the commit record. Create-only PUT gives
+    /// the research format the same version-CAS contract as Lance's conditional
+    /// manifest commit handler: exactly one writer can publish a given version.
     pub async fn write_root(&self, root: &pb::BeTreeRoot) -> Result<u64> {
         let bytes = root.encode_to_vec();
         let size = bytes.len() as u64;
@@ -325,35 +393,55 @@ impl NodeStore {
             .put_opts(
                 &self.root_path(root.version),
                 PutPayload::from(bytes),
-                PutOptions::default(),
+                PutOptions {
+                    mode: PutMode::Create,
+                    ..Default::default()
+                },
             )
-            .await?;
-        let hint = serde_json::to_vec(&VersionHint {
-            version: root.version,
-        })
-        .map_err(|e| Error::invalid_input(format!("failed to encode hint: {e}")))?;
-        self.object_store
-            .inner
-            .put_opts(
-                &self.hint_path(),
-                PutPayload::from(hint),
-                PutOptions::default(),
-            )
-            .await?;
+            .await
+            .map_err(|error| match error {
+                error @ (ObjectStoreError::AlreadyExists { .. }
+                | ObjectStoreError::Precondition { .. }) => {
+                    Error::commit_conflict_source(root.version, box_error(error))
+                }
+                error => Error::io_source(box_error(error)),
+            })?;
         Ok(size)
     }
 
+    /// Resolve the latest atomically published root version.
     pub async fn read_latest_version(&self) -> Result<u64> {
-        let bytes = self
-            .object_store
-            .inner
-            .get_opts(&self.hint_path(), GetOptions::default())
-            .await?
-            .bytes()
-            .await?;
-        let hint: VersionHint = serde_json::from_slice(&bytes)
-            .map_err(|e| Error::invalid_input(format!("failed to decode hint: {e}")))?;
-        Ok(hint.version)
+        let root_dir = self.root_dir();
+        let latest = self.list_root_versions().await?.into_iter().max();
+        latest.ok_or_else(|| {
+            Error::not_found(format!("Bε-tree has no published roots under {}", root_dir))
+        })
+    }
+
+    pub(crate) async fn list_root_versions(&self) -> Result<Vec<u64>> {
+        self.object_store
+            .list(Some(self.root_dir()))
+            .try_filter_map(|object| async move {
+                Ok(object
+                    .location
+                    .filename()
+                    .and_then(|filename| filename.strip_suffix(".root"))
+                    .and_then(|version| version.parse::<u64>().ok()))
+            })
+            .try_collect()
+            .await
+    }
+
+    pub(crate) async fn list_node_paths(&self, kind: &str) -> Result<Vec<Path>> {
+        self.object_store
+            .list(Some(self.base.clone().join("_bt").join(kind)))
+            .map_ok(|object| object.location)
+            .try_collect()
+            .await
+    }
+
+    pub(crate) async fn delete_path(&self, path: &Path) -> Result<()> {
+        self.object_store.delete(path).await
     }
 
     pub async fn read_root(&self, version: u64) -> Result<pb::BeTreeRoot> {
@@ -365,5 +453,104 @@ impl NodeStore {
             .bytes()
             .await?;
         Ok(pb::BeTreeRoot::decode(bytes)?)
+    }
+
+    fn transaction_path(&self, version: u64) -> Path {
+        self.base
+            .clone()
+            .join("_bt")
+            .join("txn")
+            .join(format!("{version}.txn"))
+    }
+
+    /// Persist a commit's transaction record. Returns bytes written.
+    ///
+    /// Callers write this only after `write_root` for the same version has
+    /// won its create-only race, so a version's transaction record exists at
+    /// most once and never without its published root.
+    pub async fn write_transaction(&self, transaction: &pb::BeTreeTransaction) -> Result<u64> {
+        let bytes = transaction.encode_to_vec();
+        let size = bytes.len() as u64;
+        self.object_store
+            .inner
+            .put_opts(
+                &self.transaction_path(transaction.version),
+                PutPayload::from(bytes),
+                PutOptions {
+                    mode: PutMode::Create,
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|error| Error::io_source(box_error(error)))?;
+        Ok(size)
+    }
+
+    pub async fn read_transaction(&self, version: u64) -> Result<pb::BeTreeTransaction> {
+        let bytes = self
+            .object_store
+            .inner
+            .get_opts(&self.transaction_path(version), GetOptions::default())
+            .await?
+            .bytes()
+            .await?;
+        Ok(pb::BeTreeTransaction::decode(bytes)?)
+    }
+
+    /// Whether a transaction record was published for `version`.
+    pub async fn transaction_exists(&self, version: u64) -> Result<bool> {
+        self.object_store
+            .exists(&self.transaction_path(version))
+            .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::betree::support::make_fragment;
+    use crate::format::{DeletionFile, DeletionFileType, RowDatasetVersionMeta, RowIdMeta};
+    use lance_core::utils::tempfile::TempObjDir;
+    use lance_io::scheduler::SchedulerConfig;
+
+    fn test_store(base: Path) -> NodeStore {
+        let object_store = Arc::new(ObjectStore::local());
+        let scheduler =
+            ScanScheduler::new(object_store.clone(), SchedulerConfig::default_for_testing());
+        NodeStore::new(
+            object_store,
+            base,
+            scheduler,
+            Arc::new(LanceCache::with_capacity(64 * 1024 * 1024)),
+        )
+    }
+
+    #[tokio::test]
+    async fn leaf_round_trips_fragment_metadata_and_empty_fragment() {
+        let mut fragment = make_fragment(7);
+        fragment.deletion_file = Some(DeletionFile {
+            read_version: 3,
+            id: 11,
+            file_type: DeletionFileType::Bitmap,
+            num_deleted_rows: Some(1),
+            base_id: Some(2),
+        });
+        fragment.row_id_meta = Some(RowIdMeta::Inline(vec![1, 2, 3, 4]));
+        fragment.created_at_version_meta =
+            Some(RowDatasetVersionMeta::Inline(Arc::from([5, 6, 7])));
+        fragment.last_updated_at_version_meta =
+            Some(RowDatasetVersionMeta::Inline(Arc::from([8, 9, 10])));
+
+        let mut empty_fragment = Fragment::new(8);
+        empty_fragment.physical_rows = Some(12);
+        empty_fragment.row_id_meta = Some(RowIdMeta::Inline(vec![12, 13]));
+
+        let expected = vec![fragment, empty_fragment];
+        let tempdir = TempObjDir::default();
+        let store = test_store(tempdir.clone().join("betree"));
+        let written = store.write_leaf(&expected).await.unwrap();
+        let actual = store.read_leaf(&written.child_ref).await.unwrap();
+
+        assert_eq!(actual, expected);
     }
 }

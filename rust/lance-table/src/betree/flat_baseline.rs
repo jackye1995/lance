@@ -92,6 +92,47 @@ impl FlatBaseline {
         self.write().await
     }
 
+    /// Apply production `Operation::DataReplacement` semantics to the listed
+    /// fragments, bump the version, and rewrite the full manifest. A file
+    /// matching the replacement's fields and file version is swapped in
+    /// place; a replacement whose fields are disjoint from every existing
+    /// file is appended. Returns bytes written.
+    pub async fn commit_data_replacements(
+        &mut self,
+        replacements: &[(u64, DataFile)],
+    ) -> Result<u64> {
+        {
+            let frags = Arc::make_mut(&mut self.manifest.fragments);
+            for (fid, replacement) in replacements {
+                let Some(&pos) = self.index.get(fid) else {
+                    continue;
+                };
+                if let Some(matched) = frags[pos].files.iter_mut().find(|file| {
+                    file.fields == replacement.fields
+                        && file.file_major_version == replacement.file_major_version
+                        && file.file_minor_version == replacement.file_minor_version
+                }) {
+                    matched.path = replacement.path.clone();
+                    matched.file_size_bytes = replacement.file_size_bytes.clone();
+                    matched.base_id = replacement.base_id;
+                } else {
+                    frags[pos].files.push(replacement.clone());
+                }
+            }
+        }
+        self.manifest.version += 1;
+        self.write().await
+    }
+
+    /// Append one fragment, bump the version, and rewrite the full manifest.
+    pub async fn commit_append(&mut self, fragment: Fragment) -> Result<u64> {
+        let position = self.manifest.fragments.len();
+        self.index.insert(fragment.id, position);
+        Arc::make_mut(&mut self.manifest.fragments).push(fragment);
+        self.manifest.version += 1;
+        self.write().await
+    }
+
     /// Cold open: read a manifest version back from storage.
     pub async fn cold_open(
         object_store: &ObjectStore,

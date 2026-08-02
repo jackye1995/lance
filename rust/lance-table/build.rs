@@ -4,7 +4,13 @@
 use std::io::Result;
 
 fn main() -> Result<()> {
-    println!("cargo:rerun-if-changed=protos");
+    // Watch each proto file explicitly. `protos/` is a symlink to the repo
+    // root; directory-level rerun-if-changed can miss content updates and leave
+    // release builds on a stale generated `lance.table` module.
+    println!("cargo:rerun-if-changed=protos/table.proto");
+    println!("cargo:rerun-if-changed=protos/transaction.proto");
+    println!("cargo:rerun-if-changed=protos/rowids.proto");
+    println!("cargo:rerun-if-changed=protos/betree.proto");
 
     #[cfg(feature = "protoc")]
     // Use vendored protobuf compiler if requested.

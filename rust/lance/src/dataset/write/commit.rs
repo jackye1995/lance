@@ -26,6 +26,7 @@ use crate::{
 };
 
 use super::{WriteDestination, resolve_commit_handler};
+use crate::dataset::betree;
 use crate::dataset::branch_location::BranchLocation;
 use crate::dataset::transaction::validate_operation;
 use lance_core::utils::tracing::{DATASET_COMMITTED_EVENT, TRACE_DATASET_EVENTS};
@@ -303,6 +304,53 @@ impl<'a> CommitBuilder<'a> {
                 }
             }
         };
+
+        // Bε manifest layout (research opt-in, discussion lance-format/lance#7499):
+        // route to the Bε commit backend before any flat manifest machinery
+        // runs. Flat datasets never reach these probes: a Dataset dest is
+        // checked by config only, and the `_bt/root` listing happens only
+        // after `DatasetBuilder::load` found no flat manifest.
+        let betree_target = || betree::CommitTarget {
+            object_store: object_store.clone(),
+            base_path: base_path.clone(),
+            uri: match &self.dest {
+                WriteDestination::Dataset(dataset) => dataset.uri().to_string(),
+                WriteDestination::Uri(uri) => uri.to_string(),
+            },
+            session: session.clone(),
+            commit_handler: commit_handler.clone(),
+        };
+        match &dest {
+            WriteDestination::Dataset(dataset) => {
+                if betree::dataset_uses_betree(&dataset.manifest) {
+                    return betree::execute_commit(
+                        betree_target(),
+                        &self.commit_config,
+                        &transaction,
+                    )
+                    .await;
+                }
+                if betree::create_requested(&transaction.operation)? {
+                    return Err(Error::invalid_input(
+                        "cannot overwrite an existing flat-manifest dataset with \
+                         lance.manifest.layout=betree; betree layout is selected at create time",
+                    ));
+                }
+            }
+            WriteDestination::Uri(_) => {
+                if betree::tree_exists(&object_store, &base_path).await? {
+                    return betree::execute_commit(
+                        betree_target(),
+                        &self.commit_config,
+                        &transaction,
+                    )
+                    .await;
+                }
+                if betree::create_requested(&transaction.operation)? {
+                    return betree::execute_create(betree_target(), &transaction).await;
+                }
+            }
+        }
 
         if dest.dataset().is_none()
             && !matches!(

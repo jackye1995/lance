@@ -323,5 +323,11 @@ harness = false
 name = "hamming"
 harness = false
 
+# PROTOTYPE (discussion #7499): flat vs Bε manifest A/B matrix on the
+# production Dataset commit path.
+[[bench]]
+name = "betree_ab"
+harness = false
+
 [lints]
 workspace = true

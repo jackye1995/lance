@@ -97,7 +97,7 @@ pub(crate) async fn read_transaction_file(
 /// Logs a warning on failure rather than propagating the error, since the
 /// primary operation has already failed and the orphaned file will eventually
 /// be removed by GC.
-async fn cleanup_transaction_file(
+pub(crate) async fn cleanup_transaction_file(
     object_store: &ObjectStore,
     base_path: &Path,
     transaction_file: &str,

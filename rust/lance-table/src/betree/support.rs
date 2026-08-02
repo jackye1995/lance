@@ -84,6 +84,24 @@ pub fn make_backfill_data_file(frag_id: u64, col: u32) -> DataFile {
     )
 }
 
+/// The data file that data-replacement round `round` writes for `frag_id`:
+/// the same base columns in a fresh file, as an update or compaction rewrite
+/// would produce. Path salts start above every backfill salt so replacement
+/// paths never collide with add-column paths.
+pub fn make_replacement_data_file(frag_id: u64, round: u32) -> DataFile {
+    const REPLACEMENT_SALT_BASE: u64 = 1 << 32;
+    let (major, minor) = FILE_VERSION.to_numbers();
+    DataFile::new(
+        data_file_path(frag_id, REPLACEMENT_SALT_BASE + round as u64),
+        vec![0, 1],
+        vec![0, 1],
+        major,
+        minor,
+        NonZero::new(1024),
+        None,
+    )
+}
+
 /// A fragment already holding `num_files` data files (1 base + `num_files-1`
 /// backfilled columns). Models an already-wide table — used to reach
 /// billion-data-file scale without replaying millions of backfill commits.

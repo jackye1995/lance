@@ -1,0 +1,8 @@
+table,layout,codec,bytes,encode_ms,decode_ms
+bootstrap,flat,raw,4283603,0.000,0.000
+bootstrap,flat,zstd1,1091543,7.301,3.094
+bootstrap,flat,zstd3,1142640,10.746,3.510
+backfilled,flat,raw,8133603,0.000,0.000
+backfilled,flat,zstd1,2119226,14.409,5.803
+backfilled,flat,zstd3,2212029,22.936,6.985
+backfilled,betree,lance-columnar,5012323,0.000,0.000

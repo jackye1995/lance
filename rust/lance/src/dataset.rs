@@ -68,6 +68,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tracing::{info, instrument};
 
+pub mod betree;
 pub(crate) mod blob;
 pub(crate) mod branch_location;
 pub mod builder;

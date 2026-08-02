@@ -18,16 +18,24 @@ package lance.table;
 
 import "table.proto";
 
-// A pointer from a parent to a child node, with pivot bounds (the child owns the
-// contiguous key range [min_key, max_key]) and enough metadata to route + cost.
+// A pointer from a parent to a child node, with live subtree summaries and
+// enough metadata to route + cost. Sibling min_key values are lower routing
+// fences; the next sibling's min_key is the exclusive upper fence. Buffered
+// inserts may therefore lie outside the referenced child's live min/max.
 message ChildRef {
   string node_path = 1;    // path to the child file, relative to the dataset root
-  uint64 min_key = 2;      // smallest fragment id in the subtree
-  uint64 max_key = 3;      // largest fragment id in the subtree
+  uint64 min_key = 2;      // smallest live id; also the sibling routing separator
+  uint64 max_key = 3;      // largest live id (summary only, not a routing fence)
   uint64 num_keys = 4;     // fragments in the subtree
   uint64 byte_size = 5;    // logical bytes of the child (leaf split/merge metric)
   uint32 height = 6;       // 0 = leaf, >0 = internal
   uint32 num_children = 7;  // direct children of the child (0 for a leaf); internal split/merge metric
+  // Sum of physical_rows for fragments in the subtree after applying all
+  // buffered actions stored in that subtree. Unknown physical row counts add 0.
+  uint64 total_rows = 8;
+  // Exact stored object size. Readers use this to fetch a leaf in one GET and
+  // decode subsequent ranges from memory.
+  uint64 object_size = 9;
 }
 
 // AddDataFile is the backfill / add-column action: attach a new DataFile to an
@@ -47,6 +55,22 @@ message AddDeletionFile {
   DeletionFile deletion_file = 2;
 }
 
+// Remove the deletion file from an existing fragment.
+message ClearDeletionFile {
+  uint64 frag_id = 1;
+}
+
+// The buffered form of production DataReplacement: applied at the leaf with
+// the same decision procedure as lance's Operation::DataReplacement. If an
+// existing data file matches `file` on field ids and file version, its path,
+// size, and base id are swapped in place. If the fragment's files cover none
+// of `file`'s fields, `file` is appended (the all-NULL add-column case).
+// Partial field overlap is an application error.
+message ReplaceDataFile {
+  uint64 frag_id = 1;
+  DataFile file = 2;
+}
+
 // A single ε-buffer message, keyed by the fragment id it targets.
 message FragmentAction {
   oneof action {
@@ -55,6 +79,8 @@ message FragmentAction {
     AddDataFile add_data_file = 3;
     RemoveDataFile remove_data_file = 4;
     AddDeletionFile add_deletion_file = 5;
+    ClearDeletionFile clear_deletion_file = 6;
+    ReplaceDataFile replace_data_file = 7;
   }
 }
 
@@ -63,6 +89,11 @@ message FragmentAction {
 message TaggedAction {
   uint64 msn = 1;
   FragmentAction action = 2;
+  // Changes contributed by this action while it remains buffered. Once the
+  // action reaches a leaf, the rewritten leaf ref incorporates the change and
+  // the action is no longer present, so aggregates are never double-counted.
+  sint64 fragment_count_delta = 3;
+  sint64 total_rows_delta = 4;
 }
 
 // An internal node: child pivots + this node's ε-buffer. Stored as a standalone
@@ -81,7 +112,43 @@ message BeTreeRoot {
   uint64 next_msn = 4;
   // Opaque serialized table schema.
   bytes schema_pb = 5;
-  // Config echoed so readers can interpret the tree (node-size + branching-factor limits).
+  // Internal-node/epsilon-buffer size limit.
   uint64 max_node_bytes = 6;
   uint32 max_children_per_node = 7;
+  // Exact logical totals after applying all buffered actions in the tree.
+  uint64 total_fragments = 8;
+  // Sum of Fragment.physical_rows, treating an unknown count as zero.
+  uint64 total_rows = 9;
+  // Logical leaf-size limit. This may exceed max_node_bytes so object-store
+  // readers use fewer, larger leaf objects without enlarging inline ε-buffers.
+  uint64 max_leaf_bytes = 10;
+  // Zero on a compacted root. Nonzero marks this object as a root delta: the
+  // version of the compacted root its chain extends. A delta root has no
+  // children and its buffer holds only the actions committed at `version`.
+  // Readers load the compacted root, then apply every delta root after it in
+  // version order.
+  uint64 base_root_version = 11;
+  // Root-delta-chain length limit before a commit must fold the chain into a
+  // compacted root. Zero disables the delta chain: every commit rewrites the
+  // full root, the pre-delta behavior.
+  uint32 max_root_delta_tail = 12;
+  // On a delta root, the committing operation kind. The delta root then
+  // doubles as that commit's transaction record. Empty on compacted roots,
+  // whose commits write a separate `_bt/txn/{version}.txn` envelope.
+  string operation = 13;
+}
+
+// One record per successful commit: the actions that produced `version`.
+// Written at `_bt/txn/{version}.txn` only after that version's root
+// publication wins its create-only race, so a conflicted commit never leaves
+// a transaction record at the tip. Research parity artifact; a production
+// integration would reconcile this with lance.format.pb.Transaction.
+message BeTreeTransaction {
+  uint64 version = 1;
+  // The published version this commit was based on (`version - 1`).
+  uint64 base_version = 2;
+  // Operation kind from the committing adapter, for audit and conflict
+  // classification ("append", "add_columns", "replace_data_files", ...).
+  string operation = 3;
+  repeated FragmentAction actions = 4;
 }

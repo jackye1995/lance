@@ -1,0 +1,13 @@
+diff --git a/rust/lance/src/dataset.rs b/rust/lance/src/dataset.rs
+index 4924c5d69..09f532c8a 100644
+--- a/rust/lance/src/dataset.rs
++++ b/rust/lance/src/dataset.rs
+@@ -836,7 +836,7 @@ impl Dataset {
+     /// that covers it (or reading it from the resident buffer). This is the
+     /// proportional path for id-scoped operations like `take` by row address;
+     /// it never materializes the whole dataset.
+-    pub(crate) async fn resolve_fragment(&self, fragment_id: u64) -> Result<Option<Fragment>> {
++    pub async fn resolve_fragment(&self, fragment_id: u64) -> Result<Option<Fragment>> {
+         match &self.fragment_catalog {
+             FragmentCatalog::Inline(fragments) => {
+                 Ok(fragments.iter().find(|f| f.id == fragment_id).cloned())

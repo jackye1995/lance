@@ -27,7 +27,7 @@ use crate::blob::{BlobArrayBuilder, BlobDescriptorArrayBuilder, blob_field};
 use crate::dataset::fragment::FileFragment;
 use crate::dataset::transaction::{DataReplacementGroup, Operation};
 use crate::dataset::write::WriteParams;
-use crate::dataset::{DataFilePart, DataFileTarget, WriteDestination};
+use crate::dataset::{DataFilePart, DataFilePartTarget, DataFileTarget, WriteDestination};
 use crate::{Dataset, Result};
 
 async fn dataset_of(batch: RecordBatch, version: LanceFileVersion) -> Dataset {
@@ -179,6 +179,93 @@ async fn target_uses_an_ordinary_generated_data_file_name() {
     assert_eq!(restored.base_id, first.base_id);
     assert_eq!(restored.schema, first.schema);
     assert_eq!(restored.version, first.version);
+}
+
+#[tokio::test]
+async fn checkpointed_part_target_recovers_a_lost_completion() {
+    let batch = arrow_array::record_batch!(("id", Int32, [1, 2]),).unwrap();
+    let dataset = dataset_of(batch.clone(), LanceFileVersion::V2_2).await;
+    let target = DataFileTarget::new(
+        None,
+        Arc::new(dataset.schema().clone()),
+        ConcreteFileVersion::V2_2,
+    )
+    .unwrap();
+    let part_target = target.new_part(None).unwrap();
+    let checkpoint = serde_json::to_vec(&part_target).unwrap();
+    let restored: DataFilePartTarget = serde_json::from_slice(&checkpoint).unwrap();
+    assert_eq!(restored, part_target);
+    assert!(restored.file_name().ends_with(".part"));
+    assert_eq!(restored.blob_ids(), None);
+
+    let written = dataset
+        .write_data_file_part_to(&target, &restored, stream::iter([Ok(batch)]))
+        .await
+        .unwrap();
+    let recovered = dataset
+        .recover_data_file_part(&target, &restored, 2)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&recovered).unwrap(),
+        serde_json::to_value(&written).unwrap()
+    );
+
+    let error = dataset
+        .recover_data_file_part(&target, &restored, 3)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, Error::InvalidInput { .. }), "{error}");
+    assert!(error.to_string().contains("3 were expected"), "{error}");
+}
+
+#[tokio::test]
+async fn caller_directed_part_rejects_a_foreign_or_invalid_target() {
+    let batch = arrow_array::record_batch!(("id", Int32, [1]),).unwrap();
+    let dataset = dataset_of(batch.clone(), LanceFileVersion::V2_2).await;
+    let target = DataFileTarget::new(
+        None,
+        Arc::new(dataset.schema().clone()),
+        ConcreteFileVersion::V2_2,
+    )
+    .unwrap();
+    let neighbor = DataFileTarget::new(
+        None,
+        Arc::new(dataset.schema().clone()),
+        ConcreteFileVersion::V2_2,
+    )
+    .unwrap();
+    let part_target = target.new_part(None).unwrap();
+
+    let error = dataset
+        .write_data_file_part_to(&neighbor, &part_target, stream::iter([Ok(batch.clone())]))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, Error::InvalidInput { .. }), "{error}");
+    assert!(error.to_string().contains("belongs to target"), "{error}");
+
+    for (field, replacement, message) in [
+        (
+            "file_name",
+            serde_json::json!("../outside.part"),
+            "part identity",
+        ),
+        (
+            "blob_ids",
+            serde_json::json!({"start": 0, "end": 1}),
+            "Blob ID range",
+        ),
+    ] {
+        let mut description = serde_json::to_value(&part_target).unwrap();
+        description[field] = replacement;
+        let invalid: DataFilePartTarget = serde_json::from_value(description).unwrap();
+        let error = dataset
+            .write_data_file_part_to(&target, &invalid, stream::iter([Ok(batch.clone())]))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::InvalidInput { .. }), "{error}");
+        assert!(error.to_string().contains(message), "{error}");
+    }
 }
 
 #[test]

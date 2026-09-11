@@ -4,6 +4,7 @@
 use std::{
     collections::{HashMap, HashSet},
     io::Cursor,
+    ops::Range,
     sync::Arc,
 };
 
@@ -19,7 +20,7 @@ use object_store::path::{Path, PathPart};
 use prost::Message;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::{Dataset, fragment::write::generate_random_filename};
+use super::{DataFilePartTarget, Dataset, fragment::write::generate_random_filename};
 use crate::blob::prepared_to_logical_blob_schema;
 
 /// Serializable identity and logical schema of a final concatenated data file.
@@ -120,6 +121,17 @@ impl DataFileTarget {
             schema,
             version,
         })
+    }
+
+    /// Allocate a serializable identity for one staging part before writing it.
+    ///
+    /// Persist the returned target before calling
+    /// [`Dataset::write_data_file_part_to`](Dataset::write_data_file_part_to). If
+    /// completion is not checkpointed, the same identity can be passed to
+    /// [`Dataset::recover_data_file_part`](Dataset::recover_data_file_part) to
+    /// validate and recover the completed file.
+    pub fn new_part(&self, blob_ids: Option<Range<u32>>) -> Result<DataFilePartTarget> {
+        DataFilePartTarget::new(self, blob_ids)
     }
 
     pub(super) fn blob_target_id(&self) -> Option<BlobTargetId> {

@@ -117,7 +117,7 @@ pub(crate) mod versions;
 pub mod write;
 
 pub use data_file::DataFileTarget;
-pub use data_file_part::DataFilePart;
+pub use data_file_part::{DataFilePart, DataFilePartTarget};
 
 pub(crate) use take::row_offsets_to_row_addresses;
 

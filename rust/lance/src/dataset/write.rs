@@ -55,12 +55,11 @@ use crate::index::DatasetIndexExt;
 use crate::index::scalar::{IndexDetails, fetch_index_details};
 use crate::session::Session;
 
-use super::fragment::write::generate_random_filename;
 use super::progress::{NoopFragmentWriteProgress, WriteFragmentProgress};
 use super::transaction::Transaction;
 use super::utils::SchemaAdapter;
 use super::versions;
-use super::{DATA_DIR, DataFilePart, DataFileTarget};
+use super::{DATA_DIR, DataFilePart, DataFilePartTarget, DataFileTarget};
 
 mod commit;
 pub mod delete;
@@ -158,20 +157,29 @@ impl Dataset {
         blob_ids: Option<Range<u32>>,
         data: impl Stream<Item = Result<RecordBatch>> + Send,
     ) -> Result<DataFilePart> {
-        self.validate_data_file_target(target)?;
-        validate_blob_v2_write_schema(target.schema.as_ref())?;
-        let part_blob_ids = blob_ids.clone();
-        let has_blob = target
-            .schema
-            .fields_pre_order()
-            .any(|field| field.is_blob_v2());
-        if has_blob && blob_ids.is_none() {
-            return Err(Error::invalid_input(
-                "write_data_file_part requires a non-empty Blob ID range for a schema containing Blob v2 fields",
-            ));
-        }
+        let part_target = target.new_part(blob_ids)?;
+        self.write_data_file_part_to(target, &part_target, data)
+            .await
+    }
 
-        let mut preprocessor = if let Some(blob_ids) = blob_ids {
+    /// Write one independently complete Lance file to a caller-checkpointed part target.
+    ///
+    /// Allocate and persist `part_target` before calling this method. If the
+    /// completion response is lost, use [`Self::recover_data_file_part`] with
+    /// the same target and expected physical row count. The caller must fence
+    /// stale writers and must not write the same part target concurrently.
+    pub async fn write_data_file_part_to(
+        &self,
+        target: &DataFileTarget,
+        part_target: &DataFilePartTarget,
+        data: impl Stream<Item = Result<RecordBatch>> + Send,
+    ) -> Result<DataFilePart> {
+        self.validate_data_file_target(target)?;
+        part_target.validate_for(target)?;
+        validate_blob_v2_write_schema(target.schema.as_ref())?;
+        let part_blob_ids = part_target.blob_ids().cloned();
+
+        let mut preprocessor = if let Some(blob_ids) = part_blob_ids.clone() {
             let data_dir = self.data_file_dir_for_base(target.base_id)?;
             let object_store = self.object_store(target.base_id).await?;
             let external_base_resolver = blob_v2_external_base_resolver(
@@ -199,10 +207,9 @@ impl Dataset {
             None
         };
 
-        let file_name = format!("{}.part", generate_random_filename());
         let path = target
             .parts_dir(&self.data_file_dir_for_base(target.base_id)?)
-            .join(file_name.as_str());
+            .join(part_target.file_name());
         let store = self.object_store(target.base_id).await?;
         let mut writer = file_versions::create_writer(
             target.version,
@@ -229,15 +236,7 @@ impl Dataset {
         .await;
 
         match write_result {
-            Ok(summary) => Ok(DataFilePart {
-                target_file_name: target.file_name.clone(),
-                base_id: target.base_id,
-                file_name,
-                blob_ids: part_blob_ids,
-                num_rows: summary.num_rows,
-                size_bytes: NonZeroU64::new(summary.size_bytes)
-                    .ok_or_else(|| Error::internal("completed part has zero file size"))?,
-            }),
+            Ok(summary) => part_target.completed(summary.num_rows, summary.size_bytes),
             Err(error) => {
                 writer.abort().await;
                 if let Some(preprocessor) = preprocessor.as_mut() {
@@ -246,6 +245,21 @@ impl Dataset {
                 Err(error)
             }
         }
+    }
+
+    /// Recover a complete data-file part whose target was checkpointed before writing.
+    ///
+    /// The file is reopened and its footer, physical row count, Blob v2
+    /// descriptors, checkpointed target association, and Blob ID lease are
+    /// validated. Missing, incomplete, or mismatched objects return an error
+    /// and are never treated as completed parts.
+    pub async fn recover_data_file_part(
+        &self,
+        target: &DataFileTarget,
+        part_target: &DataFilePartTarget,
+        expected_num_rows: u64,
+    ) -> Result<DataFilePart> {
+        part_target.recover(self, target, expected_num_rows).await
     }
 
     /// Reopen, validate, and concatenate parts into the final data file.

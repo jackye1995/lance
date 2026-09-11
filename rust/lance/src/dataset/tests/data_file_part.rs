@@ -183,7 +183,7 @@ async fn target_uses_an_ordinary_generated_data_file_name() {
 
 #[tokio::test]
 async fn checkpointed_part_target_recovers_a_lost_completion() {
-    let batch = arrow_array::record_batch!(("id", Int32, [1, 2]),).unwrap();
+    let batch = arrow_array::record_batch!(("id", Int32, [1, 2])).unwrap();
     let dataset = dataset_of(batch.clone(), LanceFileVersion::V2_2).await;
     let target = DataFileTarget::new(
         None,
@@ -221,7 +221,7 @@ async fn checkpointed_part_target_recovers_a_lost_completion() {
 
 #[tokio::test]
 async fn caller_directed_part_rejects_a_foreign_or_invalid_target() {
-    let batch = arrow_array::record_batch!(("id", Int32, [1]),).unwrap();
+    let batch = arrow_array::record_batch!(("id", Int32, [1])).unwrap();
     let dataset = dataset_of(batch.clone(), LanceFileVersion::V2_2).await;
     let target = DataFileTarget::new(
         None,

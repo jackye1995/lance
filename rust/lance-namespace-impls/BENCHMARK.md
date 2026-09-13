@@ -2,7 +2,7 @@
 
 Measures manifest-only directory catalog startup, reads, and copy-on-write mutations as
 the manifest scales. The current catalog loads the complete `__manifest` into an in-memory
-snapshot, queries that snapshot, and reloads it after a successful update.
+snapshot, queries that snapshot, and refreshes it asynchronously after a successful update.
 
 The catalog commits every mutation by rewriting the whole `__manifest` (copy-on-write)
 and atomically writing a new manifest version. This benchmark characterizes:
@@ -99,8 +99,9 @@ implementation. With ten contending writers, in-memory and no-index were effecti
 
 Four asynchronous clients shared one catalog instance. Each client ran five cycles with
 exactly 100 table descriptions and one namespace creation, with writes staggered across
-clients. Each value is the median of three isolated S3-backed runs; all 54,000 reads and
-540 writes across the matrix succeeded.
+clients. These results use the blocking post-commit refresh at `9a337af5`. Each value is
+the median of three isolated S3-backed runs; all 54,000 reads and 540 writes across the
+matrix succeeded.
 
 | rows | variant | read/s | read p50 | read p99 | write/s | write p50 |
 | ---: | --- | ---: | ---: | ---: | ---: | ---: |
@@ -119,3 +120,17 @@ and 2.16× that of no-index. Its read p50 is 4.32× faster than indexed and rema
 the read-only result, although read p99 rises to 113 ms during overlapping writes. The
 tradeoff is write latency: in-memory write p50 reaches 3.24 seconds under four-client
 contention, versus 1.96 seconds indexed and 1.21 seconds no-index.
+
+### Asynchronous post-commit refresh
+
+A focused 1M-row A/B comparison on the same `c7i.12xlarge` moved the snapshot refresh
+off the commit path. With one writer performing one write followed by 100 reads, median
+write latency fell from 2,028 ms to 1,384 ms (32%). Total cycle time remained effectively
+unchanged (3,118 ms versus 3,092 ms), because the first read waits for the refresh when
+the background task has not completed.
+
+Under the four-client 100:1 mix, write p50 fell from 4,052 ms to 3,528 ms (13%), while
+throughput remained effectively unchanged at 66.9 versus 66.7 reads/s. Read p50 stayed
+near 9.4 ms, but read p99 increased from 120 ms to 677 ms because refresh latency is now
+charged to reads that arrive immediately after a commit. All 13,000 reads and 130 writes
+across the focused comparison succeeded.

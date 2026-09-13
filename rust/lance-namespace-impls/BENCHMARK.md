@@ -94,3 +94,28 @@ fresh startup costs about 0.5 seconds and 342 MiB more RSS. The legacy no-index 
 12% faster for serial writes at 1M, while its read latency remains close to the indexed
 implementation. With ten contending writers, in-memory and no-index were effectively tied
 (0.731 versus 0.737 ops/s) and both were about 43–45% faster than indexed writes.
+
+## Mixed 100:1 read/write results
+
+Four asynchronous clients shared one catalog instance. Each client ran five cycles with
+exactly 100 table descriptions and one namespace creation, with writes staggered across
+clients. Each value is the median of three isolated S3-backed runs; all 54,000 reads and
+540 writes across the matrix succeeded.
+
+| rows | variant | read/s | read p50 | read p99 | write/s | write p50 |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 1K | indexed | 92.46 | 34.64 ms | 193.17 ms | 0.925 | 258.60 ms |
+| 1K | no index | 61.59 | 59.26 ms | 136.94 ms | 0.616 | 211.86 ms |
+| 1K | in memory | 258.57 | 9.28 ms | 129.47 ms | 2.586 | 196.31 ms |
+| 100K | indexed | 74.94 | 37.29 ms | 281.35 ms | 0.749 | 484.13 ms |
+| 100K | no index | 52.92 | 65.03 ms | 213.95 ms | 0.529 | 393.33 ms |
+| 100K | in memory | 186.83 | 9.37 ms | 220.90 ms | 1.868 | 420.09 ms |
+| 1M | indexed | 49.92 | 39.66 ms | 236.14 ms | 0.499 | 1,964.58 ms |
+| 1M | no index | 37.04 | 86.59 ms | 261.71 ms | 0.370 | 1,205.96 ms |
+| 1M | in memory | 79.91 | 9.17 ms | 113.04 ms | 0.799 | 3,238.71 ms |
+
+At 1M rows, the in-memory design delivers 1.60× the mixed-workload throughput of indexed
+and 2.16× that of no-index. Its read p50 is 4.32× faster than indexed and remains close to
+the read-only result, although read p99 rises to 113 ms during overlapping writes. The
+tradeoff is write latency: in-memory write p50 reaches 3.24 seconds under four-client
+contention, versus 1.96 seconds indexed and 1.21 seconds no-index.

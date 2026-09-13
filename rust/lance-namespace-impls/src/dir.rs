@@ -5443,9 +5443,9 @@ impl LanceNamespace for DirectoryNamespace {
                     scanner.distance_metric(metric);
                 }
 
-                // Apply nprobes if specified (maps to minimum_nprobes, matching lancedb behavior)
+                // The legacy namespace field represents an exact probe count.
                 if let Some(nprobes) = request.nprobes {
-                    scanner.minimum_nprobes(nprobes as usize);
+                    scanner.nprobes(nprobes.max(1) as usize);
                 }
 
                 // Apply ef (HNSW search effort) if specified

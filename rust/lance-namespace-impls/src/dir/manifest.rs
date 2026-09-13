@@ -716,6 +716,16 @@ impl DatasetConsistencyWrapper {
         }
     }
 
+    /// Refresh the in-memory snapshot without extending the commit critical path.
+    fn refresh_in_background(&self) {
+        let manifest_dataset = self.clone();
+        drop(tokio::spawn(async move {
+            if let Err(err) = manifest_dataset.reload().await {
+                log::warn!("Failed to refresh committed manifest snapshot: {}", err);
+            }
+        }));
+    }
+
     /// Reload the dataset to the latest version.
     async fn reload(&self) -> Result<()> {
         // First check if we need to reload (with read lock)
@@ -1729,7 +1739,7 @@ impl ManifestNamespace {
 
             match commit_result {
                 Ok(()) => {
-                    self.manifest_dataset.get_refreshed().await?;
+                    self.manifest_dataset.refresh_in_background();
                     return Ok(mutation.result);
                 }
                 Err(err) => {
@@ -1740,7 +1750,7 @@ impl ManifestNamespace {
                         .manifest_commit_landed(&dataset, target_version, &staged_data_files)
                         .await
                     {
-                        self.manifest_dataset.get_refreshed().await?;
+                        self.manifest_dataset.refresh_in_background();
                         return Ok(mutation.result);
                     }
                     self.cleanup_staged_manifest_files(&object_store, &staged_data_files)
@@ -4054,8 +4064,11 @@ mod tests {
             )
             .await
             .unwrap();
+        // The post-commit refresh is asynchronous. An immediate read must detect the
+        // committed successor and wait for or perform the refresh before returning.
         assert!(manifest_ns.manifest_contains_object("table").await.unwrap());
-        // A second sequential commit must not falsely conflict.
+        // A second sequential commit must also refresh before using the snapshot and
+        // must not falsely conflict.
         manifest_ns
             .insert_into_manifest_with_metadata(
                 vec![ManifestEntry {

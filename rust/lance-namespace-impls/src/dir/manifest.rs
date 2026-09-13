@@ -32,7 +32,6 @@ use lance_core::Error as LanceError;
 use lance_core::datatypes::LANCE_UNENFORCED_PRIMARY_KEY_POSITION;
 use lance_core::{Error, Result, box_error};
 use lance_io::object_store::{ObjectStore, ObjectStoreParams};
-use lance_io::stream::RecordBatchStream as LanceRecordBatchStream;
 use lance_namespace::LanceNamespace;
 use lance_namespace::error::NamespaceError;
 use lance_namespace::models::{
@@ -3514,7 +3513,6 @@ mod tests {
             .await
             .unwrap()
             .snapshot()
-            .unwrap()
             .rows()
             .iter()
             .map(|row| (row.object_id.clone(), row.base_objects.clone()))

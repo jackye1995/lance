@@ -1246,7 +1246,6 @@ impl ManifestNamespace {
 
     fn manifest_snapshot_stream(snapshot: Arc<ManifestSnapshot>) -> SendableRecordBatchStream {
         let schema = Self::manifest_schema();
-        let stream_schema = schema.clone();
         let stream = stream::unfold((snapshot, 0), |(snapshot, offset)| async move {
             if offset >= snapshot.rows().len() {
                 return None;
@@ -1269,7 +1268,7 @@ impl ManifestNamespace {
             Some((batch, (snapshot, end)))
         });
         Box::pin(DatafusionRecordBatchStreamAdapter::new(
-            stream_schema,
+            schema,
             stream.fuse(),
         ))
     }

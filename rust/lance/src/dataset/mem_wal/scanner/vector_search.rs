@@ -279,7 +279,7 @@ impl LsmVectorSearchPlanner {
     }
 
     #[instrument(name = "lsm_vector_search", level = "info", skip_all, fields(k, minimum_nprobes = ?probe_bounds.minimum_nprobes, maximum_nprobes = ?probe_bounds.maximum_nprobes, vector_column = %self.vector_column, distance_type = ?self.distance_type))]
-    pub(crate) async fn plan_search_with_probe_bounds(
+    pub(super) async fn plan_search_with_probe_bounds(
         &self,
         query_vector: &FixedSizeListArray,
         k: usize,

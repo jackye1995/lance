@@ -224,7 +224,6 @@ impl LsmVectorSearchPlanner {
     ///
     /// An execution plan that returns the top-K nearest neighbors across all
     /// LSM levels, with stale results filtered out.
-    #[instrument(name = "lsm_vector_search", level = "info", skip_all, fields(k, nprobes, vector_column = %self.vector_column, distance_type = ?self.distance_type))]
     pub async fn plan_search(
         &self,
         query_vector: &FixedSizeListArray,
@@ -234,11 +233,51 @@ impl LsmVectorSearchPlanner {
         refine_base_table: bool,
         overfetch_factor: f64,
     ) -> Result<Arc<dyn ExecutionPlan>> {
+        if nprobes == 0 {
+            return Err(Error::invalid_input("nprobes must be positive".to_string()));
+        }
+        self.plan_search_with_probe_bounds(
+            query_vector,
+            k,
+            Some(nprobes),
+            Some(nprobes),
+            projection,
+            refine_base_table,
+            overfetch_factor,
+        )
+        .await
+    }
+
+    #[instrument(name = "lsm_vector_search", level = "info", skip_all, fields(k, minimum_nprobes = ?minimum_nprobes, maximum_nprobes = ?maximum_nprobes, vector_column = %self.vector_column, distance_type = ?self.distance_type))]
+    pub(crate) async fn plan_search_with_probe_bounds(
+        &self,
+        query_vector: &FixedSizeListArray,
+        k: usize,
+        minimum_nprobes: Option<usize>,
+        maximum_nprobes: Option<usize>,
+        projection: Option<&[String]>,
+        refine_base_table: bool,
+        overfetch_factor: f64,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
         if k == 0 {
             return Err(Error::invalid_input("k must be positive".to_string()));
         }
-        if nprobes == 0 {
-            return Err(Error::invalid_input("nprobes must be positive".to_string()));
+        if minimum_nprobes == Some(0) {
+            return Err(Error::invalid_input(
+                "minimum_nprobes must be positive".to_string(),
+            ));
+        }
+        if maximum_nprobes == Some(0) {
+            return Err(Error::invalid_input(
+                "maximum_nprobes must be positive".to_string(),
+            ));
+        }
+        if let (Some(minimum_nprobes), Some(maximum_nprobes)) = (minimum_nprobes, maximum_nprobes)
+            && minimum_nprobes > maximum_nprobes
+        {
+            return Err(Error::invalid_input(format!(
+                "minimum_nprobes ({minimum_nprobes}) must not exceed maximum_nprobes ({maximum_nprobes})"
+            )));
         }
 
         let sources = self.collector.collect()?;
@@ -303,7 +342,8 @@ impl LsmVectorSearchPlanner {
                     source,
                     query_vector,
                     *fetch_k,
-                    nprobes,
+                    minimum_nprobes,
+                    maximum_nprobes,
                     projection,
                     *is_base && refine_base,
                 ))
@@ -426,7 +466,8 @@ impl LsmVectorSearchPlanner {
         source: &LsmDataSource,
         query_vector: &FixedSizeListArray,
         k: usize,
-        nprobes: usize,
+        minimum_nprobes: Option<usize>,
+        maximum_nprobes: Option<usize>,
         projection: Option<&[String]>,
         refine: bool,
     ) -> Result<Arc<dyn ExecutionPlan>> {
@@ -455,7 +496,12 @@ impl LsmVectorSearchPlanner {
                 let query_arr = single_query_array(query_vector);
                 scanner.nearest(&self.vector_column, query_arr.as_ref(), k)?;
                 scanner.distance_range(self.distance_range.0, self.distance_range.1);
-                scanner.nprobes(nprobes);
+                if let Some(minimum_nprobes) = minimum_nprobes {
+                    scanner.minimum_nprobes(minimum_nprobes);
+                }
+                if let Some(maximum_nprobes) = maximum_nprobes {
+                    scanner.maximum_nprobes(maximum_nprobes);
+                }
                 scanner.distance_metric(self.distance_type);
                 // Memtables cover unindexed rows; only search indexed data here.
                 scanner.fast_search();
@@ -489,7 +535,12 @@ impl LsmVectorSearchPlanner {
                 let query_arr = single_query_array(query_vector);
                 scanner.nearest(&self.vector_column, query_arr.as_ref(), k)?;
                 scanner.distance_range(self.distance_range.0, self.distance_range.1);
-                scanner.nprobes(nprobes);
+                if let Some(minimum_nprobes) = minimum_nprobes {
+                    scanner.minimum_nprobes(minimum_nprobes);
+                }
+                if let Some(maximum_nprobes) = maximum_nprobes {
+                    scanner.maximum_nprobes(maximum_nprobes);
+                }
                 scanner.distance_metric(self.distance_type);
                 scanner.fast_search();
                 scanner.create_plan().await
@@ -519,7 +570,12 @@ impl LsmVectorSearchPlanner {
                 }
                 scanner.nearest(&self.vector_column, query_vector, k)?;
                 scanner.distance_range(self.distance_range.0, self.distance_range.1);
-                scanner.nprobes(nprobes);
+                if let Some(minimum_nprobes) = minimum_nprobes {
+                    scanner.minimum_nprobes(minimum_nprobes);
+                }
+                if let Some(maximum_nprobes) = maximum_nprobes {
+                    scanner.maximum_nprobes(maximum_nprobes);
+                }
                 scanner.distance_metric(self.distance_type);
                 scanner.create_plan().await
             }
@@ -766,6 +822,25 @@ mod tests {
         assert!(
             err.to_string().contains("nprobes must be positive"),
             "expected nprobes validation error, got {err}"
+        );
+
+        let err = planner
+            .plan_search_with_probe_bounds(&query, 1, None, Some(0), None, false, 1.0)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("maximum_nprobes must be positive"),
+            "expected maximum_nprobes validation error, got {err}"
+        );
+
+        let err = planner
+            .plan_search_with_probe_bounds(&query, 1, Some(2), Some(1), None, false, 1.0)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("minimum_nprobes (2) must not exceed maximum_nprobes (1)"),
+            "expected probe-bound ordering error, got {err}"
         );
     }
 

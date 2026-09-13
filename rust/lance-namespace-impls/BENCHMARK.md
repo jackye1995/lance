@@ -14,6 +14,9 @@ and atomically writing a new manifest version. This benchmark characterizes:
   holding `rows` entries (per-commit latency + throughput).
 - **Concurrent commit** — `C` processes commit continuously for a fixed duration against
   a manifest of `rows` entries (steady, contended TPS).
+- **Mixed read/write** — concurrent clients share one catalog instance and each issue an
+  exact number of reads for every write, with their write positions staggered so reads
+  and writes overlap.
 
 ## Binary: `examples/manifest_bench.rs`
 
@@ -28,6 +31,8 @@ manifest_bench run --root <uri> --operation write-create-namespace \
     --concurrency 1 --operations 100 --initial-entries <rows>
 manifest_bench run --root <uri> --operation write-create-namespace \
     --concurrency 50 --duration-secs 30 --initial-entries <rows>
+manifest_bench mixed --root <uri> --concurrency 4 --writes-per-worker 5 \
+    --reads-per-write 100 --warmup 10 --initial-entries <rows>
 ```
 
 - `seed-large` bootstraps all `count` rows in one direct Lance dataset write. It does not
@@ -40,6 +45,10 @@ manifest_bench run --root <uri> --operation write-create-namespace \
   `warm-read-describe-table` cover the in-memory load and query paths.
 - The committed operation defaults to `write-create-namespace`, the cheapest pure
   `__manifest` mutation. `write-create-table` and `write-declare-table` are also available.
+- `mixed` shares one namespace across `--concurrency` asynchronous clients. Each client
+  performs `--writes-per-worker` cycles containing exactly `--reads-per-write` table
+  descriptions and one namespace creation. Write positions are staggered across clients;
+  the JSON result reports read and write latency, throughput, and errors separately.
 
 S3 requires the default `dir-aws` feature (on by default) and AWS credentials in the
 environment; pass `--storage-option aws_region=<region>`.

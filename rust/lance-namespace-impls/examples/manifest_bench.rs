@@ -10,6 +10,8 @@
 //!   seed-large — bootstrap a `__manifest` with N rows in one dataset write
 //!   run        — coordinator: spawn `--concurrency` worker processes committing for
 //!                either a fixed op count (continuous) or a fixed duration (steady TPS)
+//!   mixed      — share one catalog across concurrent clients, each issuing exactly 100
+//!                reads per write by default
 //!   worker     — (internal) a single committing process spawned by `run`
 //!
 //! Examples:
@@ -24,6 +26,10 @@
 //!   # Concurrent steady TPS: 50 processes committing for 30s
 //!   manifest_bench run --root s3://bucket/bench/p --operation write-create-namespace \
 //!     --concurrency 50 --duration-secs 30 --initial-entries 100000
+//!
+//!   # Four concurrent clients, each running five cycles of 100 reads + one write
+//!   manifest_bench mixed --root s3://bucket/bench/p --concurrency 4 \
+//!     --writes-per-worker 5 --reads-per-write 100 --initial-entries 100000
 
 // A CLI benchmark tool: workers emit JSON latency records on stdout and progress on
 // stderr, so stdout/stderr printing is intentional here.
@@ -48,6 +54,7 @@ use lance_namespace::models::{
 };
 use lance_namespace_impls::DirectoryNamespaceBuilder;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Barrier;
 
 #[derive(Serialize, Deserialize, Clone)]
 struct LatencyRecord {
@@ -75,12 +82,77 @@ struct BenchResult {
     errors: usize,
 }
 
+#[derive(Serialize)]
+struct OperationStats {
+    attempted_operations: usize,
+    successful_operations: usize,
+    throughput_ops_per_sec: f64,
+    avg_latency_ms: f64,
+    p50_latency_ms: f64,
+    p90_latency_ms: f64,
+    p99_latency_ms: f64,
+    min_latency_ms: f64,
+    max_latency_ms: f64,
+    errors: usize,
+}
+
+#[derive(Serialize)]
+struct MixedBenchResult {
+    variant: String,
+    initial_entries: usize,
+    concurrency: usize,
+    reads_per_write: usize,
+    writes_per_worker: usize,
+    total_duration_ms: f64,
+    reads: OperationStats,
+    writes: OperationStats,
+}
+
+#[derive(Default)]
+struct MixedTaskResult {
+    read_latencies: Vec<f64>,
+    write_latencies: Vec<f64>,
+    read_errors: usize,
+    write_errors: usize,
+}
+
 fn percentile(sorted: &[f64], p: f64) -> f64 {
     if sorted.is_empty() {
         return 0.0;
     }
     let idx = ((sorted.len() as f64 - 1.0) * p).round() as usize;
     sorted[idx.min(sorted.len() - 1)]
+}
+
+fn compute_operation_stats(
+    wall_duration: Duration,
+    mut latencies: Vec<f64>,
+    errors: usize,
+) -> OperationStats {
+    latencies.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let successful_operations = latencies.len();
+    let attempted_operations = successful_operations + errors;
+    let wall_secs = wall_duration.as_secs_f64();
+    OperationStats {
+        attempted_operations,
+        successful_operations,
+        throughput_ops_per_sec: if wall_secs > 0.0 {
+            successful_operations as f64 / wall_secs
+        } else {
+            0.0
+        },
+        avg_latency_ms: if successful_operations > 0 {
+            latencies.iter().sum::<f64>() / successful_operations as f64
+        } else {
+            0.0
+        },
+        p50_latency_ms: percentile(&latencies, 0.50),
+        p90_latency_ms: percentile(&latencies, 0.90),
+        p99_latency_ms: percentile(&latencies, 0.99),
+        min_latency_ms: latencies.first().copied().unwrap_or(0.0),
+        max_latency_ms: latencies.last().copied().unwrap_or(0.0),
+        errors,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -177,7 +249,7 @@ async fn build_namespace(
     root: &str,
     inline_optimization: bool,
     storage_options: &HashMap<String, String>,
-) -> Box<dyn LanceNamespace> {
+) -> Arc<dyn LanceNamespace> {
     let mut properties = HashMap::new();
     properties.insert("root".to_string(), root.to_string());
     properties.insert("dir_listing_enabled".to_string(), "false".to_string());
@@ -190,7 +262,7 @@ async fn build_namespace(
     }
     let builder = DirectoryNamespaceBuilder::from_properties(properties, None)
         .expect("Failed to create namespace builder from properties");
-    Box::new(builder.build().await.expect("Failed to build namespace"))
+    Arc::new(builder.build().await.expect("Failed to build namespace"))
 }
 
 // ──────────────────── seed-large mode ────────────────────
@@ -532,6 +604,110 @@ fn run_workers(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn run_mixed(
+    root: &str,
+    concurrency: usize,
+    reads_per_write: usize,
+    writes_per_worker: usize,
+    warmup: usize,
+    table_count: usize,
+    initial_entries: usize,
+    inline_optimization: bool,
+    variant: &str,
+    storage_options: &HashMap<String, String>,
+) -> MixedBenchResult {
+    let ns = build_namespace(root, inline_optimization, storage_options).await;
+    let ipc_data = Bytes::from(create_test_ipc_data());
+
+    for op_idx in 0..warmup {
+        let _ = run_operation(
+            ns.as_ref(),
+            "warm-read-describe-table",
+            0,
+            op_idx,
+            table_count,
+            &ipc_data,
+        )
+        .await;
+    }
+
+    let barrier = Arc::new(Barrier::new(concurrency + 1));
+    let mut handles = Vec::with_capacity(concurrency);
+    for worker_id in 0..concurrency {
+        let ns = Arc::clone(&ns);
+        let ipc_data = ipc_data.clone();
+        let barrier = Arc::clone(&barrier);
+        handles.push(tokio::spawn(async move {
+            let mut result = MixedTaskResult {
+                read_latencies: Vec::with_capacity(reads_per_write * writes_per_worker),
+                write_latencies: Vec::with_capacity(writes_per_worker),
+                ..Default::default()
+            };
+            let operations_per_cycle = reads_per_write + 1;
+            let write_position = worker_id * operations_per_cycle / concurrency;
+
+            barrier.wait().await;
+            for cycle in 0..writes_per_worker {
+                for position in 0..operations_per_cycle {
+                    let op_idx = cycle * operations_per_cycle + position;
+                    let is_write = position == write_position;
+                    let operation = if is_write {
+                        "write-create-namespace"
+                    } else {
+                        "warm-read-describe-table"
+                    };
+                    let start = Instant::now();
+                    let is_error = run_operation(
+                        ns.as_ref(),
+                        operation,
+                        worker_id,
+                        op_idx,
+                        table_count,
+                        &ipc_data,
+                    )
+                    .await
+                    .is_err();
+                    let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+                    match (is_write, is_error) {
+                        (true, true) => result.write_errors += 1,
+                        (true, false) => result.write_latencies.push(latency_ms),
+                        (false, true) => result.read_errors += 1,
+                        (false, false) => result.read_latencies.push(latency_ms),
+                    }
+                }
+            }
+            result
+        }));
+    }
+
+    let wall_start = Instant::now();
+    barrier.wait().await;
+    let mut read_latencies = Vec::with_capacity(reads_per_write * writes_per_worker * concurrency);
+    let mut write_latencies = Vec::with_capacity(writes_per_worker * concurrency);
+    let mut read_errors = 0;
+    let mut write_errors = 0;
+    for handle in handles {
+        let result = handle.await.expect("mixed workload task failed");
+        read_latencies.extend(result.read_latencies);
+        write_latencies.extend(result.write_latencies);
+        read_errors += result.read_errors;
+        write_errors += result.write_errors;
+    }
+    let wall_duration = wall_start.elapsed();
+
+    MixedBenchResult {
+        variant: variant.to_string(),
+        initial_entries,
+        concurrency,
+        reads_per_write,
+        writes_per_worker,
+        total_duration_ms: wall_duration.as_secs_f64() * 1000.0,
+        reads: compute_operation_stats(wall_duration, read_latencies, read_errors),
+        writes: compute_operation_stats(wall_duration, write_latencies, write_errors),
+    }
+}
+
 fn parse_concurrency_list(s: &str) -> Vec<usize> {
     s.split(',')
         .filter_map(|v| v.trim().parse::<usize>().ok())
@@ -543,7 +719,7 @@ fn parse_concurrency_list(s: &str) -> Vec<usize> {
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage: manifest_bench <seed-large|run|worker> [options]");
+        eprintln!("Usage: manifest_bench <seed-large|run|mixed|worker> [options]");
         std::process::exit(1);
     }
 
@@ -553,6 +729,8 @@ async fn main() {
     let mut operations: usize = 100;
     let mut duration_secs: u64 = 0;
     let mut warmup: usize = 0;
+    let mut reads_per_write: usize = 100;
+    let mut writes_per_worker: usize = 5;
     let mut concurrency_list = vec![1];
     let mut count: usize = 1000;
     let mut worker_id: usize = 0;
@@ -583,6 +761,14 @@ async fn main() {
             }
             "--warmup" => {
                 warmup = args[i + 1].parse().unwrap();
+                i += 2;
+            }
+            "--reads-per-write" => {
+                reads_per_write = args[i + 1].parse().unwrap();
+                i += 2;
+            }
+            "--writes-per-worker" => {
+                writes_per_worker = args[i + 1].parse().unwrap();
                 i += 2;
             }
             "--concurrency" => {
@@ -693,8 +879,53 @@ async fn main() {
             }
             eprintln!("=== complete ===");
         }
+        "mixed" => {
+            eprintln!("=== Mixed manifest benchmark ===");
+            eprintln!(
+                "variant={} root={} initial_entries={} concurrency={:?} reads_per_write={} writes_per_worker={}",
+                variant,
+                root,
+                initial_entries,
+                concurrency_list,
+                reads_per_write,
+                writes_per_worker
+            );
+
+            for &concurrency in &concurrency_list {
+                let result = run_mixed(
+                    &root,
+                    concurrency,
+                    reads_per_write,
+                    writes_per_worker,
+                    warmup,
+                    table_count,
+                    initial_entries,
+                    inline_optimization,
+                    &variant,
+                    &storage_options,
+                )
+                .await;
+                eprintln!(
+                    "  c={} -> reads {:.2} ops/s ({} errors, p50={:.0}ms p99={:.0}ms), writes {:.2} ops/s ({} errors, p50={:.0}ms p99={:.0}ms)",
+                    concurrency,
+                    result.reads.throughput_ops_per_sec,
+                    result.reads.errors,
+                    result.reads.p50_latency_ms,
+                    result.reads.p99_latency_ms,
+                    result.writes.throughput_ops_per_sec,
+                    result.writes.errors,
+                    result.writes.p50_latency_ms,
+                    result.writes.p99_latency_ms
+                );
+                println!("{}", serde_json::to_string(&result).unwrap());
+            }
+            eprintln!("=== complete ===");
+        }
         _ => {
-            eprintln!("Unknown mode: {}. Use seed-large, run, or worker.", mode);
+            eprintln!(
+                "Unknown mode: {}. Use seed-large, run, mixed, or worker.",
+                mode
+            );
             std::process::exit(1);
         }
     }

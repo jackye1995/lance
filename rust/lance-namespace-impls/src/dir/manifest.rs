@@ -243,18 +243,7 @@ impl ManifestSnapshot {
                     "object_type",
                 )?)?;
                 let location = ManifestNamespace::optional_string_value(locations, row);
-                if object_type == ObjectType::Table && location.is_none() {
-                    return Err(NamespaceError::Internal {
-                        message: format!("Manifest table '{}' has no location", object_id),
-                    }
-                    .into());
-                }
                 let metadata = ManifestNamespace::optional_string_value(metadatas, row);
-                ManifestNamespace::deserialize_metadata(
-                    metadata.as_deref(),
-                    object_type.as_str(),
-                    &object_id,
-                )?;
                 rows.push(ManifestRowValue {
                     object_id,
                     object_type,

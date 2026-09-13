@@ -36,6 +36,21 @@ use super::sstable_cache::{DatasetCache, SsTableWarmer, open_sstable};
 use crate::session::Session;
 use lance_io::object_store::ObjectStoreParams;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct ProbeBounds {
+    pub minimum_nprobes: Option<usize>,
+    pub maximum_nprobes: Option<usize>,
+}
+
+impl ProbeBounds {
+    pub(super) fn exact(nprobes: usize) -> Self {
+        Self {
+            minimum_nprobes: Some(nprobes),
+            maximum_nprobes: Some(nprobes),
+        }
+    }
+}
+
 /// Plans vector search queries over LSM data.
 ///
 /// Each source is independently newest-per-PK before the union — the active
@@ -239,8 +254,7 @@ impl LsmVectorSearchPlanner {
         self.plan_search_with_probe_bounds(
             query_vector,
             k,
-            Some(nprobes),
-            Some(nprobes),
+            ProbeBounds::exact(nprobes),
             projection,
             refine_base_table,
             overfetch_factor,
@@ -248,13 +262,12 @@ impl LsmVectorSearchPlanner {
         .await
     }
 
-    #[instrument(name = "lsm_vector_search", level = "info", skip_all, fields(k, minimum_nprobes = ?minimum_nprobes, maximum_nprobes = ?maximum_nprobes, vector_column = %self.vector_column, distance_type = ?self.distance_type))]
+    #[instrument(name = "lsm_vector_search", level = "info", skip_all, fields(k, minimum_nprobes = ?probe_bounds.minimum_nprobes, maximum_nprobes = ?probe_bounds.maximum_nprobes, vector_column = %self.vector_column, distance_type = ?self.distance_type))]
     pub(crate) async fn plan_search_with_probe_bounds(
         &self,
         query_vector: &FixedSizeListArray,
         k: usize,
-        minimum_nprobes: Option<usize>,
-        maximum_nprobes: Option<usize>,
+        probe_bounds: ProbeBounds,
         projection: Option<&[String]>,
         refine_base_table: bool,
         overfetch_factor: f64,
@@ -262,17 +275,18 @@ impl LsmVectorSearchPlanner {
         if k == 0 {
             return Err(Error::invalid_input("k must be positive".to_string()));
         }
-        if minimum_nprobes == Some(0) {
+        if probe_bounds.minimum_nprobes == Some(0) {
             return Err(Error::invalid_input(
                 "minimum_nprobes must be positive".to_string(),
             ));
         }
-        if maximum_nprobes == Some(0) {
+        if probe_bounds.maximum_nprobes == Some(0) {
             return Err(Error::invalid_input(
                 "maximum_nprobes must be positive".to_string(),
             ));
         }
-        if let (Some(minimum_nprobes), Some(maximum_nprobes)) = (minimum_nprobes, maximum_nprobes)
+        if let (Some(minimum_nprobes), Some(maximum_nprobes)) =
+            (probe_bounds.minimum_nprobes, probe_bounds.maximum_nprobes)
             && minimum_nprobes > maximum_nprobes
         {
             return Err(Error::invalid_input(format!(
@@ -342,8 +356,7 @@ impl LsmVectorSearchPlanner {
                     source,
                     query_vector,
                     *fetch_k,
-                    minimum_nprobes,
-                    maximum_nprobes,
+                    probe_bounds,
                     projection,
                     *is_base && refine_base,
                 ))
@@ -466,8 +479,7 @@ impl LsmVectorSearchPlanner {
         source: &LsmDataSource,
         query_vector: &FixedSizeListArray,
         k: usize,
-        minimum_nprobes: Option<usize>,
-        maximum_nprobes: Option<usize>,
+        probe_bounds: ProbeBounds,
         projection: Option<&[String]>,
         refine: bool,
     ) -> Result<Arc<dyn ExecutionPlan>> {
@@ -496,10 +508,10 @@ impl LsmVectorSearchPlanner {
                 let query_arr = single_query_array(query_vector);
                 scanner.nearest(&self.vector_column, query_arr.as_ref(), k)?;
                 scanner.distance_range(self.distance_range.0, self.distance_range.1);
-                if let Some(minimum_nprobes) = minimum_nprobes {
+                if let Some(minimum_nprobes) = probe_bounds.minimum_nprobes {
                     scanner.minimum_nprobes(minimum_nprobes);
                 }
-                if let Some(maximum_nprobes) = maximum_nprobes {
+                if let Some(maximum_nprobes) = probe_bounds.maximum_nprobes {
                     scanner.maximum_nprobes(maximum_nprobes);
                 }
                 scanner.distance_metric(self.distance_type);
@@ -535,10 +547,10 @@ impl LsmVectorSearchPlanner {
                 let query_arr = single_query_array(query_vector);
                 scanner.nearest(&self.vector_column, query_arr.as_ref(), k)?;
                 scanner.distance_range(self.distance_range.0, self.distance_range.1);
-                if let Some(minimum_nprobes) = minimum_nprobes {
+                if let Some(minimum_nprobes) = probe_bounds.minimum_nprobes {
                     scanner.minimum_nprobes(minimum_nprobes);
                 }
-                if let Some(maximum_nprobes) = maximum_nprobes {
+                if let Some(maximum_nprobes) = probe_bounds.maximum_nprobes {
                     scanner.maximum_nprobes(maximum_nprobes);
                 }
                 scanner.distance_metric(self.distance_type);
@@ -570,10 +582,10 @@ impl LsmVectorSearchPlanner {
                 }
                 scanner.nearest(&self.vector_column, query_vector, k)?;
                 scanner.distance_range(self.distance_range.0, self.distance_range.1);
-                if let Some(minimum_nprobes) = minimum_nprobes {
+                if let Some(minimum_nprobes) = probe_bounds.minimum_nprobes {
                     scanner.minimum_nprobes(minimum_nprobes);
                 }
-                if let Some(maximum_nprobes) = maximum_nprobes {
+                if let Some(maximum_nprobes) = probe_bounds.maximum_nprobes {
                     scanner.maximum_nprobes(maximum_nprobes);
                 }
                 scanner.distance_metric(self.distance_type);
@@ -825,7 +837,17 @@ mod tests {
         );
 
         let err = planner
-            .plan_search_with_probe_bounds(&query, 1, None, Some(0), None, false, 1.0)
+            .plan_search_with_probe_bounds(
+                &query,
+                1,
+                ProbeBounds {
+                    minimum_nprobes: None,
+                    maximum_nprobes: Some(0),
+                },
+                None,
+                false,
+                1.0,
+            )
             .await
             .unwrap_err();
         assert!(
@@ -834,7 +856,17 @@ mod tests {
         );
 
         let err = planner
-            .plan_search_with_probe_bounds(&query, 1, Some(2), Some(1), None, false, 1.0)
+            .plan_search_with_probe_bounds(
+                &query,
+                1,
+                ProbeBounds {
+                    minimum_nprobes: Some(2),
+                    maximum_nprobes: Some(1),
+                },
+                None,
+                false,
+                1.0,
+            )
             .await
             .unwrap_err();
         assert!(

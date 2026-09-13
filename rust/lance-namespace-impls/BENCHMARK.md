@@ -62,7 +62,26 @@ The default legacy panel can be overridden with `SIZES`, `CONCURRENCY`,
 
 ## Representative results
 
-Record the instance type, region, catalog size, startup latency and peak RSS, warm read
-latency, serial write latency, concurrent throughput, and error count for each compared
-implementation. Results should distinguish the legacy indexed and no-index builds from
-the in-memory build.
+EC2 `c7i.12xlarge`, S3 `us-east-1`, upstream commit `577091e5` versus the in-memory
+implementation at `ff72b913`. Startup is the median of five fresh processes; other values
+are operation p50. Every catalog was bootstrapped in one direct dataset write before one
+preparation mutation established its steady-state representation.
+
+| rows | variant | startup | startup RSS | warm exact read | list tables | serial writes/s |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 1K | indexed | 97.7 ms | 44.5 MiB | 35.0 ms | 61.7 ms | 3.339 |
+| 1K | no index | 100.2 ms | 43.1 MiB | 60.9 ms | 58.6 ms | 4.563 |
+| 1K | in memory | 136.3 ms | 75.3 MiB | 9.1 ms | 9.4 ms | 5.677 |
+| 100K | indexed | 96.4 ms | 44.6 MiB | 39.5 ms | 138.7 ms | 1.731 |
+| 100K | no index | 98.9 ms | 43.2 MiB | 65.5 ms | 101.6 ms | 2.167 |
+| 100K | in memory | 231.5 ms | 106.0 MiB | 9.5 ms | 19.1 ms | 2.578 |
+| 1M | indexed | 104.3 ms | 44.3 MiB | 92.8 ms | 461.0 ms | 0.565 |
+| 1M | no index | 98.2 ms | 43.3 MiB | 84.1 ms | 463.8 ms | 0.781 |
+| 1M | in memory | 603.3 ms | 386.7 MiB | 11.0 ms | 125.9 ms | 0.684 |
+
+At 1M rows, the in-memory snapshot is 8.4× faster than the indexed implementation for an
+exact lookup, 3.7× faster for a full table listing, and 21% faster for serial writes. Its
+fresh startup costs about 0.5 seconds and 342 MiB more RSS. The legacy no-index writer is
+12% faster for serial writes at 1M, while its read latency remains close to the indexed
+implementation. With ten contending writers, in-memory and no-index were effectively tied
+(0.731 versus 0.737 ops/s) and both were about 43–45% faster than indexed writes.

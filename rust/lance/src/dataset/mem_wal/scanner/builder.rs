@@ -475,11 +475,11 @@ impl LsmScanner {
         Ok(self)
     }
 
-    /// Search exactly `nprobes` IVF partitions on indexed arms. No-op unless
-    /// [`Self::nearest`] was called.
+    /// Search up to `nprobes` IVF partitions on indexed arms. No-op unless
+    /// [`Self::nearest`] was called. The minimum remains unchanged.
     pub fn nprobes(mut self, nprobes: usize) -> Self {
         if let Some(q) = self.nearest.as_mut() {
-            q.probe_bounds = ProbeBounds::exact(nprobes);
+            q.probe_bounds.maximum_nprobes = Some(nprobes);
         }
         self
     }
@@ -1302,7 +1302,7 @@ mod tests {
 
         let scanner = new_scanner().nprobes(20);
         let query = scanner.nearest.as_ref().unwrap();
-        assert_eq!(query.probe_bounds.minimum_nprobes, Some(20));
+        assert_eq!(query.probe_bounds.minimum_nprobes, None);
         assert_eq!(query.probe_bounds.maximum_nprobes, Some(20));
 
         let scanner = new_scanner().minimum_nprobes(20);

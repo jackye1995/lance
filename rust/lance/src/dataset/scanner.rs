@@ -2051,13 +2051,12 @@ impl Scanner {
         self
     }
 
-    /// Configures how many partititions will be searched in the vector index.
+    /// Configures the maximum number of partitions searched in the vector index.
     ///
-    /// This method is a convenience method that sets both [Self::minimum_nprobes] and
-    /// [Self::maximum_nprobes] to the same value.
+    /// The minimum remains unchanged, so the search may stop before reaching this
+    /// value when enough results have been found.
     pub fn nprobes(&mut self, n: usize) -> &mut Self {
         if let Some(q) = self.nearest.as_mut() {
-            q.minimum_nprobes = n;
             q.maximum_nprobes = Some(n);
         } else {
             log::warn!("nprobes is not set because nearest has not been called yet");
@@ -2065,14 +2064,10 @@ impl Scanner {
         self
     }
 
-    /// Configures how many partititions will be searched in the vector index.
-    ///
-    /// This method is a convenience method that sets both [Self::minimum_nprobes] and
-    /// [Self::maximum_nprobes] to the same value.
+    /// Configures the maximum number of partitions searched in the vector index.
     #[deprecated(note = "Use nprobes instead")]
     pub fn nprobs(&mut self, n: usize) -> &mut Self {
         if let Some(q) = self.nearest.as_mut() {
-            q.minimum_nprobes = n;
             q.maximum_nprobes = Some(n);
         } else {
             log::warn!("nprobes is not set because nearest has not been called yet");
@@ -9513,7 +9508,7 @@ mod test {
         k: usize,
         use_index: bool,
         distance_range: Option<(Option<f32>, Option<f32>)>,
-        nprobes: Option<usize>,
+        fixed_nprobes: Option<usize>,
     ) {
         let query_count = query_values.len() / 32;
         assert_eq!(batch.num_rows(), query_count * k);
@@ -9527,8 +9522,8 @@ mod test {
             // Pin nprobes to match the batch query: the single-query indexed path
             // otherwise adaptively expands nprobes, which would make equivalence
             // depend on data distribution rather than be guaranteed.
-            if let Some(nprobes) = nprobes {
-                scan.nprobes(nprobes);
+            if let Some(nprobes) = fixed_nprobes {
+                scan.minimum_nprobes(nprobes).maximum_nprobes(nprobes);
             }
             if let Some((lower, upper)) = distance_range {
                 scan.distance_range(lower, upper);
@@ -9988,7 +9983,7 @@ mod test {
         // merged across multiple partitions and the batch result is
         // deterministically equivalent to repeated single-query search (which
         // would otherwise adaptively expand nprobes).
-        scan.nprobes(2);
+        scan.minimum_nprobes(2).maximum_nprobes(2);
         scan.project(&["i"]).unwrap();
 
         let plan = scan.explain_plan(false).await.unwrap();
@@ -10010,7 +10005,7 @@ mod test {
 
         // The batch node loads each probed partition once and scores every query
         // that probes it, so it must report the *distinct* partitions read: with
-        // 2 partitions and nprobes(2), both queries probe both partitions, so the
+        // 2 partitions and fixed bounds of 2, both queries probe both partitions, so the
         // union is 2 -- not the per-query sum (2 queries x 2 = 4), and never 0
         // (which is what a dropped metric would show). This guards the observed
         // `partitions_searched` against silently regressing to either.
@@ -10040,7 +10035,8 @@ mod test {
             .scan()
             .nearest("vec", &queries, 2)
             .unwrap()
-            .nprobes(2)
+            .minimum_nprobes(2)
+            .maximum_nprobes(2)
             .distance_range(Some(1.0), None)
             .project(&["i"])
             .unwrap()
@@ -10107,7 +10103,7 @@ mod test {
         let k = 5;
         let mut scan = dataset.scan();
         scan.nearest("vec", &queries, k).unwrap();
-        scan.nprobes(1);
+        scan.minimum_nprobes(1).maximum_nprobes(1);
         scan.project(&["i"]).unwrap();
 
         let plan = scan.explain_plan(false).await.unwrap();
@@ -10246,8 +10242,8 @@ mod test {
             .await;
     }
 
-    /// `nprobes(0)` is not rejected by the query builder, so `minimum_nprobes ==
-    /// maximum_nprobes == 0` slips past the fixed-nprobes gate. The single-query
+    /// `nprobes(0)` is not rejected by the query builder, so `maximum_nprobes == 0`
+    /// reaches the adaptive path. The single-query
     /// path then probes nothing and returns an empty result, whereas the batch
     /// node would clamp `nprobes` up to one partition — a silent divergence. The
     /// scanner must fall back so the per-query loop defines the semantics of
@@ -10328,7 +10324,7 @@ mod test {
         // batch-eligible, so the mask is the only thing that forces the fallback.
         let mut unmasked = dataset.scan();
         unmasked.nearest("vec", &queries, k).unwrap();
-        unmasked.nprobes(2);
+        unmasked.minimum_nprobes(2).maximum_nprobes(2);
         unmasked.project(&["i"]).unwrap();
         let unmasked_plan = unmasked.explain_plan(false).await.unwrap();
         assert!(
@@ -10346,7 +10342,7 @@ mod test {
 
         let mut scan = dataset.scan();
         scan.nearest("vec", &queries, k).unwrap();
-        scan.nprobes(2);
+        scan.minimum_nprobes(2).maximum_nprobes(2);
         scan.with_row_addr_prefilter(RowAddrMask::from_allowed(RowAddrTreeMap::from_iter(
             allow.iter().copied(),
         )));
@@ -10405,7 +10401,7 @@ mod test {
 
         let mut scan = dataset.scan();
         scan.nearest("vec", &queries, k).unwrap();
-        scan.nprobes(2);
+        scan.minimum_nprobes(2).maximum_nprobes(2);
         // Request both indexed fragments but select only the segment covering
         // fragment 0; fragment 1 is covered only by the unselected segment.
         scan.with_fragments(vec![fragments[0].clone(), fragments[1].clone()]);
@@ -10499,7 +10495,8 @@ mod test {
         scan.nearest("vec", &queries, k).unwrap();
         // Probe every partition so both paths are exact regardless of centroid
         // proximity, and so the batch spans multiple streaming chunks.
-        scan.nprobes(num_partitions);
+        scan.minimum_nprobes(num_partitions)
+            .maximum_nprobes(num_partitions);
         scan.project(&["i"]).unwrap();
 
         let plan = scan.explain_plan(false).await.unwrap();
@@ -10536,7 +10533,7 @@ mod test {
 
         let mut scan = dataset.scan();
         scan.nearest("vec", &queries, k).unwrap();
-        scan.nprobes(2);
+        scan.minimum_nprobes(2).maximum_nprobes(2);
         scan.project(&["i"]).unwrap();
 
         let plan = scan.explain_plan(false).await.unwrap();
@@ -10582,7 +10579,7 @@ mod test {
 
         let mut scan = dataset.scan();
         scan.nearest("vec", &queries, 2).unwrap();
-        scan.nprobes(2);
+        scan.minimum_nprobes(2).maximum_nprobes(2);
         scan.project(&["i"]).unwrap();
 
         let plan = scan.explain_plan(false).await.unwrap();
@@ -10612,7 +10609,7 @@ mod test {
 
         let mut scan = dataset.scan();
         scan.nearest("vec", &queries, k).unwrap();
-        scan.nprobes(2);
+        scan.minimum_nprobes(2).maximum_nprobes(2);
         scan.filter("i > 100").unwrap();
         scan.prefilter(true);
         scan.project(&["i"]).unwrap();
@@ -10644,7 +10641,8 @@ mod test {
                 .scan()
                 .nearest("vec", &query, k)
                 .unwrap()
-                .nprobes(2)
+                .minimum_nprobes(2)
+                .maximum_nprobes(2)
                 .filter("i > 100")
                 .unwrap()
                 .prefilter(true)
@@ -10781,7 +10779,7 @@ mod test {
         let k = 3;
         let mut scan = dataset.scan();
         scan.nearest("vec", &queries, k).unwrap();
-        scan.nprobes(2);
+        scan.minimum_nprobes(2).maximum_nprobes(2);
         scan.project(&["i"]).unwrap();
 
         let plan = scan.explain_plan(false).await.unwrap();
@@ -16607,6 +16605,31 @@ full_filter=name LIKE Utf8(\"test%2\"), refine_filter=name LIKE Utf8(\"test%2\")
             scanner.nearest_mut().unwrap().approx_mode,
             ApproxMode::Accurate
         );
+    }
+
+    #[tokio::test]
+    async fn test_knn_probe_setters_preserve_independent_fields() {
+        let test_ds = TestVectorDataset::new(LanceFileVersion::Stable, false)
+            .await
+            .unwrap();
+        let query_vector = Float32Array::from(vec![0.0; 32]);
+        let mut scanner = test_ds.dataset.scan();
+        scanner.nearest("vec", &query_vector, 5).unwrap();
+
+        scanner.nprobes(20);
+        let query = scanner.nearest_mut().unwrap();
+        assert_eq!(query.minimum_nprobes, 1);
+        assert_eq!(query.maximum_nprobes, Some(20));
+
+        scanner.minimum_nprobes(5);
+        let query = scanner.nearest_mut().unwrap();
+        assert_eq!(query.minimum_nprobes, 5);
+        assert_eq!(query.maximum_nprobes, Some(20));
+
+        scanner.maximum_nprobes(10);
+        let query = scanner.nearest_mut().unwrap();
+        assert_eq!(query.minimum_nprobes, 5);
+        assert_eq!(query.maximum_nprobes, Some(10));
     }
 
     #[tokio::test]

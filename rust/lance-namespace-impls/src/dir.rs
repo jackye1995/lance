@@ -1026,8 +1026,7 @@ fn resolve_probe_bounds(
             maximum_nprobes.map(normalize),
         )
     } else {
-        let exact = nprobes.map(normalize);
-        (exact, exact)
+        (None, nprobes.map(normalize))
     }
 }
 
@@ -6206,7 +6205,7 @@ mod tests {
 
     #[rstest]
     #[case::unset(None, None, None, None, None)]
-    #[case::legacy_exact(Some(20), None, None, Some(20), Some(20))]
+    #[case::legacy_maximum(Some(20), None, None, None, Some(20))]
     #[case::minimum_only(None, Some(3), None, Some(3), None)]
     #[case::maximum_only(None, None, Some(7), None, Some(7))]
     #[case::new_fields_override_legacy(Some(20), Some(3), None, Some(3), None)]

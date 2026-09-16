@@ -1013,37 +1013,27 @@ impl TransactionAlteration {
     }
 }
 
-fn resolve_probe_bounds(
-    nprobes: Option<i32>,
-    minimum_nprobes: Option<i32>,
-    maximum_nprobes: Option<i32>,
-) -> (Option<usize>, Option<usize>) {
-    let normalize = |value: i32| value.max(1) as usize;
-
-    if minimum_nprobes.is_some() || maximum_nprobes.is_some() {
-        (
-            minimum_nprobes.map(normalize),
-            maximum_nprobes.map(normalize),
-        )
-    } else {
-        (None, nprobes.map(normalize))
-    }
-}
-
 fn apply_probe_bounds(
     scanner: &mut Scanner,
     nprobes: Option<i32>,
     minimum_nprobes: Option<i32>,
     maximum_nprobes: Option<i32>,
-) {
-    let (minimum_nprobes, maximum_nprobes) =
-        resolve_probe_bounds(nprobes, minimum_nprobes, maximum_nprobes);
+) -> Result<()> {
+    let parse_probe_count = |name: &str, value: i32| {
+        usize::try_from(value)
+            .map_err(|_| Error::invalid_input(format!("{name} must be non-negative")))
+    };
+
+    if let Some(nprobes) = nprobes {
+        scanner.nprobes(parse_probe_count("nprobes", nprobes)?);
+    }
     if let Some(minimum_nprobes) = minimum_nprobes {
-        scanner.minimum_nprobes(minimum_nprobes);
+        scanner.minimum_nprobes(parse_probe_count("minimum_nprobes", minimum_nprobes)?);
     }
     if let Some(maximum_nprobes) = maximum_nprobes {
-        scanner.maximum_nprobes(maximum_nprobes);
+        scanner.maximum_nprobes(parse_probe_count("maximum_nprobes", maximum_nprobes)?);
     }
+    Ok(())
 }
 
 impl DirectoryNamespace {
@@ -3275,7 +3265,7 @@ impl DirectoryNamespace {
                 })?;
 
             // ANN parameters — must be applied after nearest().
-            apply_probe_bounds(scanner, nprobes, minimum_nprobes, maximum_nprobes);
+            apply_probe_bounds(scanner, nprobes, minimum_nprobes, maximum_nprobes)?;
             if let Some(e) = ef {
                 scanner.ef(e.max(1) as usize);
             }
@@ -5485,7 +5475,7 @@ impl LanceNamespace for DirectoryNamespace {
                     request.nprobes,
                     request.minimum_nprobes,
                     request.maximum_nprobes,
-                );
+                )?;
 
                 // Apply ef (HNSW search effort) if specified
                 if let Some(ef) = request.ef {
@@ -6202,25 +6192,6 @@ mod tests {
     use arrow_ipc::reader::{FileReader, StreamReader};
     use lance::index::vector::StageParams;
     use rstest::rstest;
-
-    #[rstest]
-    #[case::unset(None, None, None, None, None)]
-    #[case::legacy_maximum(Some(20), None, None, None, Some(20))]
-    #[case::minimum_only(None, Some(3), None, Some(3), None)]
-    #[case::maximum_only(None, None, Some(7), None, Some(7))]
-    #[case::new_fields_override_legacy(Some(20), Some(3), None, Some(3), None)]
-    fn test_resolve_probe_bounds(
-        #[case] nprobes: Option<i32>,
-        #[case] minimum_nprobes: Option<i32>,
-        #[case] maximum_nprobes: Option<i32>,
-        #[case] expected_minimum: Option<usize>,
-        #[case] expected_maximum: Option<usize>,
-    ) {
-        assert_eq!(
-            resolve_probe_bounds(nprobes, minimum_nprobes, maximum_nprobes),
-            (expected_minimum, expected_maximum)
-        );
-    }
 
     fn build_ivf_rq_num_bits(num_bits: Option<i32>) -> Result<u8> {
         let mut request = CreateTableIndexRequest::new("vector".to_string(), "IVF_RQ".to_string());
@@ -14392,6 +14363,77 @@ mod tests {
             let batches: Vec<_> = reader.into_iter().map(|b| b.unwrap()).collect();
             let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
             assert_eq!(total_rows, 2);
+        }
+
+        #[tokio::test]
+        async fn test_explain_vector_probe_fields_are_applied_independently() {
+            use lance_namespace::models::ExplainTableQueryPlanRequest;
+
+            let (namespace, temp_dir, table_id) = create_ns_with_vector_table().await;
+            let table_uri = format!("{}/vector_table.lance", temp_dir.to_str().unwrap());
+            let mut dataset = Dataset::open(&table_uri).await.unwrap();
+            dataset
+                .create_index(
+                    &["vector"],
+                    IndexType::Vector,
+                    Some("vector_idx".to_string()),
+                    &VectorIndexParams::ivf_flat(1, MetricType::L2),
+                    false,
+                )
+                .await
+                .unwrap();
+            let vector = || {
+                Box::new(lance_namespace::models::QueryTableRequestVector {
+                    single_vector: Some(vec![0.0, 1.0, 0.0, 0.0]),
+                    multi_vector: None,
+                })
+            };
+
+            let query = QueryTableRequest {
+                id: None,
+                k: 2,
+                vector: vector(),
+                nprobes: Some(20),
+                minimum_nprobes: Some(3),
+                maximum_nprobes: Some(10),
+                ..Default::default()
+            };
+            let mut request = ExplainTableQueryPlanRequest::new(query);
+            request.id = Some(table_id.clone());
+
+            let plan = namespace.explain_table_query_plan(request).await.unwrap();
+            assert!(plan.contains("minimum_nprobes=3"), "{plan}");
+            assert!(plan.contains("maximum_nprobes=Some(10)"), "{plan}");
+
+            let query = QueryTableRequest {
+                id: None,
+                k: 2,
+                vector: vector(),
+                nprobes: Some(0),
+                ..Default::default()
+            };
+            let mut request = ExplainTableQueryPlanRequest::new(query);
+            request.id = Some(table_id.clone());
+
+            let plan = namespace.explain_table_query_plan(request).await.unwrap();
+            assert!(plan.contains("minimum_nprobes=1"), "{plan}");
+            assert!(plan.contains("maximum_nprobes=Some(0)"), "{plan}");
+
+            let query = QueryTableRequest {
+                id: None,
+                k: 2,
+                vector: vector(),
+                nprobes: Some(-1),
+                ..Default::default()
+            };
+            let mut request = ExplainTableQueryPlanRequest::new(query);
+            request.id = Some(table_id);
+
+            let err = namespace
+                .explain_table_query_plan(request)
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("nprobes must be non-negative"));
         }
 
         #[tokio::test]

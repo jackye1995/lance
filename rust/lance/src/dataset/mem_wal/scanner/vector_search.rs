@@ -43,9 +43,9 @@ pub(super) struct ProbeBounds {
 }
 
 impl ProbeBounds {
-    pub(super) fn exact(nprobes: usize) -> Self {
+    pub(super) fn maximum(nprobes: usize) -> Self {
         Self {
-            minimum_nprobes: Some(nprobes),
+            minimum_nprobes: None,
             maximum_nprobes: Some(nprobes),
         }
     }
@@ -232,7 +232,7 @@ impl LsmVectorSearchPlanner {
     ///
     /// * `query_vector` - Query vector for KNN search
     /// * `k` - Number of nearest neighbors to return
-    /// * `nprobes` - Number of IVF partitions to search (for IVF-based indexes)
+    /// * `nprobes` - Maximum number of IVF partitions to search (for IVF-based indexes)
     /// * `projection` - Columns to include in output (None = all columns)
     /// * `refine_base_table` - When true, the base-table arm re-ranks its
     ///   candidates with exact distances (refine factor 1). Useful when the base
@@ -270,7 +270,7 @@ impl LsmVectorSearchPlanner {
         self.plan_search_with_probe_bounds(
             query_vector,
             k,
-            ProbeBounds::exact(nprobes),
+            ProbeBounds::maximum(nprobes),
             projection,
             refine_base_table,
             overfetch_factor,

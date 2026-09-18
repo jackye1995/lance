@@ -1601,21 +1601,32 @@ impl ObjectStore {
         result
     }
 
-    /// Delete every location in the stream.
+    /// Delete every location in the stream, up to `io_parallelism` at a time.
     ///
-    /// Delegates to the store's own bulk delete, which is concurrent and, on backends
-    /// that support it, batched — S3 removes up to 1000 keys per request. Driving the
-    /// deletes here with `and_then` instead would await each one before issuing the
-    /// next, turning a cleanup into one network round trip per object: measured at
-    /// ~30 deletes/s against a cloud store, which is days for a table holding tens of
-    /// millions of unreferenced files.
+    /// Deleting serially costs a round trip per object — ~30/s against a cloud store,
+    /// which is days for a table with millions of unreferenced files.
     ///
-    /// Deletion order is not preserved, and no caller may depend on it.
+    /// `ObjectStore::delete_stream` would also batch (S3: 1000 keys per request) but
+    /// needs a `'static` stream of `object_store::Result`; callers pass a borrowed
+    /// stream of `lance_core::Result`. Using it means changing this signature.
+    ///
+    /// Order is not preserved; no caller may depend on it.
     pub fn remove_stream<'a>(
         &'a self,
         locations: BoxStream<'a, Result<Path>>,
     ) -> BoxStream<'a, Result<Path>> {
-        self.inner.delete_stream(locations)
+        let store = Arc::clone(&self.inner);
+        locations
+            .map(move |location| {
+                let store = Arc::clone(&store);
+                async move {
+                    let location = location?;
+                    store.delete(&location).await?;
+                    Ok(location)
+                }
+            })
+            .buffer_unordered(self.io_parallelism())
+            .boxed()
     }
 
     /// Check a file exists.
@@ -2751,9 +2762,19 @@ mod tests {
         part_count: AtomicUsize,
         abort_count: AtomicUsize,
         native_copy_count: AtomicUsize,
-        /// How many times the store's bulk delete entry point was used. A caller that
-        /// deletes by looping never reaches it.
         delete_stream_count: AtomicUsize,
+        delete_in_flight: AtomicUsize,
+        /// High-water mark of concurrent deletions; 1 means serial.
+        delete_max_in_flight: AtomicUsize,
+    }
+
+    /// Decrements the in-flight count when its stream is dropped.
+    struct InFlightGuard(Arc<MultipartObservations>);
+
+    impl Drop for InFlightGuard {
+        fn drop(&mut self) {
+            self.0.delete_in_flight.fetch_sub(1, Ordering::SeqCst);
+        }
     }
 
     #[derive(Debug)]
@@ -2847,10 +2868,28 @@ mod tests {
             &self,
             locations: BoxStream<'static, OSResult<Path>>,
         ) -> BoxStream<'static, OSResult<Path>> {
-            self.observations
+            let observations = self.observations.clone();
+            observations
                 .delete_stream_count
                 .fetch_add(1, Ordering::SeqCst);
-            self.inner.delete_stream(locations)
+            let in_flight = observations.delete_in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            observations
+                .delete_max_in_flight
+                .fetch_max(in_flight, Ordering::SeqCst);
+            let guard = InFlightGuard(observations);
+            let inner = self.inner.delete_stream(locations);
+            // An in-memory delete resolves on first poll, so overlap is only
+            // observable if the deletion yields.
+            async move {
+                tokio::task::yield_now().await;
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                inner.map(move |result| {
+                    let _ = &guard;
+                    result
+                })
+            }
+            .flatten_stream()
+            .boxed()
         }
 
         fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, OSResult<ObjectMeta>> {
@@ -2994,14 +3033,14 @@ mod tests {
             store.put(path, b"x").await.unwrap();
         }
 
-        let to_remove = stream::iter(paths.clone().into_iter().map(Ok)).boxed();
+        let to_remove = futures::stream::iter(paths.clone().into_iter().map(Ok)).boxed();
         let mut reported = store
             .remove_stream(to_remove)
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
 
-        // Bulk deletion does not preserve order, so compare as sets.
+        // Concurrent deletion does not preserve order.
         reported.sort_unstable();
         let mut expected = paths.clone();
         expected.sort_unstable();
@@ -3012,10 +3051,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_remove_stream_uses_the_stores_bulk_delete() {
-        // Deleting in a loop would issue one request per object, which on a table with
-        // millions of unreferenced files takes days. Assert the bulk entry point is
-        // used, and used once for the whole stream rather than per path.
+    async fn test_remove_stream_deletes_concurrently() {
+        // Serial deletion is a round trip per object; the high-water mark is 1
+        // exactly when that regression happens.
         let observations = Arc::new(MultipartObservations::default());
         let mut store = ObjectStore::memory();
         store.inner = Arc::new(ObservedMultipartStore {
@@ -3025,12 +3063,12 @@ mod tests {
             destination_size_adjustment: 0,
         });
 
-        let paths: Vec<Path> = (0..32).map(|i| Path::from(format!("obj-{i:03}"))).collect();
+        let paths: Vec<Path> = (0..64).map(|i| Path::from(format!("obj-{i:03}"))).collect();
         for path in &paths {
             store.put(path, b"x").await.unwrap();
         }
 
-        let to_remove = stream::iter(paths.clone().into_iter().map(Ok)).boxed();
+        let to_remove = futures::stream::iter(paths.clone().into_iter().map(Ok)).boxed();
         let removed = store
             .remove_stream(to_remove)
             .try_collect::<Vec<_>>()
@@ -3038,10 +3076,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(removed.len(), paths.len());
-        assert_eq!(
-            observations.delete_stream_count.load(Ordering::SeqCst),
-            1,
-            "remove_stream should hand the whole stream to the store's bulk delete"
+        assert!(
+            observations.delete_max_in_flight.load(Ordering::SeqCst) > 1,
+            "deletions ran one at a time; remove_stream must overlap them"
         );
     }
 

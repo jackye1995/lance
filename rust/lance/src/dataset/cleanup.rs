@@ -302,8 +302,8 @@ struct CleanupTask<'a> {
 #[derive(Clone, Debug)]
 struct ExpiredManifest {
     version: u64,
-    /// Size reported by the manifest listing, when it reported one. `None` means it
-    /// has to be fetched before it can be counted in `RemovalStats::bytes_removed`.
+    /// Size from the manifest listing. `None` means it must be fetched before it can
+    /// be counted in `RemovalStats::bytes_removed`.
     size_bytes: Option<u64>,
 }
 
@@ -613,8 +613,8 @@ impl<'a> CleanupTask<'a> {
                 location.path.clone(),
                 ExpiredManifest {
                     version: manifest.version,
-                    // Carried from the listing so the delete phase does not have to
-                    // issue a HEAD per manifest just to report bytes removed.
+                    // Carried from the listing so the delete phase need not HEAD
+                    // every manifest just to report bytes removed.
                     size_bytes: location.size,
                 },
             );
@@ -775,10 +775,8 @@ impl<'a> CleanupTask<'a> {
         let old_manifests = inspection.old_manifests.clone();
         let manifest_files = stream::iter(old_manifests)
             .map(|(path, expired)| async move {
-                // The listing already reported the size for most commit handlers; only
-                // fall back to a HEAD when it did not. Fetching unconditionally costs
-                // one request per expired manifest, which on a table with millions of
-                // them dominates the delete phase.
+                // HEAD only when the listing did not report a size. Fetching
+                // unconditionally costs a request per expired manifest.
                 let size_bytes = match expired.size_bytes {
                     Some(size_bytes) => size_bytes,
                     None => self.dataset.object_store.size(&path).await?,

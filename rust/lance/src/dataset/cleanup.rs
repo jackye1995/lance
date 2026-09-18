@@ -87,6 +87,9 @@ pub struct RemovalStats {
     pub transaction_files_removed: u64,
     pub index_files_removed: u64,
     pub deletion_files_removed: u64,
+    /// Files that could not be deleted. They are not counted as removed; the next
+    /// cleanup finds them again by listing.
+    pub failed_deletes: u64,
 }
 
 /// A read-only explanation of what a cleanup operation would remove.
@@ -208,6 +211,7 @@ impl RemovalStats {
         self.transaction_files_removed += other.transaction_files_removed;
         self.index_files_removed += other.index_files_removed;
         self.deletion_files_removed += other.deletion_files_removed;
+        self.failed_deletes += other.failed_deletes;
     }
 }
 
@@ -792,7 +796,7 @@ impl<'a> CleanupTask<'a> {
             .boxed();
 
         let all_files = stream::iter(vec![unreferenced_files, manifest_files]).flatten();
-        let all_paths_to_remove = all_files.map(|file| {
+        let all_files_to_remove = all_files.map(|file| {
             let file = file?;
             if deletes_files {
                 let mode = if file.unverified {
@@ -817,10 +821,6 @@ impl<'a> CleanupTask<'a> {
                     CleanupFileKind::Transaction | CleanupFileKind::TemporaryManifest => {}
                 }
             }
-            cleanup_result
-                .lock()
-                .unwrap()
-                .record_file(&file, candidate_file_limit, self.track_removed_manifests);
             if deletes_files && removes_empty_dirs && matches!(file.kind, CleanupFileKind::Index) {
                 let mut parent = file.path.parent();
                 let mut index_dirs = index_dirs_to_remove.lock().unwrap();
@@ -832,28 +832,60 @@ impl<'a> CleanupTask<'a> {
                     parent = dir_path.parent();
                 }
             }
-            Ok(file.path)
+            Ok(file)
         });
 
         if deletes_files {
-            let paths_to_delete: BoxStream<Result<Path>> =
+            let files_to_delete: BoxStream<Result<CleanupFile>> =
                 if let Some(rate) = self.policy.delete_rate_limit {
                     let duration =
                         calculate_duration(self.dataset.object_store.scheme().to_string(), rate);
                     let mut ticker = interval(duration);
                     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
                     IntervalStream::new(ticker)
-                        .zip(all_paths_to_remove)
-                        .map(|(_, path)| path)
+                        .zip(all_files_to_remove)
+                        .map(|(_, file)| file)
                         .boxed()
                 } else {
-                    all_paths_to_remove.boxed()
+                    all_files_to_remove.boxed()
                 };
 
-            self.dataset
-                .object_store
-                .remove_stream(paths_to_delete)
-                .try_for_each(|_| future::ready(Ok(())))
+            // Deleting here rather than through `remove_stream` keeps each outcome
+            // attached to its file, which is what lets the stats below count what was
+            // actually removed instead of what was merely attempted.
+            let store = &self.dataset.object_store;
+            files_to_delete
+                .map(|file| async move {
+                    let file = file?;
+                    let outcome = match store.delete(&file.path).await {
+                        Ok(()) => Ok(()),
+                        // Cleanup lists first and deletes after, so a concurrent
+                        // writer or a second cleanup can remove a path in between.
+                        // Already gone is the outcome we wanted.
+                        Err(error) if is_not_found_err(&error) => Ok(()),
+                        Err(error) => Err(error),
+                    };
+                    Ok::<_, Error>((file, outcome))
+                })
+                .buffer_unordered(self.dataset.object_store.io_parallelism())
+                .try_for_each(|(file, outcome)| {
+                    let mut result = cleanup_result.lock().unwrap();
+                    match outcome {
+                        Ok(()) => result.record_file(
+                            &file,
+                            candidate_file_limit,
+                            self.track_removed_manifests,
+                        ),
+                        // One transient failure must not discard a sweep over
+                        // millions of objects. The file stays, is not counted as
+                        // removed, and the next run finds it again by listing.
+                        Err(error) => {
+                            warn!(path = %file.path, error = %error, "failed to delete file");
+                            result.stats.failed_deletes += 1;
+                        }
+                    }
+                    future::ready(Ok(()))
+                })
                 .await?;
 
             // Only after the objects are gone: a record that outlives its
@@ -885,9 +917,16 @@ impl<'a> CleanupTask<'a> {
                 );
             }
         } else {
-            // Drain the stream to populate stats, but do not call remove_stream.
-            all_paths_to_remove
-                .try_for_each(|_| future::ready(Ok(())))
+            // Nothing is deleted, so the stats describe what would be removed.
+            all_files_to_remove
+                .try_for_each(|file| {
+                    cleanup_result.lock().unwrap().record_file(
+                        &file,
+                        candidate_file_limit,
+                        self.track_removed_manifests,
+                    );
+                    future::ready(Ok(()))
+                })
                 .await?;
         }
 
@@ -3581,18 +3620,20 @@ mod tests {
         assert_eq!(before_count.num_data_files, 2);
         assert_eq!(before_count.num_manifest_files, 2);
 
-        assert!(
-            fixture
-                .run_cleanup(utc_now() - TimeDelta::try_days(7).unwrap())
-                .await
-                .is_err()
+        // A file that cannot be deleted is counted and skipped, not fatal: one
+        // transient failure must not discard a sweep over millions of objects.
+        let interrupted = fixture
+            .run_cleanup(utc_now() - TimeDelta::try_days(7).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(interrupted.failed_deletes, 1);
+        assert_eq!(
+            interrupted.old_versions, 0,
+            "a manifest that failed to delete is not a removed version"
         );
 
-        // This test currently relies on us sending in manifest files after
-        // data files.  Also, the delete process is run in parallel.  However,
-        // it seems stable to stably delete the data file even though the manifest delete fails.
-        // My guess is that it is not possible to interrupt a task in flight and so it still
-        // has to finish the buffered tasks even if they are ignored.
+        // Every candidate is attempted, so the data file goes even though the
+        // manifest delete fails. This no longer depends on buffering order.
         let mid_count = fixture.count_files().await.unwrap();
         assert_eq!(mid_count.num_data_files, 1);
         assert_eq!(mid_count.num_manifest_files, 2);

@@ -1611,6 +1611,10 @@ impl ObjectStore {
     /// stream of `lance_core::Result`. Using it means changing this signature.
     ///
     /// Order is not preserved; no caller may depend on it.
+    ///
+    /// A location that is already gone counts as removed. Callers list first and
+    /// delete after, so a concurrent writer or a second cleanup can remove a path in
+    /// between; failing there would abandon an entire sweep over one absent object.
     pub fn remove_stream<'a>(
         &'a self,
         locations: BoxStream<'a, Result<Path>>,
@@ -1621,8 +1625,11 @@ impl ObjectStore {
                 let store = Arc::clone(&store);
                 async move {
                     let location = location?;
-                    store.delete(&location).await?;
-                    Ok(location)
+                    match store.delete(&location).await {
+                        Ok(()) => Ok(location),
+                        Err(object_store::Error::NotFound { .. }) => Ok(location),
+                        Err(error) => Err(error.into()),
+                    }
                 }
             })
             .buffer_unordered(self.io_parallelism())
@@ -3048,6 +3055,30 @@ mod tests {
         for path in &paths {
             assert!(!store.exists(path).await.unwrap(), "{path} still present");
         }
+    }
+
+    #[tokio::test]
+    async fn test_remove_stream_tolerates_already_deleted() {
+        // Callers list first and delete after, so a path can disappear in between.
+        // Failing there abandons the whole sweep over one absent object.
+        let store = ObjectStore::memory();
+        let present = Path::from("present");
+        let absent = Path::from("never-written");
+        store.put(&present, b"x").await.unwrap();
+
+        let to_remove =
+            futures::stream::iter(vec![Ok(absent.clone()), Ok(present.clone())]).boxed();
+        let mut removed = store
+            .remove_stream(to_remove)
+            .try_collect::<Vec<_>>()
+            .await
+            .expect("an already-absent path must not fail the stream");
+
+        removed.sort_unstable();
+        let mut expected = vec![absent, present.clone()];
+        expected.sort_unstable();
+        assert_eq!(removed, expected);
+        assert!(!store.exists(&present).await.unwrap());
     }
 
     #[tokio::test]

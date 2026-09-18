@@ -298,10 +298,19 @@ struct CleanupTask<'a> {
     include_referenced_branches: bool,
 }
 
+/// A manifest that has aged out and is queued for deletion.
+#[derive(Clone, Debug)]
+struct ExpiredManifest {
+    version: u64,
+    /// Size reported by the manifest listing, when it reported one. `None` means it
+    /// has to be fetched before it can be counted in `RemovalStats::bytes_removed`.
+    size_bytes: Option<u64>,
+}
+
 /// Information about the dataset that we learn by inspecting all of the manifests
 #[derive(Clone, Debug, Default)]
 struct CleanupInspection {
-    old_manifests: HashMap<Path, u64>,
+    old_manifests: HashMap<Path, ExpiredManifest>,
     /// Store records to retire once their manifests are gone, by version;
     /// see `CommitHandler::forget_version`.
     retired_records: HashMap<u64, String>,
@@ -600,9 +609,15 @@ impl<'a> CleanupTask<'a> {
         self.process_manifest(&manifest, &indexes, in_working_set, &mut inspection)?;
         let commit_ts = manifest.timestamp();
         if !in_working_set {
-            inspection
-                .old_manifests
-                .insert(location.path.clone(), manifest.version);
+            inspection.old_manifests.insert(
+                location.path.clone(),
+                ExpiredManifest {
+                    version: manifest.version,
+                    // Carried from the listing so the delete phase does not have to
+                    // issue a HEAD per manifest just to report bytes removed.
+                    size_bytes: location.size,
+                },
+            );
             if let Some(identity) = location.identity.clone() {
                 inspection
                     .retired_records
@@ -759,8 +774,15 @@ impl<'a> CleanupTask<'a> {
 
         let old_manifests = inspection.old_manifests.clone();
         let manifest_files = stream::iter(old_manifests)
-            .map(|(path, _version)| async move {
-                let size_bytes = self.dataset.object_store.size(&path).await?;
+            .map(|(path, expired)| async move {
+                // The listing already reported the size for most commit handlers; only
+                // fall back to a HEAD when it did not. Fetching unconditionally costs
+                // one request per expired manifest, which on a table with millions of
+                // them dominates the delete phase.
+                let size_bytes = match expired.size_bytes {
+                    Some(size_bytes) => size_bytes,
+                    None => self.dataset.object_store.size(&path).await?,
+                };
                 Ok::<CleanupFile, Error>(CleanupFile {
                     path,
                     kind: CleanupFileKind::Manifest,
@@ -1322,7 +1344,7 @@ impl<'a> CleanupTask<'a> {
         if is_referenced {
             inspection
                 .old_manifests
-                .retain(|_path, version_number| *version_number != referenced_version);
+                .retain(|_path, expired| expired.version != referenced_version);
             // Kept on disk, so its record stays too.
             inspection.retired_records.remove(&referenced_version);
         }
@@ -2977,9 +2999,13 @@ mod tests {
         let inspection = Mutex::new(inspection);
         {
             let mut queued = inspection.lock().unwrap();
-            queued
-                .old_manifests
-                .insert(Path::from("_versions/root.manifest"), root_version);
+            queued.old_manifests.insert(
+                Path::from("_versions/root.manifest"),
+                ExpiredManifest {
+                    version: root_version,
+                    size_bytes: None,
+                },
+            );
             queued
                 .retired_records
                 .insert(root_version, "root-identity".to_string());
@@ -2996,7 +3022,7 @@ mod tests {
             !inspection
                 .old_manifests
                 .values()
-                .any(|v| *v == root_version)
+                .any(|expired| expired.version == root_version)
         );
         assert!(
             !inspection.retired_records.contains_key(&root_version),

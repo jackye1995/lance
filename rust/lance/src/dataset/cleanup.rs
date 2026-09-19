@@ -713,6 +713,10 @@ impl<'a> CleanupTask<'a> {
             .map(|uuid| indices_dir.clone().join(uuid.as_str()))
             .collect::<HashSet<_>>();
         let index_dirs_to_remove = Mutex::new(HashSet::new());
+        // Versions whose manifest could not be deleted. Their store records must
+        // survive with them: a record outliving its manifest is retired by the next
+        // cleanup, but a manifest outliving its record is a lost version.
+        let undeleted_manifest_versions = Mutex::new(HashSet::new());
         let candidate_file_limit = self.action.candidate_file_limit();
         let verification_threshold = utc_now()
             - TimeDelta::try_days(UNVERIFIED_THRESHOLD_DAYS).expect("TimeDelta::try_days");
@@ -880,8 +884,23 @@ impl<'a> CleanupTask<'a> {
                         // millions of objects. The file stays, is not counted as
                         // removed, and the next run finds it again by listing.
                         Err(error) => {
-                            warn!(path = %file.path, error = %error, "failed to delete file");
+                            // Only the first is warned; a failing backend would
+                            // otherwise emit a line per object.
+                            if result.stats.failed_deletes == 0 {
+                                warn!(path = %file.path, error = %error,
+                                      "failed to delete file; continuing and counting it");
+                            } else {
+                                debug!(path = %file.path, error = %error, "failed to delete file");
+                            }
                             result.stats.failed_deletes += 1;
+                            if matches!(file.kind, CleanupFileKind::Manifest)
+                                && let Some(expired) = inspection.old_manifests.get(&file.path)
+                            {
+                                undeleted_manifest_versions
+                                    .lock()
+                                    .unwrap()
+                                    .insert(expired.version);
+                            }
                         }
                     }
                     future::ready(Ok(()))
@@ -891,7 +910,11 @@ impl<'a> CleanupTask<'a> {
             // Only after the objects are gone: a record that outlives its
             // manifest is retired by the next cleanup, the reverse is a lost
             // version.
+            let undeleted = undeleted_manifest_versions.into_inner().unwrap();
             for (version, identity) in &inspection.retired_records {
+                if undeleted.contains(version) {
+                    continue;
+                }
                 self.dataset
                     .commit_handler
                     .forget_version(&self.dataset.base, *version, identity)
@@ -5132,159 +5155,162 @@ mod tests {
         );
     }
 
+    use lance_table::io::commit::external_manifest::ExternalManifestStore;
+    use lance_table::io::commit::{ManifestLocation, ManifestNamingScheme};
+
+    /// `(path, size, identity)` per version.
+    #[derive(Debug, Default)]
+    struct IdentifiedStore {
+        rows: Mutex<HashMap<u64, (String, u64, String)>>,
+        next_identity: std::sync::atomic::AtomicU64,
+    }
+
+    #[async_trait::async_trait]
+    impl ExternalManifestStore for IdentifiedStore {
+        async fn get(&self, _base_uri: &str, version: u64) -> Result<String> {
+            self.rows
+                .lock()
+                .unwrap()
+                .get(&version)
+                .map(|row| row.0.clone())
+                .ok_or_else(|| Error::not_found(format!("@{version}")))
+        }
+
+        async fn get_manifest_location(
+            &self,
+            _base_uri: &str,
+            version: u64,
+        ) -> Result<ManifestLocation> {
+            let row = self
+                .rows
+                .lock()
+                .unwrap()
+                .get(&version)
+                .cloned()
+                .ok_or_else(|| Error::not_found(format!("@{version}")))?;
+            Ok(ManifestLocation {
+                version,
+                path: Path::parse(&row.0).unwrap(),
+                size: Some(row.1),
+                naming_scheme: ManifestNamingScheme::V2,
+                e_tag: None,
+                identity: Some(row.2),
+            })
+        }
+
+        async fn get_latest_version(&self, _base_uri: &str) -> Result<Option<(u64, String)>> {
+            Ok(self
+                .rows
+                .lock()
+                .unwrap()
+                .iter()
+                .max_by_key(|(version, _)| **version)
+                .map(|(version, row)| (*version, row.0.clone())))
+        }
+
+        async fn get_latest_manifest_location(
+            &self,
+            base_uri: &str,
+        ) -> Result<Option<ManifestLocation>> {
+            match self.get_latest_version(base_uri).await? {
+                Some((version, _)) => self
+                    .get_manifest_location(base_uri, version)
+                    .await
+                    .map(Some),
+                None => Ok(None),
+            }
+        }
+
+        async fn put_if_not_exists(
+            &self,
+            _base_uri: &str,
+            version: u64,
+            path: &str,
+            size: u64,
+            _e_tag: Option<String>,
+        ) -> Result<()> {
+            let identity = format!(
+                "identity-{}",
+                self.next_identity
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            );
+            let mut rows = self.rows.lock().unwrap();
+            if rows.contains_key(&version) {
+                return Err(Error::commit_conflict_source(version, "exists".into()));
+            }
+            rows.insert(version, (path.to_string(), size, identity));
+            Ok(())
+        }
+
+        async fn put_if_exists(
+            &self,
+            _base_uri: &str,
+            version: u64,
+            path: &str,
+            size: u64,
+            _e_tag: Option<String>,
+        ) -> Result<()> {
+            let mut rows = self.rows.lock().unwrap();
+            let row = rows
+                .get_mut(&version)
+                .ok_or_else(|| Error::not_found(format!("@{version}")))?;
+            row.0 = path.to_string();
+            row.1 = size;
+            Ok(())
+        }
+
+        fn supports_predecessor_condition(&self) -> bool {
+            true
+        }
+
+        async fn get_identity(&self, _base_uri: &str, version: u64) -> Result<Option<String>> {
+            Ok(self
+                .rows
+                .lock()
+                .unwrap()
+                .get(&version)
+                .map(|row| row.2.clone()))
+        }
+
+        async fn list_versions(
+            &self,
+            base_uri: &str,
+            since: Option<u64>,
+        ) -> Result<Option<Vec<ManifestLocation>>> {
+            let versions: Vec<u64> = self.rows.lock().unwrap().keys().copied().collect();
+            let mut locations = Vec::new();
+            for version in versions {
+                if since.is_none_or(|since| version > since) {
+                    locations.push(self.get_manifest_location(base_uri, version).await?);
+                }
+            }
+            Ok(Some(locations))
+        }
+
+        async fn forget_version(
+            &self,
+            _base_uri: &str,
+            version: u64,
+            identity: &str,
+        ) -> Result<()> {
+            let mut rows = self.rows.lock().unwrap();
+            if rows.get(&version).is_some_and(|row| row.2 == identity) {
+                rows.remove(&version);
+            }
+            Ok(())
+        }
+    }
+
     /// Cleanup retires the store record of every manifest it removes, one
     /// whose object was already gone included, so store-backed history
     /// matches what is on disk.
     #[tokio::test]
     async fn test_cleanup_forgets_removed_versions_in_the_external_store() {
         use crate::dataset::{InsertBuilder, WriteDestination};
+        use lance_table::io::commit::CommitHandler;
         use lance_table::io::commit::external_manifest::{
             ExternalManifestCommitHandler, ExternalManifestStore,
         };
-        use lance_table::io::commit::{CommitHandler, ManifestLocation, ManifestNamingScheme};
-
-        /// `(path, size, identity)` per version.
-        #[derive(Debug, Default)]
-        struct IdentifiedStore {
-            rows: Mutex<HashMap<u64, (String, u64, String)>>,
-            next_identity: std::sync::atomic::AtomicU64,
-        }
-
-        #[async_trait::async_trait]
-        impl ExternalManifestStore for IdentifiedStore {
-            async fn get(&self, _base_uri: &str, version: u64) -> Result<String> {
-                self.rows
-                    .lock()
-                    .unwrap()
-                    .get(&version)
-                    .map(|row| row.0.clone())
-                    .ok_or_else(|| Error::not_found(format!("@{version}")))
-            }
-
-            async fn get_manifest_location(
-                &self,
-                _base_uri: &str,
-                version: u64,
-            ) -> Result<ManifestLocation> {
-                let row = self
-                    .rows
-                    .lock()
-                    .unwrap()
-                    .get(&version)
-                    .cloned()
-                    .ok_or_else(|| Error::not_found(format!("@{version}")))?;
-                Ok(ManifestLocation {
-                    version,
-                    path: Path::parse(&row.0).unwrap(),
-                    size: Some(row.1),
-                    naming_scheme: ManifestNamingScheme::V2,
-                    e_tag: None,
-                    identity: Some(row.2),
-                })
-            }
-
-            async fn get_latest_version(&self, _base_uri: &str) -> Result<Option<(u64, String)>> {
-                Ok(self
-                    .rows
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .max_by_key(|(version, _)| **version)
-                    .map(|(version, row)| (*version, row.0.clone())))
-            }
-
-            async fn get_latest_manifest_location(
-                &self,
-                base_uri: &str,
-            ) -> Result<Option<ManifestLocation>> {
-                match self.get_latest_version(base_uri).await? {
-                    Some((version, _)) => self
-                        .get_manifest_location(base_uri, version)
-                        .await
-                        .map(Some),
-                    None => Ok(None),
-                }
-            }
-
-            async fn put_if_not_exists(
-                &self,
-                _base_uri: &str,
-                version: u64,
-                path: &str,
-                size: u64,
-                _e_tag: Option<String>,
-            ) -> Result<()> {
-                let identity = format!(
-                    "identity-{}",
-                    self.next_identity
-                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-                );
-                let mut rows = self.rows.lock().unwrap();
-                if rows.contains_key(&version) {
-                    return Err(Error::commit_conflict_source(version, "exists".into()));
-                }
-                rows.insert(version, (path.to_string(), size, identity));
-                Ok(())
-            }
-
-            async fn put_if_exists(
-                &self,
-                _base_uri: &str,
-                version: u64,
-                path: &str,
-                size: u64,
-                _e_tag: Option<String>,
-            ) -> Result<()> {
-                let mut rows = self.rows.lock().unwrap();
-                let row = rows
-                    .get_mut(&version)
-                    .ok_or_else(|| Error::not_found(format!("@{version}")))?;
-                row.0 = path.to_string();
-                row.1 = size;
-                Ok(())
-            }
-
-            fn supports_predecessor_condition(&self) -> bool {
-                true
-            }
-
-            async fn get_identity(&self, _base_uri: &str, version: u64) -> Result<Option<String>> {
-                Ok(self
-                    .rows
-                    .lock()
-                    .unwrap()
-                    .get(&version)
-                    .map(|row| row.2.clone()))
-            }
-
-            async fn list_versions(
-                &self,
-                base_uri: &str,
-                since: Option<u64>,
-            ) -> Result<Option<Vec<ManifestLocation>>> {
-                let versions: Vec<u64> = self.rows.lock().unwrap().keys().copied().collect();
-                let mut locations = Vec::new();
-                for version in versions {
-                    if since.is_none_or(|since| version > since) {
-                        locations.push(self.get_manifest_location(base_uri, version).await?);
-                    }
-                }
-                Ok(Some(locations))
-            }
-
-            async fn forget_version(
-                &self,
-                _base_uri: &str,
-                version: u64,
-                identity: &str,
-            ) -> Result<()> {
-                let mut rows = self.rows.lock().unwrap();
-                if rows.get(&version).is_some_and(|row| row.2 == identity) {
-                    rows.remove(&version);
-                }
-                Ok(())
-            }
-        }
 
         let store = Arc::new(IdentifiedStore::default());
         let handler: Arc<dyn CommitHandler> = Arc::new(ExternalManifestCommitHandler {
@@ -5332,5 +5358,79 @@ mod tests {
         assert_eq!(remaining, vec![3]);
         assert_eq!(dataset.count_versions().await.unwrap(), 1);
         assert_eq!(dataset.versions().await.unwrap().len(), 1);
+    }
+
+    /// A manifest whose delete fails keeps its store record. A record outliving its
+    /// manifest is retired by the next cleanup; a manifest outliving its record is a
+    /// version nothing can find again.
+    #[tokio::test]
+    async fn test_a_manifest_that_fails_to_delete_keeps_its_record() {
+        use crate::dataset::{InsertBuilder, WriteDestination};
+        use lance_table::io::commit::CommitHandler;
+        use lance_table::io::commit::external_manifest::ExternalManifestCommitHandler;
+
+        let store = Arc::new(IdentifiedStore::default());
+        let handler: Arc<dyn CommitHandler> = Arc::new(ExternalManifestCommitHandler {
+            external_manifest_store: store.clone(),
+        });
+        let mock_store = Arc::new(MockObjectStore::new());
+        let os_params = ObjectStoreParams {
+            object_store_wrapper: Some(mock_store.clone()),
+            ..Default::default()
+        };
+        let uri = TempStrDir::default();
+        let batch = || arrow_array::record_batch!(("i", Int32, [1, 2, 3])).unwrap();
+        let params = |mode| WriteParams {
+            mode,
+            commit_handler: Some(handler.clone()),
+            store_params: Some(os_params.clone()),
+            ..Default::default()
+        };
+        let mut dataset = InsertBuilder::new(uri.as_str())
+            .with_params(&params(WriteMode::Create))
+            .execute(vec![batch()])
+            .await
+            .unwrap();
+        for _ in 0..2 {
+            dataset = InsertBuilder::new(WriteDestination::Dataset(Arc::new(dataset)))
+                .with_params(&params(WriteMode::Append))
+                .execute(vec![batch()])
+                .await
+                .unwrap();
+        }
+        assert_eq!(dataset.count_versions().await.unwrap(), 3);
+
+        mock_store.policy.lock().unwrap().set_before_policy(
+            "block_delete_manifest",
+            Arc::new(|op: &str, path: &Path| -> Result<()> {
+                if op.contains("delete") && path.extension() == Some("manifest") {
+                    Err(Error::internal("Delete manifest blocked".to_string()))
+                } else {
+                    Ok(())
+                }
+            }),
+        );
+
+        let stats = cleanup_old_versions(
+            &dataset,
+            CleanupPolicyBuilder::default()
+                .before_timestamp(chrono::Utc::now())
+                .build(),
+        )
+        .await
+        .expect("a blocked manifest delete must not fail the sweep");
+
+        assert!(
+            stats.failed_deletes > 0,
+            "the blocked manifests are counted"
+        );
+        assert_eq!(
+            stats.old_versions, 0,
+            "a manifest still on disk is not a removed version"
+        );
+        // Every record survives, because every manifest survives.
+        let mut remaining: Vec<u64> = store.rows.lock().unwrap().keys().copied().collect();
+        remaining.sort();
+        assert_eq!(remaining, vec![1, 2, 3]);
     }
 }

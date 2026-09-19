@@ -2379,6 +2379,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn every_removed_file_kind_contributes_its_bytes() {
+        // Each kind must contribute its size to `bytes_removed`, not merely increment its
+        // per-kind counter. Index files dominate some tables, so an undercount there makes
+        // cleanup look far less effective than it is; deletion and transaction files are
+        // individually small but numerous.
+        let fixture = MockDatasetFixture::try_new().unwrap();
+        fixture.create_some_data().await.unwrap();
+        fixture.create_some_index().await.unwrap();
+        // Produces a deletion file that the overwrite below then orphans. The only data
+        // column here is a vector, so delete on the row id instead.
+        fixture.delete_data("_rowid < 20").await.unwrap();
+        MockClock::set_system_time(TimeDelta::try_days(10).unwrap().to_std().unwrap());
+        // Overwrite drops the index and the old fragments, leaving all of it unreferenced.
+        fixture.overwrite_some_data().await.unwrap();
+
+        let before = fixture.count_files().await.unwrap();
+        let removed = fixture.run_cleanup(utc_now()).await.unwrap();
+        let after = fixture.count_files().await.unwrap();
+
+        assert_gt!(removed.index_files_removed, 0);
+        assert_gt!(removed.deletion_files_removed, 0);
+        assert_gt!(removed.transaction_files_removed, 0);
+        assert_gt!(removed.data_files_removed, 0);
+        assert_gt!(removed.old_versions, 0);
+        // The whole point: reported bytes match the storage delta exactly with every kind
+        // in the mix, so no kind is silently contributing zero.
+        assert_eq!(removed.bytes_removed, before.num_bytes - after.num_bytes);
+    }
+
+    #[tokio::test]
     async fn cleanup_blob_v2_sidecar_files() {
         let fixture = MockDatasetFixture::try_new().unwrap();
 

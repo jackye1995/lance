@@ -556,7 +556,6 @@ pub struct TwoFileShuffler {
     output_dir: Path,
     num_partitions: usize,
     batch_size_bytes: usize,
-    max_preloaded_offsets_bytes: Option<usize>,
 
     progress: Arc<dyn crate::progress::IndexBuildProgress>,
 }
@@ -568,7 +567,6 @@ impl TwoFileShuffler {
             output_dir,
             num_partitions,
             batch_size_bytes: shuffle_batch_bytes(),
-            max_preloaded_offsets_bytes: None,
             progress: crate::progress::noop_progress(),
         }
     }
@@ -581,12 +579,6 @@ impl TwoFileShuffler {
     #[cfg(test)]
     fn with_batch_size_bytes(mut self, batch_size_bytes: usize) -> Self {
         self.batch_size_bytes = batch_size_bytes;
-        self
-    }
-
-    #[cfg(test)]
-    fn with_max_preloaded_offsets_bytes(mut self, max_preloaded_offsets_bytes: usize) -> Self {
-        self.max_preloaded_offsets_bytes = Some(max_preloaded_offsets_bytes);
         self
     }
 }
@@ -652,12 +644,8 @@ impl Shuffler for TwoFileShuffler {
         &self,
         data: Box<dyn RecordBatchStream + Unpin + 'static>,
     ) -> Result<Box<dyn ShuffleReader>> {
-        let max_preloaded_offsets_bytes = match self.max_preloaded_offsets_bytes {
-            Some(limit) => limit,
-            None => {
-                parse_max_preloaded_offsets_bytes(std::env::var(MAX_PRELOADED_OFFSETS_BYTES_ENV))?
-            }
-        };
+        let max_preloaded_offsets_bytes =
+            parse_max_preloaded_offsets_bytes(std::env::var(MAX_PRELOADED_OFFSETS_BYTES_ENV))?;
         let num_partitions = self.num_partitions;
         // No need to write partition ids since we can infer this from offsets
         let schema = data.schema().without_column(PART_ID_COLUMN);

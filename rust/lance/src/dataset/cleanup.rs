@@ -2379,6 +2379,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn index_file_bytes_are_counted() {
+        // An unreferenced index file must contribute its size to `bytes_removed`, not
+        // just increment `index_files_removed`. Index files dominate some tables, so an
+        // undercount here makes cleanup look far less effective than it is.
+        let fixture = MockDatasetFixture::try_new().unwrap();
+        fixture.create_some_data().await.unwrap();
+        fixture.create_some_index().await.unwrap();
+        MockClock::set_system_time(TimeDelta::try_days(10).unwrap().to_std().unwrap());
+        // Overwrite drops the index, leaving its files unreferenced.
+        fixture.overwrite_some_data().await.unwrap();
+
+        let before = fixture.count_files().await.unwrap();
+        let removed = fixture.run_cleanup(utc_now()).await.unwrap();
+        let after = fixture.count_files().await.unwrap();
+
+        assert_gt!(removed.index_files_removed, 0);
+        // The whole point: reported bytes match the storage delta exactly, with index
+        // files in the mix.
+        assert_eq!(removed.bytes_removed, before.num_bytes - after.num_bytes);
+    }
+
+    #[tokio::test]
     async fn cleanup_blob_v2_sidecar_files() {
         let fixture = MockDatasetFixture::try_new().unwrap();
 

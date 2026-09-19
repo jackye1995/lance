@@ -359,8 +359,6 @@ impl CleanupInspection {
 /// If a file cannot be verified then it will only be deleted if it is at least
 /// this many days old.
 const UNVERIFIED_THRESHOLD_DAYS: i64 = 7;
-const S3_DELETE_STREAM_BATCH_SIZE: u64 = 1_000;
-const AZURE_DELETE_STREAM_BATCH_SIZE: u64 = 256;
 const DEFAULT_EXPLANATION_MAX_CANDIDATE_FILES: usize = 1_000;
 
 /// Builder-style cleanup operation.
@@ -842,8 +840,7 @@ impl<'a> CleanupTask<'a> {
         if deletes_files {
             let files_to_delete: BoxStream<Result<CleanupFile>> =
                 if let Some(rate) = self.policy.delete_rate_limit {
-                    let duration =
-                        calculate_duration(self.dataset.object_store.scheme().to_string(), rate);
+                    let duration = calculate_duration(rate);
                     let mut ticker = interval(duration);
                     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
                     IntervalStream::new(ticker)
@@ -1413,23 +1410,19 @@ impl<'a> CleanupTask<'a> {
     }
 }
 
-fn calculate_duration(scheme: String, rate: u64) -> Duration {
-    let batch_size = if scheme.to_lowercase().contains("s3") {
-        S3_DELETE_STREAM_BATCH_SIZE
-    } else if scheme.to_lowercase().contains("az") {
-        AZURE_DELETE_STREAM_BATCH_SIZE
-    } else {
-        1
-    };
+/// The interval between delete permits for a `delete_rate_limit` of `rate` requests/s.
+///
+/// One permit issues exactly one `delete`, so the interval is the reciprocal of the
+/// rate. Scaling it by a bulk-delete batch size would only be correct if a permit
+/// covered a whole batch; nothing coalesces paths into a single request, so doing so
+/// lets the limiter issue `batch_size` times the configured rate.
+fn calculate_duration(rate: u64) -> Duration {
     let effective_rate = rate.max(1);
-    let path_rate = effective_rate * batch_size;
     info!(
         "delete_rate_limit enabled: limit {} delete requests/sec",
         effective_rate
     );
-    // convert user given op/s to the rate of issuing paths
-    let duration_ns = 1_000_000_000u64.div_ceil(path_rate).max(1);
-    Duration::from_nanos(duration_ns)
+    Duration::from_nanos(1_000_000_000u64.div_ceil(effective_rate).max(1))
 }
 
 #[derive(Clone, Debug)]
@@ -1448,9 +1441,10 @@ pub struct CleanupPolicy {
     pub clean_referenced_branches: bool,
     /// Maximum number of delete requests per second. If None, no rate limiting is applied.
     ///
-    /// Use this to avoid hitting S3 (or other object store) request rate limits during cleanup.
-    /// On stores with bulk delete, each request can include multiple paths.
-    /// For example, `Some(100)` limits deletions to 100 delete requests per second.
+    /// Use this to avoid hitting S3 (or other object store) request rate limits during
+    /// cleanup. Cleanup deletes one path per request, so this is also the number of
+    /// paths removed per second. For example, `Some(100)` limits deletions to 100
+    /// delete requests per second.
     pub delete_rate_limit: Option<u64>,
 }
 
@@ -5125,26 +5119,20 @@ mod tests {
     }
 
     #[test]
-    fn test_calculate_duration_s3() {
-        // Normal case: duration is computed from S3 batch size and configured rate.
-        let normal_rate = 100;
-        let expected_duration_ns =
-            1_000_000_000u64.div_ceil(normal_rate * S3_DELETE_STREAM_BATCH_SIZE);
-        assert_eq!(
-            calculate_duration("s3".to_string(), normal_rate),
-            Duration::from_nanos(expected_duration_ns)
-        );
+    fn test_calculate_duration() {
+        // One permit is one delete request, so the interval is the reciprocal of the
+        // configured rate. Scaling by a bulk-delete batch size here would let the
+        // limiter issue batch_size times the rate the caller asked for: at 100
+        // requests/s an S3 multiplier of 1,000 would give 10us instead of 10ms.
+        assert_eq!(calculate_duration(100), Duration::from_millis(10));
+        assert_eq!(calculate_duration(1_000), Duration::from_millis(1));
+        assert_eq!(calculate_duration(1), Duration::from_secs(1));
 
-        // Edge case: rate too small should be clamped to 1.
-        let min_rate_duration = calculate_duration("s3".to_string(), 1);
-        assert_eq!(calculate_duration("s3".to_string(), 0), min_rate_duration);
+        // Edge case: rate too small is clamped to 1.
+        assert_eq!(calculate_duration(0), calculate_duration(1));
 
-        // Edge case: computed duration_ns too small should be clamped to at least 1ns.
-        let very_large_rate = 2_000_000;
-        assert_eq!(
-            calculate_duration("s3".to_string(), very_large_rate),
-            Duration::from_nanos(1)
-        );
+        // Edge case: a rate finer than 1ns is clamped to 1ns.
+        assert_eq!(calculate_duration(2_000_000_000), Duration::from_nanos(1));
     }
 
     #[tokio::test(start_paused = true)]

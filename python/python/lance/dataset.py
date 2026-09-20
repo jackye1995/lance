@@ -62,6 +62,8 @@ from .lance import (
     Compaction,
     CompactionMetrics,
     DatasetBasePath,
+    ExpireVersionsPlan,
+    ExpireVersionsStats,
     IOStats,
     LanceSchema,
     PySearchFilter,
@@ -3410,6 +3412,89 @@ class LanceDataset(pa.dataset.Dataset):
             error_if_tagged_old_versions,
             delete_rate_limit,
             versions,
+        )
+
+    def expire_versions(
+        self,
+        before: Optional[timedelta] = None,
+        before_version: Optional[int] = None,
+        *,
+        keep_one_per: Optional[timedelta] = None,
+        error_if_tagged_old_versions: bool = True,
+        delete_rate_limit: Optional[int] = None,
+    ) -> "ExpireVersionsStats":
+        """Remove version history without deleting any data files.
+
+        Unlike :meth:`cleanup_old_versions`, this never computes the set of live data
+        files, so it does not read the manifests it is expiring. On a table with a very
+        large number of versions that difference is hours against minutes.
+
+        The data files that only an expired version referenced are **not** removed. They
+        become unreferenced, and the next :meth:`cleanup_old_versions` reclaims them --
+        and is much cheaper for having fewer manifests left to read. The intended order
+        is expire, then clean up.
+
+        The newest version, tags on the current branch, and versions a branch is rooted
+        at are never removed.
+
+        Parameters
+        ----------
+        before: timedelta, optional
+            Expire versions written more than this long ago. Age comes from the manifest
+            object's write time, not the commit timestamp recorded inside it; use
+            ``before_version`` when an exact boundary matters.
+        before_version: int, optional
+            Expire versions numbered below this. Exact, and needs no timestamps.
+        keep_one_per: timedelta, optional
+            Instead of expiring every version past the cutoff, keep the newest one in
+            each bucket of this width. ``timedelta(hours=1)`` keeps one per hour.
+            Applies only beyond the cutoff, so ``before=timedelta(days=7)`` with
+            ``keep_one_per=timedelta(hours=1)`` reads as "full history for a week,
+            hourly before that".
+        error_if_tagged_old_versions: bool, default True
+            Raise instead of silently keeping a tagged version the policy would expire.
+        delete_rate_limit: int, optional
+            Maximum delete requests per second. One request is one manifest.
+
+        Returns
+        -------
+        ExpireVersionsStats
+            Counts of what was removed and retained. ``failed_deletes`` is non-zero
+            when the run completed but could not remove everything it selected; those
+            versions remain expirable and a later run retries them.
+
+        Notes
+        -----
+        With no ``before`` and no ``before_version`` this expires nothing, rather than
+        everything.
+        """
+        return self._ds.expire_versions(
+            td_to_micros(before) if before else None,
+            before_version,
+            int(keep_one_per.total_seconds()) if keep_one_per else None,
+            error_if_tagged_old_versions,
+            delete_rate_limit,
+        )
+
+    def explain_expire_versions(
+        self,
+        before: Optional[timedelta] = None,
+        before_version: Optional[int] = None,
+        *,
+        keep_one_per: Optional[timedelta] = None,
+        error_if_tagged_old_versions: bool = True,
+        delete_rate_limit: Optional[int] = None,
+    ) -> "ExpireVersionsPlan":
+        """Report what :meth:`expire_versions` would remove, without removing it.
+
+        Takes the same arguments as :meth:`expire_versions`.
+        """
+        return self._ds.explain_expire_versions(
+            td_to_micros(before) if before else None,
+            before_version,
+            int(keep_one_per.total_seconds()) if keep_one_per else None,
+            error_if_tagged_old_versions,
+            delete_rate_limit,
         )
 
     def explain_cleanup_old_versions(

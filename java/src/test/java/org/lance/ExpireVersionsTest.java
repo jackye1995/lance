@@ -13,6 +13,7 @@
  */
 package org.lance;
 
+import org.lance.expire.ExpireVersionsPlan;
 import org.lance.expire.ExpireVersionsPolicy;
 import org.lance.expire.ExpireVersionsStats;
 
@@ -131,6 +132,46 @@ public class ExpireVersionsTest {
         } finally {
           Files.setPosixFilePermissions(versions, original);
         }
+      }
+    }
+  }
+
+  @Test
+  public void testExplainExpireVersionsDeletesNothing(@TempDir Path tempDir) {
+    // A dry run has to be genuinely dry: the value of it is deciding whether to run the
+    // destructive call, so it must not be the destructive call.
+    String datasetPath = tempDir.resolve("expire_explain").toString();
+    try (RootAllocator allocator = new RootAllocator(Long.MAX_VALUE)) {
+      TestUtils.SimpleTestDataset testDataset =
+          new TestUtils.SimpleTestDataset(allocator, datasetPath);
+      testDataset.createEmptyDataset().close();
+      testDataset.write(1, 10).close();
+      testDataset.write(2, 10).close();
+
+      try (Dataset dataset = testDataset.write(3, 10)) {
+        long latest = dataset.version();
+        long manifestsBefore = countFiles(Path.of(datasetPath, "_versions"));
+
+        ExpireVersionsPlan plan =
+            dataset.explainExpireVersions(
+                ExpireVersionsPolicy.builder().withBeforeVersion(latest).build());
+
+        assertEquals(latest - 1, plan.getVersions().size());
+        assertEquals(latest - 1, plan.getStats().getVersionsRemoved());
+        assertTrue(plan.getTaggedButKept().isEmpty());
+
+        // The versions it named are still on disk.
+        assertEquals(
+            manifestsBefore,
+            countFiles(Path.of(datasetPath, "_versions")),
+            "explainExpireVersions must not delete anything");
+        assertEquals(latest, dataset.version());
+
+        // And running for real afterwards removes exactly what the dry run predicted.
+        ExpireVersionsStats stats =
+            dataset.expireVersions(
+                ExpireVersionsPolicy.builder().withBeforeVersion(latest).build());
+        assertEquals(plan.getStats().getVersionsRemoved(), stats.getVersionsRemoved());
       }
     }
   }

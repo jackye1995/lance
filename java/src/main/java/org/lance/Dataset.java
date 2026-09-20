@@ -18,6 +18,7 @@ import org.lance.cleanup.CleanupPolicy;
 import org.lance.cleanup.RemovalStats;
 import org.lance.compaction.CompactionOptions;
 import org.lance.delta.DatasetDelta;
+import org.lance.expire.ExpireVersionsPlan;
 import org.lance.expire.ExpireVersionsPolicy;
 import org.lance.expire.ExpireVersionsStats;
 import org.lance.file.FileWriteOptions;
@@ -2590,6 +2591,24 @@ public class Dataset implements Closeable {
   }
 
   private native ExpireVersionsStats nativeExpireVersions(ExpireVersionsPolicy policy);
+
+  /**
+   * Report what {@link #expireVersions} would remove, without removing it.
+   *
+   * <p>A dry run: no manifest is deleted to produce this.
+   *
+   * @param policy expiry policy, the same one you would pass to {@link #expireVersions}
+   * @return the versions that would be removed and the stats that would result
+   */
+  public ExpireVersionsPlan explainExpireVersions(ExpireVersionsPolicy policy) {
+    Preconditions.checkNotNull(policy, "policy cannot be null");
+    try (LockManager.ReadLock readLock = lockManager.acquireReadLock()) {
+      Preconditions.checkArgument(nativeDatasetHandle != 0, "Dataset is closed");
+      return nativeExplainExpireVersions(policy);
+    }
+  }
+
+  private native ExpireVersionsPlan nativeExplainExpireVersions(ExpireVersionsPolicy policy);
 
   CleanupExplanation explainCleanup(CleanupPolicy policy, Optional<Long> maxCandidateFiles) {
     try (LockManager.ReadLock readLock = lockManager.acquireReadLock()) {

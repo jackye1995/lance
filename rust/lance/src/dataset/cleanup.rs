@@ -5258,6 +5258,7 @@ mod tests {
                 naming_scheme: ManifestNamingScheme::V2,
                 e_tag: None,
                 identity: Some(row.2),
+                last_modified: None,
             })
         }
 

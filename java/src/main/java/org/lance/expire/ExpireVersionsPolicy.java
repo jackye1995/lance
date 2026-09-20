@@ -13,6 +13,7 @@
  */
 package org.lance.expire;
 
+import java.time.Duration;
 import java.util.Optional;
 
 /**
@@ -27,19 +28,19 @@ import java.util.Optional;
 public class ExpireVersionsPolicy {
   private final Optional<Long> beforeTimestampMillis;
   private final Optional<Long> beforeVersion;
-  private final Optional<Long> keepOnePerSeconds;
+  private final Optional<Long> keepOnePerMicros;
   private final Optional<Boolean> errorIfTaggedOldVersions;
   private final Optional<Long> deleteRateLimit;
 
   private ExpireVersionsPolicy(
       Optional<Long> beforeTimestampMillis,
       Optional<Long> beforeVersion,
-      Optional<Long> keepOnePerSeconds,
+      Optional<Long> keepOnePerMicros,
       Optional<Boolean> errorIfTaggedOldVersions,
       Optional<Long> deleteRateLimit) {
     this.beforeTimestampMillis = beforeTimestampMillis;
     this.beforeVersion = beforeVersion;
-    this.keepOnePerSeconds = keepOnePerSeconds;
+    this.keepOnePerMicros = keepOnePerMicros;
     this.errorIfTaggedOldVersions = errorIfTaggedOldVersions;
     this.deleteRateLimit = deleteRateLimit;
   }
@@ -56,8 +57,8 @@ public class ExpireVersionsPolicy {
     return beforeVersion;
   }
 
-  public Optional<Long> getKeepOnePerSeconds() {
-    return keepOnePerSeconds;
+  public Optional<Long> getKeepOnePerMicros() {
+    return keepOnePerMicros;
   }
 
   public Optional<Boolean> getErrorIfTaggedOldVersions() {
@@ -71,7 +72,7 @@ public class ExpireVersionsPolicy {
   public static class Builder {
     private Optional<Long> beforeTimestampMillis = Optional.empty();
     private Optional<Long> beforeVersion = Optional.empty();
-    private Optional<Long> keepOnePerSeconds = Optional.empty();
+    private Optional<Long> keepOnePerMicros = Optional.empty();
     private Optional<Boolean> errorIfTaggedOldVersions = Optional.empty();
     private Optional<Long> deleteRateLimit = Optional.empty();
 
@@ -94,10 +95,27 @@ public class ExpireVersionsPolicy {
 
     /**
      * Instead of expiring every version past the cutoff, keep the newest one in each bucket of this
-     * width. 3600 keeps one version per hour, 86400 one per day.
+     * width. {@code Duration.ofHours(1)} keeps one version per hour.
+     *
+     * <p>Carried as microseconds, so a sub-second width survives the boundary rather than being
+     * widened into deleting more history than was asked for. A zero width is rejected.
+     *
+     * @throws IllegalArgumentException if the width is null, negative, or finer than a microsecond
      */
-    public Builder withKeepOnePerSeconds(long keepOnePerSeconds) {
-      this.keepOnePerSeconds = Optional.of(keepOnePerSeconds);
+    public Builder withKeepOnePer(Duration keepOnePer) {
+      if (keepOnePer == null) {
+        throw new IllegalArgumentException("keepOnePer cannot be null");
+      }
+      if (keepOnePer.isNegative()) {
+        throw new IllegalArgumentException("keepOnePer cannot be negative: " + keepOnePer);
+      }
+      if (keepOnePer.getNano() % 1_000 != 0) {
+        // Truncating would widen the bucket and delete more than asked, so refuse.
+        throw new IllegalArgumentException(
+            "keepOnePer must be a whole number of microseconds, got " + keepOnePer);
+      }
+      this.keepOnePerMicros =
+          Optional.of(keepOnePer.getSeconds() * 1_000_000L + keepOnePer.getNano() / 1_000L);
       return this;
     }
 
@@ -117,7 +135,7 @@ public class ExpireVersionsPolicy {
       return new ExpireVersionsPolicy(
           beforeTimestampMillis,
           beforeVersion,
-          keepOnePerSeconds,
+          keepOnePerMicros,
           errorIfTaggedOldVersions,
           deleteRateLimit);
     }

@@ -3813,8 +3813,8 @@ fn extract_expire_versions_policy(
         .map(|millis| DateTime::<Utc>::from(UNIX_EPOCH + Duration::from_millis(millis)));
     let before_version = env.get_optional_u64_from_method(jpolicy, "getBeforeVersion")?;
     let keep_one_per = env
-        .get_optional_u64_from_method(jpolicy, "getKeepOnePerSeconds")?
-        .map(Duration::from_secs);
+        .get_optional_u64_from_method(jpolicy, "getKeepOnePerMicros")?
+        .map(Duration::from_micros);
     let error_if_tagged_old_versions = env
         .get_optional_from_method(jpolicy, "getErrorIfTaggedOldVersions", |env, obj| {
             Ok(env.call_method(obj, "booleanValue", "()Z", &[])?.z()?)

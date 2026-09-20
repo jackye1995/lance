@@ -882,12 +882,13 @@ fn cleanup_stats(stats: lance::dataset::cleanup::RemovalStats) -> CleanupStats {
 
 /// Build an `ExpireVersionsPolicy` from the Python-facing arguments.
 ///
-/// `keep_one_per_seconds` is a plain number of seconds rather than a granularity enum, so
-/// hourly is 3600 and daily 86400 without the binding needing to know either.
+/// `keep_one_per_micros` is microseconds rather than seconds: `timedelta` resolves to
+/// microseconds, so this is lossless, whereas truncating to seconds would silently widen a
+/// sub-second width and delete more history than asked for.
 fn expire_versions_policy(
     before_micros: Option<i64>,
     before_version: Option<u64>,
-    keep_one_per_seconds: Option<u64>,
+    keep_one_per_micros: Option<u64>,
     error_if_tagged_old_versions: Option<bool>,
     delete_rate_limit: Option<u64>,
 ) -> PyResult<lance::dataset::expire::ExpireVersionsPolicy> {
@@ -900,8 +901,8 @@ fn expire_versions_policy(
     if let Some(version) = before_version {
         builder = builder.before_version(version);
     }
-    if let Some(seconds) = keep_one_per_seconds {
-        builder = builder.keep_one_per(std::time::Duration::from_secs(seconds));
+    if let Some(micros) = keep_one_per_micros {
+        builder = builder.keep_one_per(std::time::Duration::from_micros(micros));
     }
     if let Some(error) = error_if_tagged_old_versions {
         builder = builder.error_if_tagged_old_versions(error);
@@ -2332,19 +2333,19 @@ impl Dataset {
     ///
     /// Data files that only an expired version referenced are left behind for
     /// `cleanup_old_versions` to reclaim.
-    #[pyo3(signature = (before_micros = None, before_version = None, keep_one_per_seconds = None, error_if_tagged_old_versions = None, delete_rate_limit = None))]
+    #[pyo3(signature = (before_micros = None, before_version = None, keep_one_per_micros = None, error_if_tagged_old_versions = None, delete_rate_limit = None))]
     fn expire_versions(
         &self,
         before_micros: Option<i64>,
         before_version: Option<u64>,
-        keep_one_per_seconds: Option<u64>,
+        keep_one_per_micros: Option<u64>,
         error_if_tagged_old_versions: Option<bool>,
         delete_rate_limit: Option<u64>,
     ) -> PyResult<ExpireVersionsStats> {
         let policy = expire_versions_policy(
             before_micros,
             before_version,
-            keep_one_per_seconds,
+            keep_one_per_micros,
             error_if_tagged_old_versions,
             delete_rate_limit,
         )?;
@@ -2357,19 +2358,19 @@ impl Dataset {
     }
 
     /// Report what `expire_versions` would remove, without removing it.
-    #[pyo3(signature = (before_micros = None, before_version = None, keep_one_per_seconds = None, error_if_tagged_old_versions = None, delete_rate_limit = None))]
+    #[pyo3(signature = (before_micros = None, before_version = None, keep_one_per_micros = None, error_if_tagged_old_versions = None, delete_rate_limit = None))]
     fn explain_expire_versions(
         &self,
         before_micros: Option<i64>,
         before_version: Option<u64>,
-        keep_one_per_seconds: Option<u64>,
+        keep_one_per_micros: Option<u64>,
         error_if_tagged_old_versions: Option<bool>,
         delete_rate_limit: Option<u64>,
     ) -> PyResult<ExpireVersionsPlan> {
         let policy = expire_versions_policy(
             before_micros,
             before_version,
-            keep_one_per_seconds,
+            keep_one_per_micros,
             error_if_tagged_old_versions,
             delete_rate_limit,
         )?;

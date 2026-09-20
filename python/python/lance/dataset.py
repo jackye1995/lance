@@ -3471,7 +3471,7 @@ class LanceDataset(pa.dataset.Dataset):
         return self._ds.expire_versions(
             td_to_micros(before) if before else None,
             before_version,
-            int(keep_one_per.total_seconds()) if keep_one_per else None,
+            td_to_micros(keep_one_per) if keep_one_per is not None else None,
             error_if_tagged_old_versions,
             delete_rate_limit,
         )
@@ -3492,7 +3492,7 @@ class LanceDataset(pa.dataset.Dataset):
         return self._ds.explain_expire_versions(
             td_to_micros(before) if before else None,
             before_version,
-            int(keep_one_per.total_seconds()) if keep_one_per else None,
+            td_to_micros(keep_one_per) if keep_one_per is not None else None,
             error_if_tagged_old_versions,
             delete_rate_limit,
         )

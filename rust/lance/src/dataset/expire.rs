@@ -194,6 +194,18 @@ pub async fn plan_expire_versions(
         .try_collect()
         .await?;
 
+    // Reject before planning, never mid-run: a width that does nothing should be an error
+    // the caller sees, not a silently skipped thinning pass.
+    if let Some(width) = policy.keep_one_per
+        && width.is_zero()
+    {
+        return Err(Error::invalid_input(
+            "keep_one_per must be greater than zero; omit it to expire every version \
+             past the cutoff"
+                .to_string(),
+        ));
+    }
+
     if locations.is_empty() {
         return Err(Error::internal(
             "no manifests found; refusing to expire versions".to_string(),
@@ -590,6 +602,51 @@ mod tests {
 
         assert_eq!(stats.versions_removed, 0);
         assert_eq!(version_count(&dataset).await, 3);
+    }
+
+    #[tokio::test]
+    async fn expire_rejects_a_zero_keep_one_per() {
+        // Zero buckets nothing, so accepting it would quietly expire everything past the
+        // cutoff instead of thinning. Reject before planning, and delete nothing.
+        let uri = TempStrDir::default();
+        let dataset = dataset_with_versions(&uri, 4).await;
+
+        let result = expire_versions(
+            &dataset,
+            ExpireVersionsPolicyBuilder::default()
+                .before_version(dataset.manifest.version)
+                .keep_one_per(Duration::from_secs(0))
+                .build(),
+        )
+        .await;
+
+        assert!(result.is_err(), "a zero width must be rejected");
+        assert_eq!(version_count(&dataset).await, 4, "nothing was deleted");
+    }
+
+    #[tokio::test]
+    async fn expire_honors_a_subsecond_keep_one_per() {
+        // The width must reach the bucketing unrounded. Rounding a sub-second width up to
+        // a second would put every version in one bucket and delete all but one.
+        let uri = TempStrDir::default();
+        let dataset = dataset_with_versions(&uri, 4).await;
+
+        let plan = explain_expire_versions(
+            &dataset,
+            &ExpireVersionsPolicyBuilder::default()
+                .before_version(dataset.manifest.version)
+                .keep_one_per(Duration::from_nanos(1))
+                .build(),
+        )
+        .await
+        .unwrap();
+
+        // At a 1ns bucket no two manifests collide, so thinning saves all of them.
+        assert!(
+            plan.versions.is_empty(),
+            "a 1ns bucket must keep every version, got {:?}",
+            plan.versions
+        );
     }
 
     #[tokio::test]

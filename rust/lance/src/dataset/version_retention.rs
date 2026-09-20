@@ -98,11 +98,23 @@ impl ProtectedVersions {
 ///
 /// Ties on timestamp resolve to the higher version, so the survivor of a bucket is always
 /// the latest state within it.
+///
+/// Bucketing is exact to the nanosecond. Rounding `width` up to a coarser unit would
+/// silently delete more than the caller asked for, and version history does not come back.
+/// A zero `width` keeps every candidate; callers reject it up front so that asking for
+/// zero is an error rather than quietly doing nothing.
 pub fn thin_to_one_per(candidates: &[(u64, DateTime<Utc>)], width: Duration) -> HashSet<u64> {
-    let width_secs = width.as_secs().max(1) as i64;
-    let mut newest_in_bucket: HashMap<i64, (u64, DateTime<Utc>)> = HashMap::new();
+    if width.is_zero() {
+        return candidates.iter().map(|(version, _)| *version).collect();
+    }
+    // i128 throughout: nanoseconds since the epoch overflow i64 outside ~1677..2262, and a
+    // width may legitimately be years.
+    let width_nanos = width.as_nanos() as i128;
+    let mut newest_in_bucket: HashMap<i128, (u64, DateTime<Utc>)> = HashMap::new();
     for (version, timestamp) in candidates {
-        let bucket = timestamp.timestamp().div_euclid(width_secs);
+        let nanos = (timestamp.timestamp() as i128) * 1_000_000_000
+            + timestamp.timestamp_subsec_nanos() as i128;
+        let bucket = nanos.div_euclid(width_nanos);
         newest_in_bucket
             .entry(bucket)
             .and_modify(|held| {
@@ -187,12 +199,45 @@ mod tests {
     }
 
     #[test]
-    fn thinning_a_zero_width_bucket_keeps_every_version() {
-        // Guard against a divide-by-zero and against silently collapsing everything into
-        // one bucket, which would delete all but one version.
-        let candidates = vec![(1, ts(0)), (2, ts(1)), (3, ts(2))];
+    fn thinning_a_zero_width_keeps_every_version() {
+        // Not a divide-by-zero, and not "collapse into one bucket and delete the rest".
+        // Candidates deliberately share a second, so this cannot pass by accident the way
+        // one-second-apart candidates would.
+        let candidates = vec![
+            (1, DateTime::from_timestamp(0, 0).unwrap()),
+            (2, DateTime::from_timestamp(0, 1).unwrap()),
+            (3, DateTime::from_timestamp(0, 2).unwrap()),
+        ];
         let kept = thin_to_one_per(&candidates, Duration::from_secs(0));
         assert_eq!(kept.len(), 3, "a zero width must not collapse the history");
+    }
+
+    #[test]
+    fn thinning_is_exact_at_nanosecond_widths() {
+        let candidates = vec![
+            (1, DateTime::from_timestamp(0, 0).unwrap()),
+            (2, DateTime::from_timestamp(0, 1).unwrap()),
+        ];
+        // One nanosecond apart: distinct buckets at a 1ns width...
+        assert_eq!(
+            thin_to_one_per(&candidates, Duration::from_nanos(1)),
+            HashSet::from([1, 2])
+        );
+        // ...and the same bucket at 2ns.
+        assert_eq!(
+            thin_to_one_per(&candidates, Duration::from_nanos(2)),
+            HashSet::from([2])
+        );
+    }
+
+    #[test]
+    fn thinning_honors_subsecond_widths() {
+        let candidates = vec![
+            (1, DateTime::from_timestamp(0, 100_000_000).unwrap()),
+            (2, DateTime::from_timestamp(0, 600_000_000).unwrap()),
+        ];
+        let kept = thin_to_one_per(&candidates, Duration::from_millis(500));
+        assert_eq!(kept, HashSet::from([1, 2]));
     }
 
     #[test]

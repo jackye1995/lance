@@ -496,7 +496,7 @@ mod tests {
     #[tokio::test]
     async fn expire_never_removes_a_tagged_version() {
         let uri = TempStrDir::default();
-        let mut dataset = dataset_with_versions(&uri, 5).await;
+        let dataset = dataset_with_versions(&uri, 5).await;
         dataset.tags().create("keepme", 2).await.unwrap();
 
         let stats = expire_versions(
@@ -530,7 +530,7 @@ mod tests {
     #[tokio::test]
     async fn expire_errors_on_a_tagged_old_version_by_default() {
         let uri = TempStrDir::default();
-        let mut dataset = dataset_with_versions(&uri, 4).await;
+        let dataset = dataset_with_versions(&uri, 4).await;
         dataset.tags().create("keepme", 2).await.unwrap();
 
         let result = expire_versions(
@@ -571,7 +571,7 @@ mod tests {
     async fn count_data_files(dataset: &Dataset) -> usize {
         dataset
             .object_store
-            .read_dir_all(&dataset.base.child("data"), None)
+            .read_dir_all(&dataset.base.clone().join("data"), None)
             .try_collect::<Vec<_>>()
             .await
             .unwrap()

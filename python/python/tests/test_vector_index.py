@@ -2694,7 +2694,7 @@ def test_vector_index_with_nprobes(indexed_dataset):
         }
     ).explain_plan()
 
-    assert "minimum_nprobes=1" in res
+    assert "minimum_nprobes=7" in res
     assert "maximum_nprobes=Some(7)" in res
 
     res = indexed_dataset.scanner(

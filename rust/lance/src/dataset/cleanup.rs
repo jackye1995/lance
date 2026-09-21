@@ -50,6 +50,7 @@ use lance_core::{
         TRACE_FILE_AUDIT,
     },
 };
+use lance_io::object_store::ObjectStore;
 use lance_table::{
     format::{IndexMetadata, Manifest},
     io::{
@@ -781,12 +782,9 @@ impl<'a> CleanupTask<'a> {
         let old_manifests = inspection.old_manifests.clone();
         let manifest_files = stream::iter(old_manifests)
             .map(|(path, expired)| async move {
-                // HEAD only when the listing did not report a size. Fetching
-                // unconditionally costs a request per expired manifest.
-                let size_bytes = match expired.size_bytes {
-                    Some(size_bytes) => size_bytes,
-                    None => self.dataset.object_store.size(&path).await?,
-                };
+                let size_bytes =
+                    expired_manifest_size(&self.dataset.object_store, &path, expired.size_bytes)
+                        .await?;
                 Ok::<CleanupFile, Error>(CleanupFile {
                     path,
                     kind: CleanupFileKind::Manifest,
@@ -1407,6 +1405,30 @@ impl<'a> CleanupTask<'a> {
         }
 
         Ok(())
+    }
+}
+
+/// Size of an expired manifest, for `bytes_removed`.
+///
+/// `known` is what the listing reported. The HEAD fallback only runs when the listing did
+/// not say, because issuing it unconditionally costs a request per expired manifest.
+///
+/// A manifest that has already vanished counts as zero rather than failing. Cleanup lists
+/// first and acts after, so a concurrent cleanup can remove one in between — and that is
+/// the outcome this sweep wanted. Propagating `NotFound` here would abandon an entire
+/// sweep over a single file that is already in the desired state.
+async fn expired_manifest_size(
+    object_store: &ObjectStore,
+    path: &Path,
+    known: Option<u64>,
+) -> Result<u64> {
+    match known {
+        Some(size_bytes) => Ok(size_bytes),
+        None => match object_store.size(path).await {
+            Ok(size_bytes) => Ok(size_bytes),
+            Err(Error::NotFound { .. }) => Ok(0),
+            Err(error) => Err(error),
+        },
     }
 }
 
@@ -5116,6 +5138,29 @@ mod tests {
         assert_eq!(setup.branch4.counts.num_tx_files, 1);
         assert_eq!(setup.branch4.counts.num_delete_files, 0);
         assert_eq!(setup.branch4.counts.num_index_files, 7);
+    }
+
+    #[tokio::test]
+    async fn expired_manifest_size_tolerates_a_vanished_manifest() {
+        let store = ObjectStore::memory();
+        let path = Path::from("_versions/1.manifest");
+
+        // A size the listing already reported costs no request at all.
+        assert_eq!(
+            expired_manifest_size(&store, &path, Some(42))
+                .await
+                .unwrap(),
+            42
+        );
+
+        // Unknown size and the object is gone: zero, not an error. A concurrent cleanup
+        // can remove a manifest between listing and here, and propagating NotFound would
+        // abandon the whole sweep over one file already in the state we wanted.
+        assert_eq!(expired_manifest_size(&store, &path, None).await.unwrap(), 0);
+
+        // A present object still reports its real size through the fallback.
+        store.put(&path, b"1234".as_slice()).await.unwrap();
+        assert_eq!(expired_manifest_size(&store, &path, None).await.unwrap(), 4);
     }
 
     #[test]

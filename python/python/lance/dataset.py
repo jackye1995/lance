@@ -8419,7 +8419,7 @@ def _build_vector_search_query(
     metric: str, optional
         The distance metric to use (e.g., "L2", "cosine", "dot", "hamming").
     nprobes: int, optional
-        The maximum number of partitions to search. The minimum remains unchanged.
+        The number of partitions to search, setting both the minimum and maximum.
     minimum_nprobes: int, optional
         The minimum number of partitions to search.
     maximum_nprobes: int, optional

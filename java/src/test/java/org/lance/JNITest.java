@@ -61,7 +61,7 @@ public class JNITest {
             .setKey(new float[] {1.0f, 2.0f, 3.0f})
             .setNprobes(20)
             .build();
-    assertEquals(1, nprobesQuery.getMinimumNprobes());
+    assertEquals(20, nprobesQuery.getMinimumNprobes());
     assertEquals(Optional.of(20), nprobesQuery.getMaximumNprobes());
 
     JniTestHelper.parseQuery(

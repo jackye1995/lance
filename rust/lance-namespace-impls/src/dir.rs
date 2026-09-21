@@ -14409,15 +14409,15 @@ mod tests {
                 id: None,
                 k: 2,
                 vector: vector(),
-                nprobes: Some(0),
+                nprobes: Some(20),
                 ..Default::default()
             };
             let mut request = ExplainTableQueryPlanRequest::new(query);
             request.id = Some(table_id.clone());
 
             let plan = namespace.explain_table_query_plan(request).await.unwrap();
-            assert!(plan.contains("minimum_nprobes=1"), "{plan}");
-            assert!(plan.contains("maximum_nprobes=Some(0)"), "{plan}");
+            assert!(plan.contains("minimum_nprobes=20"), "{plan}");
+            assert!(plan.contains("maximum_nprobes=Some(20)"), "{plan}");
 
             let query = QueryTableRequest {
                 id: None,

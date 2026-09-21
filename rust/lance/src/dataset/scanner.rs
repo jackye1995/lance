@@ -2051,12 +2051,13 @@ impl Scanner {
         self
     }
 
-    /// Configures the maximum number of partitions searched in the vector index.
+    /// Configures how many partitions are searched in the vector index.
     ///
-    /// The minimum remains unchanged, so the search may stop before reaching this
-    /// value when enough results have been found.
+    /// This sets both [`Self::minimum_nprobes`] and [`Self::maximum_nprobes`]
+    /// to the same value. With neither setter called, adaptive defaults apply.
     pub fn nprobes(&mut self, n: usize) -> &mut Self {
         if let Some(q) = self.nearest.as_mut() {
+            q.minimum_nprobes = n;
             q.maximum_nprobes = Some(n);
         } else {
             log::warn!("nprobes is not set because nearest has not been called yet");
@@ -2064,10 +2065,11 @@ impl Scanner {
         self
     }
 
-    /// Configures the maximum number of partitions searched in the vector index.
+    /// Configures how many partitions are searched in the vector index.
     #[deprecated(note = "Use nprobes instead")]
     pub fn nprobs(&mut self, n: usize) -> &mut Self {
         if let Some(q) = self.nearest.as_mut() {
+            q.minimum_nprobes = n;
             q.maximum_nprobes = Some(n);
         } else {
             log::warn!("nprobes is not set because nearest has not been called yet");
@@ -10242,8 +10244,8 @@ mod test {
             .await;
     }
 
-    /// `nprobes(0)` is not rejected by the query builder, so `maximum_nprobes == 0`
-    /// reaches the adaptive path. The single-query
+    /// `nprobes(0)` is not rejected by the query builder, so both probe bounds
+    /// become zero. The single-query
     /// path then probes nothing and returns an empty result, whereas the batch
     /// node would clamp `nprobes` up to one partition — a silent divergence. The
     /// scanner must fall back so the per-query loop defines the semantics of
@@ -16618,7 +16620,7 @@ full_filter=name LIKE Utf8(\"test%2\"), refine_filter=name LIKE Utf8(\"test%2\")
 
         scanner.nprobes(20);
         let query = scanner.nearest_mut().unwrap();
-        assert_eq!(query.minimum_nprobes, 1);
+        assert_eq!(query.minimum_nprobes, 20);
         assert_eq!(query.maximum_nprobes, Some(20));
 
         scanner.minimum_nprobes(5);

@@ -178,73 +178,31 @@ public class ExpireVersionsTest {
   }
 
   @Test
-  public void testKeepOnePerRejectsSubMicrosecondWidths() {
-    // Truncating a sub-microsecond width would widen the bucket and delete more history
-    // than the caller asked for, so the builder refuses rather than rounding.
-    IllegalArgumentException e =
-        assertThrows(
-            IllegalArgumentException.class,
-            () -> ExpireVersionsPolicy.builder().withKeepOnePer(Duration.ofNanos(1)));
-    assertTrue(e.getMessage().contains("microsecond"), e.getMessage());
+  public void testKeepOnePerRejectsWidthsBelowOneHour() {
+    // Thinning competes with the version hint, whose protective floor is read once and can
+    // be lowered afterwards by a slow committer. Keeping survivors at least an hour apart
+    // keeps deletions away from that window, so finer widths are refused outright.
+    for (Duration tooFine :
+        new Duration[] {Duration.ZERO, Duration.ofMinutes(59), Duration.ofSeconds(1)}) {
+      IllegalArgumentException e =
+          assertThrows(
+              IllegalArgumentException.class,
+              () -> ExpireVersionsPolicy.builder().withKeepOnePer(tooFine));
+      assertTrue(e.getMessage().contains("at least one hour"), e.getMessage());
+    }
 
     assertThrows(
         IllegalArgumentException.class,
         () -> ExpireVersionsPolicy.builder().withKeepOnePer(Duration.ofSeconds(-1)));
-  }
+    assertThrows(
+        IllegalArgumentException.class, () -> ExpireVersionsPolicy.builder().withKeepOnePer(null));
 
-  @Test
-  public void testKeepOnePerZeroIsRejectedAndDeletesNothing(@TempDir Path tempDir) {
-    // Zero buckets nothing. Accepting it would expire everything past the cutoff rather
-    // than thinning, so the Rust side rejects and Java sees the failure.
-    String datasetPath = tempDir.resolve("expire_zero_width").toString();
-    try (RootAllocator allocator = new RootAllocator(Long.MAX_VALUE)) {
-      TestUtils.SimpleTestDataset testDataset =
-          new TestUtils.SimpleTestDataset(allocator, datasetPath);
-      testDataset.createEmptyDataset().close();
-      testDataset.write(1, 10).close();
-
-      try (Dataset dataset = testDataset.write(2, 10)) {
-        long manifestsBefore = countFiles(Path.of(datasetPath, "_versions"));
-        assertThrows(
-            RuntimeException.class,
-            () ->
-                dataset.expireVersions(
-                    ExpireVersionsPolicy.builder()
-                        .withBeforeVersion(dataset.version())
-                        .withKeepOnePer(Duration.ZERO)
-                        .build()));
-        assertEquals(
-            manifestsBefore,
-            countFiles(Path.of(datasetPath, "_versions")),
-            "a rejected policy must not delete anything");
-      }
-    }
-  }
-
-  @Test
-  public void testKeepOnePerCarriesSubSecondWidths(@TempDir Path tempDir) {
-    // A sub-second width has to survive the JNI boundary unrounded: at one microsecond no
-    // two manifests share a bucket, so thinning saves all of them.
-    String datasetPath = tempDir.resolve("expire_subsecond").toString();
-    try (RootAllocator allocator = new RootAllocator(Long.MAX_VALUE)) {
-      TestUtils.SimpleTestDataset testDataset =
-          new TestUtils.SimpleTestDataset(allocator, datasetPath);
-      testDataset.createEmptyDataset().close();
-      testDataset.write(1, 10).close();
-      testDataset.write(2, 10).close();
-
-      try (Dataset dataset = testDataset.write(3, 10)) {
-        ExpireVersionsPlan plan =
-            dataset.explainExpireVersions(
-                ExpireVersionsPolicy.builder()
-                    .withBeforeVersion(dataset.version())
-                    .withKeepOnePer(Duration.ofNanos(1_000))
-                    .build());
-        assertTrue(
-            plan.getVersions().isEmpty(),
-            "a 1us bucket must keep every version, got " + plan.getVersions());
-      }
-    }
+    // Exactly one hour is accepted, and a finer-than-microsecond component is still
+    // refused rather than silently truncated.
+    ExpireVersionsPolicy.builder().withKeepOnePer(Duration.ofHours(1));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ExpireVersionsPolicy.builder().withKeepOnePer(Duration.ofHours(1).plusNanos(1)));
   }
 
   @Test

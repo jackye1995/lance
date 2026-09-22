@@ -97,10 +97,21 @@ public class ExpireVersionsPolicy {
      * Instead of expiring every version past the cutoff, keep the newest one in each bucket of this
      * width. {@code Duration.ofHours(1)} keeps one version per hour.
      *
-     * <p>Carried as microseconds, so a sub-second width survives the boundary rather than being
-     * widened into deleting more history than was asked for. A zero width is rejected.
+     * <p>Carried as microseconds, so the width reaches the bucketing unrounded rather than being
+     * widened into deleting more history than was asked for.
      *
-     * @throws IllegalArgumentException if the width is null, negative, or finer than a microsecond
+     * <p><b>Thinning carries a rollback risk on an actively committing table.</b> Resolving the
+     * latest version starts at the version hint and probes upward, stopping at the first version
+     * that is missing. Expiry refuses to remove anything at or above the hint, but that floor is
+     * read once and hint writes are unconditional, so a commit that started earlier can publish a
+     * lower hint afterwards. A gap above that lowered hint hides every version above it, and the
+     * table reads as an older state while the newer manifests are still present. The one-hour
+     * minimum below bounds the exposure — it keeps deletions away from the seconds-wide window
+     * where that can happen — but does not remove it. Use thinning to repair a table that has
+     * accumulated far more versions than it can carry, not as a default left switched on.
+     *
+     * @throws IllegalArgumentException if the width is null, negative, finer than a microsecond, or
+     *     shorter than one hour
      */
     public Builder withKeepOnePer(Duration keepOnePer) {
       if (keepOnePer == null) {
@@ -108,6 +119,13 @@ public class ExpireVersionsPolicy {
       }
       if (keepOnePer.isNegative()) {
         throw new IllegalArgumentException("keepOnePer cannot be negative: " + keepOnePer);
+      }
+      if (keepOnePer.compareTo(Duration.ofHours(1)) < 0) {
+        throw new IllegalArgumentException(
+            "keepOnePer must be at least one hour, got "
+                + keepOnePer
+                + "; thinning more finely puts deletions next to the window where a concurrent"
+                + " commit can lower the version hint");
       }
       if (keepOnePer.getNano() % 1_000 != 0) {
         // Truncating would widen the bucket and delete more than asked, so refuse.

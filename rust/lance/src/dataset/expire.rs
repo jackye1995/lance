@@ -45,6 +45,14 @@ use super::cleanup::calculate_duration;
 use super::version_retention::{ProtectedVersions, thin_to_one_per};
 use crate::{Error, Result};
 
+/// Smallest bucket width [`ExpireVersionsPolicy::keep_one_per`] accepts.
+///
+/// Thinning competes with the version hint: the floor that protects the top of the history
+/// is read once, and a slow committer can publish a lower hint afterwards. Keeping
+/// survivors at least an hour apart keeps deletions away from the seconds-wide window in
+/// which that can happen. See [`ExpireVersionsPolicy::keep_one_per`].
+pub const MIN_KEEP_ONE_PER: Duration = Duration::from_secs(3600);
+
 /// Which versions to expire, and how many to keep behind.
 #[derive(Clone, Debug)]
 pub struct ExpireVersionsPolicy {
@@ -69,6 +77,23 @@ pub struct ExpireVersionsPolicy {
     /// history for a week, hourly before that".
     ///
     /// Versions with no reported write time cannot be bucketed and are kept.
+    ///
+    /// # Thinning carries a rollback risk on an actively committing table
+    ///
+    /// Resolving the latest version starts at the version hint and probes upward, stopping
+    /// at the first version that is missing. [`ProtectedVersions`] therefore refuses to
+    /// expire anything at or above the hint — but that floor is read once, and hint writes
+    /// are unconditional best effort, so a commit that started earlier can publish a
+    /// *lower* hint after the read. A gap above that lowered hint hides every version above
+    /// it, and the table reads as an older state while the newer manifests are still there.
+    ///
+    /// [`MIN_KEEP_ONE_PER`] bounds the exposure rather than removing it: requiring at least
+    /// an hour keeps survivors an hour apart, so a deletion is never adjacent to the
+    /// second-scale window in which a stale hint can land. It does not make the floor
+    /// monotonic, and only a conditional hint write would.
+    ///
+    /// Treat thinning as a repair for a table that has accumulated far more versions than
+    /// it can carry, not as a default to leave switched on.
     pub keep_one_per: Option<Duration>,
     /// Return an error instead of silently keeping a tagged version that the policy
     /// would otherwise expire.
@@ -194,16 +219,17 @@ pub async fn plan_expire_versions(
         .try_collect()
         .await?;
 
-    // Reject before planning, never mid-run: a width that does nothing should be an error
-    // the caller sees, not a silently skipped thinning pass.
+    // Reject before planning, never mid-run: a width the policy cannot honour should be an
+    // error the caller sees, not a silently adjusted or skipped thinning pass.
     if let Some(width) = policy.keep_one_per
-        && width.is_zero()
+        && width < MIN_KEEP_ONE_PER
     {
-        return Err(Error::invalid_input(
-            "keep_one_per must be greater than zero; omit it to expire every version \
-             past the cutoff"
-                .to_string(),
-        ));
+        return Err(Error::invalid_input(format!(
+            "keep_one_per must be at least {:?}, got {:?}; thinning more finely than this \
+             puts deletions next to the window where a concurrent commit can lower the \
+             version hint. Omit keep_one_per to expire every version past the cutoff.",
+            MIN_KEEP_ONE_PER, width
+        )));
     }
 
     if locations.is_empty() {
@@ -788,48 +814,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn expire_rejects_a_zero_keep_one_per() {
-        // Zero buckets nothing, so accepting it would quietly expire everything past the
-        // cutoff instead of thinning. Reject before planning, and delete nothing.
+    async fn expire_rejects_a_keep_one_per_below_the_minimum() {
+        // Thinning competes with the version hint, whose protective floor is read once and
+        // can be lowered afterwards by a slow committer. Keeping survivors at least an
+        // hour apart keeps deletions away from that window, so finer widths are refused
+        // rather than quietly accepted.
         let uri = TempStrDir::default();
         let dataset = dataset_with_versions(&uri, 4).await;
+        let before = version_count(&dataset).await;
 
-        let result = expire_versions(
-            &dataset,
-            ExpireVersionsPolicyBuilder::default()
-                .before_version(dataset.manifest.version)
-                .keep_one_per(Duration::from_secs(0))
-                .build(),
-        )
-        .await;
+        for width in [
+            Duration::from_nanos(1),
+            Duration::from_secs(0),
+            MIN_KEEP_ONE_PER - Duration::from_secs(1),
+        ] {
+            let result = expire_versions(
+                &dataset,
+                ExpireVersionsPolicyBuilder::default()
+                    .before_version(dataset.manifest.version)
+                    .keep_one_per(width)
+                    .build(),
+            )
+            .await;
+            assert!(
+                result.is_err(),
+                "{:?} is below the minimum and must be refused",
+                width
+            );
+        }
+        assert_eq!(version_count(&dataset).await, before, "nothing was deleted");
 
-        assert!(result.is_err(), "a zero width must be rejected");
-        assert_eq!(version_count(&dataset).await, 4, "nothing was deleted");
-    }
-
-    #[tokio::test]
-    async fn expire_honors_a_subsecond_keep_one_per() {
-        // The width must reach the bucketing unrounded. Rounding a sub-second width up to
-        // a second would put every version in one bucket and delete all but one.
-        let uri = TempStrDir::default();
-        let dataset = dataset_with_versions(&uri, 4).await;
-
+        // Exactly the minimum is accepted.
         let plan = explain_expire_versions(
             &dataset,
             &ExpireVersionsPolicyBuilder::default()
                 .before_version(dataset.manifest.version)
-                .keep_one_per(Duration::from_nanos(1))
+                .keep_one_per(MIN_KEEP_ONE_PER)
                 .build(),
         )
-        .await
-        .unwrap();
-
-        // At a 1ns bucket no two manifests collide, so thinning saves all of them.
-        assert!(
-            plan.versions.is_empty(),
-            "a 1ns bucket must keep every version, got {:?}",
-            plan.versions
-        );
+        .await;
+        assert!(plan.is_ok(), "the minimum itself must be accepted");
     }
 
     #[tokio::test]

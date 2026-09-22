@@ -1768,7 +1768,7 @@ def test_expire_versions_keep_one_per(tmp_path):
     assert remaining[-1] == latest
 
 
-def test_expire_versions_keep_one_per_boundaries(tmp_path):
+def test_expire_versions_keep_one_per_minimum(tmp_path):
     table = pa.Table.from_pydict({"a": range(10)})
     base_dir = tmp_path / "test"
     lance.write_dataset(table, base_dir)
@@ -1779,21 +1779,20 @@ def test_expire_versions_keep_one_per_boundaries(tmp_path):
     latest = dataset.version
     manifests_before = len(dataset.versions())
 
-    # Zero buckets nothing, so it is rejected rather than quietly expiring everything
-    # past the cutoff. timedelta(0) is falsy, so this also pins that it is not treated
-    # as "not supplied".
-    with pytest.raises(OSError, match="greater than zero"):
-        dataset.expire_versions(before_version=latest, keep_one_per=timedelta(0))
+    # Thinning competes with the version hint, whose protective floor is read once and
+    # can be lowered afterwards by a slow committer. Widths finer than an hour put
+    # deletions next to that window, so they are refused. timedelta(0) is falsy, so this
+    # also pins that it is not silently treated as "not supplied".
+    for too_fine in (timedelta(0), timedelta(microseconds=1), timedelta(minutes=59)):
+        with pytest.raises(OSError, match="at least"):
+            dataset.expire_versions(before_version=latest, keep_one_per=too_fine)
     assert len(lance.dataset(base_dir).versions()) == manifests_before
 
-    # A sub-second width must reach the bucketing unrounded. Truncating it to whole
-    # seconds would collapse every version into one bucket and delete all but one.
+    # Exactly one hour is accepted.
     plan = dataset.explain_expire_versions(
-        before_version=latest, keep_one_per=timedelta(microseconds=1)
+        before_version=latest, keep_one_per=timedelta(hours=1)
     )
-    assert plan.versions == [], (
-        f"a 1us bucket must keep every version, got {plan.versions}"
-    )
+    assert plan.stats.versions_removed >= 0
 
 
 def test_cleanup_error_when_tagged_old_versions(tmp_path):

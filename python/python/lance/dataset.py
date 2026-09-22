@@ -3450,7 +3450,19 @@ class LanceDataset(pa.dataset.Dataset):
             each bucket of this width. ``timedelta(hours=1)`` keeps one per hour.
             Applies only beyond the cutoff, so ``before=timedelta(days=7)`` with
             ``keep_one_per=timedelta(hours=1)`` reads as "full history for a week,
-            hourly before that".
+            hourly before that". Must be at least one hour.
+
+            .. warning::
+                Thinning carries a rollback risk on an actively committing table.
+                Resolving the latest version starts at the version hint and probes
+                upward, stopping at the first version that is missing. Expiry refuses to
+                remove anything at or above the hint, but that floor is read once and
+                hint writes are unconditional, so a commit that started earlier can
+                publish a *lower* hint afterwards. A gap above that lowered hint hides
+                every version above it, and the table reads as an older state while the
+                newer manifests are still there. The one-hour minimum bounds the
+                exposure rather than removing it. Use thinning to repair a table that
+                has accumulated far more versions than it can carry, not as a default.
         error_if_tagged_old_versions: bool, default True
             Raise instead of silently keeping a tagged version the policy would expire.
         delete_rate_limit: int, optional

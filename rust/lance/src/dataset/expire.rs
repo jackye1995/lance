@@ -636,6 +636,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn expire_on_main_keeps_versions_a_branch_is_rooted_at() {
+        // A branch is anchored to a version of its parent. Expiring that version would
+        // orphan the branch's history, so it must survive even though the policy covers it.
+        let uri = TempStrDir::default();
+        let mut dataset = dataset_with_versions(&uri, 5).await;
+        let latest = dataset.manifest.version;
+        dataset.create_branch("feature", 2u64, None).await.unwrap();
+
+        let plan = explain_expire_versions(
+            &dataset,
+            &ExpireVersionsPolicyBuilder::default()
+                .before_version(latest)
+                .build(),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !plan.versions.contains(&2),
+            "the version the branch is rooted at must not be expired, got {:?}",
+            plan.versions
+        );
+    }
+
+    #[tokio::test]
+    async fn expire_on_a_branch_leaves_the_parent_alone() {
+        // `base` follows the checkout, so expiring on a branch must act on the branch's
+        // own manifests and leave the parent's history untouched.
+        let uri = TempStrDir::default();
+        let mut dataset = dataset_with_versions(&uri, 4).await;
+        let main_before = version_count(&dataset).await;
+
+        let branch = dataset.create_branch("feature", 4u64, None).await.unwrap();
+        assert_ne!(branch.base, dataset.base, "a branch has its own path");
+
+        let stats = expire_versions(
+            &branch,
+            ExpireVersionsPolicyBuilder::default()
+                .before_version(branch.manifest.version)
+                .build(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(stats.failed_deletes, 0);
+
+        // The parent still has every version it started with, and still opens.
+        assert_eq!(
+            version_count(&dataset).await,
+            main_before,
+            "expiring on a branch must not touch the parent"
+        );
+        assert!(Dataset::open(&uri).await.is_ok());
+    }
+
+    #[tokio::test]
     async fn expire_rejects_a_zero_keep_one_per() {
         // Zero buckets nothing, so accepting it would quietly expire everything past the
         // cutoff instead of thinning. Reject before planning, and delete nothing.

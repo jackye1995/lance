@@ -690,6 +690,103 @@ mod tests {
         assert!(Dataset::open(&uri).await.is_ok());
     }
 
+    /// Append one small batch to `dataset`, producing one new version.
+    async fn append_one(dataset: &mut Dataset) {
+        let schema = Arc::new(Schema::new(vec![Field::new("i", DataType::UInt32, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(UInt32Array::from_iter_values(0..3))],
+        )
+        .unwrap();
+        let reader = RecordBatchIterator::new(vec![batch].into_iter().map(Ok), schema);
+        dataset
+            .append(
+                reader,
+                Some(WriteParams {
+                    mode: crate::dataset::WriteMode::Append,
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn expire_on_a_branch_keeps_versions_its_own_child_is_rooted_at() {
+        // main -> b1 -> b2. Expiring on b1 has to respect b2, which is anchored to a
+        // version of b1 rather than of main, so the protection has to resolve against the
+        // branch being expired and not just against the root.
+        let uri = TempStrDir::default();
+        let mut main = dataset_with_versions(&uri, 3).await;
+
+        let mut b1 = main.create_branch("b1", 2u64, None).await.unwrap();
+        append_one(&mut b1).await;
+        append_one(&mut b1).await;
+        let b1_anchor = b1.manifest.version;
+        append_one(&mut b1).await;
+
+        // b2 hangs off b1 at the version b1 had after two appends.
+        let _b2 = b1.create_branch("b2", b1_anchor, None).await.unwrap();
+
+        let plan = explain_expire_versions(
+            &b1,
+            &ExpireVersionsPolicyBuilder::default()
+                .before_version(b1.manifest.version)
+                .build(),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !plan.versions.contains(&b1_anchor),
+            "b1@{} anchors b2 and must not be expired, got {:?}",
+            b1_anchor,
+            plan.versions
+        );
+    }
+
+    #[tokio::test]
+    async fn expire_on_a_grandchild_branch_leaves_its_ancestors_alone() {
+        // Expiring at the bottom of a chain must not disturb anything above it.
+        let uri = TempStrDir::default();
+        let mut main = dataset_with_versions(&uri, 3).await;
+        let main_before = version_count(&main).await;
+
+        let mut b1 = main.create_branch("b1", 2u64, None).await.unwrap();
+        append_one(&mut b1).await;
+        append_one(&mut b1).await;
+        let b1_before = version_count(&b1).await;
+
+        let mut b2 = b1
+            .create_branch("b2", b1.manifest.version, None)
+            .await
+            .unwrap();
+        append_one(&mut b2).await;
+        append_one(&mut b2).await;
+
+        let stats = expire_versions(
+            &b2,
+            ExpireVersionsPolicyBuilder::default()
+                .before_version(b2.manifest.version)
+                .build(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(stats.failed_deletes, 0);
+
+        assert_eq!(
+            version_count(&b1).await,
+            b1_before,
+            "expiring on b2 must not touch b1"
+        );
+        assert_eq!(
+            version_count(&main).await,
+            main_before,
+            "expiring on b2 must not touch main"
+        );
+        assert!(Dataset::open(&uri).await.is_ok());
+    }
+
     #[tokio::test]
     async fn expire_rejects_a_zero_keep_one_per() {
         // Zero buckets nothing, so accepting it would quietly expire everything past the

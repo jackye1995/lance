@@ -12,6 +12,8 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
+use lance_table::io::commit::read_version_from_hint;
+
 use super::Dataset;
 use crate::Result;
 
@@ -28,6 +30,15 @@ pub struct ProtectedVersions {
     pub tagged: HashSet<u64>,
     /// Versions a branch is rooted at. Removing one orphans that branch's history.
     pub branch_referenced: HashSet<u64>,
+    /// The version recorded in the version hint, when the dataset keeps one.
+    ///
+    /// Everything from here up must stay contiguous. Resolving the latest version starts at
+    /// the hint and probes upward one version at a time, stopping at the first that is
+    /// missing — so a hole above the hint does not merely lose that version, it hides every
+    /// version above it and the dataset reads as though it were rolled back. Deleting the
+    /// hinted version itself is survivable, since a miss there falls back to a full listing,
+    /// but there is nothing to gain by allowing it.
+    pub hint_floor: Option<u64>,
 }
 
 impl ProtectedVersions {
@@ -48,10 +59,13 @@ impl ProtectedVersions {
             .map(|(_name, version)| version)
             .collect();
 
+        let hint_floor = read_version_from_hint(&dataset.object_store, &dataset.base).await;
+
         Ok(Self {
             latest: dataset.manifest.version,
             tagged,
             branch_referenced,
+            hint_floor,
         })
     }
 
@@ -75,6 +89,7 @@ impl ProtectedVersions {
         version >= self.latest
             || self.tagged.contains(&version)
             || self.branch_referenced.contains(&version)
+            || self.hint_floor.is_some_and(|floor| version >= floor)
     }
 
     /// Protected versions that the policy would otherwise have expired, so a caller can
@@ -144,6 +159,7 @@ mod tests {
             latest: 100,
             tagged: HashSet::from([7]),
             branch_referenced: HashSet::from([42]),
+            hint_floor: None,
         };
 
         assert!(protected.contains(100), "the latest version is protected");
@@ -157,6 +173,41 @@ mod tests {
             "a branch-referenced version is protected"
         );
         assert!(!protected.contains(41), "an ordinary old version is not");
+    }
+
+    #[test]
+    fn protected_versions_treats_the_hint_as_a_floor() {
+        // Resolving the latest version probes upward from the hint and stops at the first
+        // gap, so a hole above the hint hides every version above it. Nothing at or above
+        // the hint may be removed.
+        let protected = ProtectedVersions {
+            latest: 100,
+            tagged: HashSet::new(),
+            branch_referenced: HashSet::new(),
+            hint_floor: Some(50),
+        };
+
+        assert!(
+            protected.contains(50),
+            "the hinted version itself is protected"
+        );
+        assert!(protected.contains(51), "and everything above it");
+        assert!(
+            protected.contains(99),
+            "including versions well below latest"
+        );
+        assert!(
+            !protected.contains(49),
+            "but not the versions below the hint"
+        );
+
+        // With no hint there is no probe to break, so the floor does not apply.
+        let no_hint = ProtectedVersions {
+            hint_floor: None,
+            ..protected
+        };
+        assert!(!no_hint.contains(50));
+        assert!(!no_hint.contains(99));
     }
 
     #[test]

@@ -605,6 +605,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn expire_will_not_delete_at_or_above_the_version_hint() {
+        // Resolving the latest version starts at the hint and probes upward, stopping at
+        // the first version that is missing. A hole above the hint therefore hides every
+        // version above it and the dataset reads as rolled back, so nothing from the hint
+        // up may be expired even when the policy asks for it.
+        let uri = TempStrDir::default();
+        let dataset = dataset_with_versions(&uri, 5).await;
+        let latest = dataset.manifest.version;
+
+        // Pin the hint below the latest so the guard has something to protect that the
+        // ordinary "never remove the latest" rule would not already cover.
+        lance_table::io::commit::write_version_hint(&dataset.object_store, &dataset.base, 3).await;
+
+        let plan = explain_expire_versions(
+            &dataset,
+            &ExpireVersionsPolicyBuilder::default()
+                .before_version(latest)
+                .build(),
+        )
+        .await
+        .unwrap();
+
+        // Only 1 and 2 are expirable: 3 is the hint, 4 is above it, 5 is latest.
+        assert_eq!(
+            plan.versions,
+            vec![1, 2],
+            "nothing at or above the hint may be expired"
+        );
+    }
+
+    #[tokio::test]
     async fn expire_rejects_a_zero_keep_one_per() {
         // Zero buckets nothing, so accepting it would quietly expire everything past the
         // cutoff instead of thinning. Reject before planning, and delete nothing.

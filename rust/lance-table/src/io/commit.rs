@@ -385,7 +385,11 @@ pub async fn write_version_hint(object_store: &ObjectStore, base: &Path, version
 
 /// Read the latest version from the hint file, or `None` if it does not exist
 /// or cannot be parsed.
-async fn read_version_from_hint(object_store: &ObjectStore, base: &Path) -> Option<u64> {
+///
+/// Callers that remove manifests need this: the hint anchors an upward probe that stops at
+/// the first missing version, so a manifest deleted at or above the hint can hide every
+/// version above it and make the dataset look rolled back.
+pub async fn read_version_from_hint(object_store: &ObjectStore, base: &Path) -> Option<u64> {
     let bytes = object_store
         .inner
         .get(&version_hint_path(base))

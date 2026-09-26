@@ -123,6 +123,7 @@ tracing-chrome = "0.7.1"
 rstest = { workspace = true }
 serial_test = { workspace = true }
 tracking-allocator = { version = "0.4", features = ["tracing-compat"] }
+tantivy = "0.22"
 # For S3 / DynamoDB tests
 aws-config = { workspace = true }
 aws-credential-types = { workspace = true }
@@ -303,6 +304,11 @@ harness = false
 [[bench]]
 name = "mem_wal_fts_read_bench"
 path = "benches/mem_wal/fts/mem_wal_fts_read_bench.rs"
+harness = false
+
+[[bench]]
+name = "public_fts_bench"
+path = "benches/mem_wal/fts/public_fts_bench.rs"
 harness = false
 
 # Lance arm of the KV comparison. RocksDB and SlateDB live in the isolated

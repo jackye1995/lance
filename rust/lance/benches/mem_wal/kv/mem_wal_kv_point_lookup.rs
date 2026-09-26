@@ -40,7 +40,8 @@ use datafusion::common::ScalarValue;
 use datafusion::prelude::SessionContext;
 use futures::TryStreamExt;
 use lance::dataset::mem_wal::scanner::{
-    InMemoryMemTableRef, LsmDataSourceCollector, LsmPointLookupPlanner, ShardSnapshot, SsTableCache,
+    DatasetCache, InMemoryMemTableRef, LsmDataSourceCollector, LsmPointLookupPlanner,
+    ShardSnapshot, SsTableCache,
 };
 use lance::dataset::mem_wal::{DatasetMemWalExt, ShardWriterConfig};
 use lance::dataset::{Dataset, WriteParams};
@@ -149,14 +150,14 @@ fn fast_lookup(active: &InMemoryMemTableRef, key: i64, key_type: KeyType) -> Opt
     use arrow_array::Array;
 
     let btree = active.index_store.get_btree_by_column(KEY_COL)?;
-    let max_vbp = active.index_store.max_visible_batch_position();
+    let visible_count = active.index_store.visible_count();
 
     // Highest visible row (exclusive end) across batches whose position is
     // within the watermark. Batch position == iteration index for a
     // never-flushed store.
     let mut visible_end: u64 = 0;
     for (bp, sb) in active.batch_store.iter().enumerate() {
-        if bp <= max_vbp {
+        if bp < visible_count {
             visible_end += sb.num_rows as u64;
         } else {
             break;
@@ -203,8 +204,11 @@ fn fast_lookup_batch(active: &InMemoryMemTableRef, keys: &[i64], key_type: KeyTy
     if len == 0 {
         return RecordBatch::new_empty(schema);
     }
-    let max_vbp = active.index_store.max_visible_batch_position();
-    let last_visible_idx = max_vbp.min(len - 1);
+    let visible_count = active.index_store.visible_count();
+    if visible_count == 0 {
+        return RecordBatch::new_empty(schema);
+    }
+    let last_visible_idx = visible_count.saturating_sub(1).min(len - 1);
     let last = active.batch_store.get(last_visible_idx).unwrap();
     let visible_end = last.row_offset + last.num_rows as u64;
 
@@ -381,11 +385,21 @@ impl EngineResult {
     fn to_json(&self, args: &Args) -> serde_json::Value {
         json!({
             "engine": self.engine,
+            "engine_version": env!("CARGO_PKG_VERSION"),
+            "source_revision": std::env::var("BENCH_SOURCE_REVISION").ok(),
+            "host_type": std::env::var("BENCH_HOST_TYPE").ok(),
+            "campaign_id": std::env::var("BENCH_CAMPAIGN_ID").ok(),
+            "phase": std::env::var("BENCH_PHASE").ok(),
+            "storage": args.storage.as_str(),
+            "key_type": args.key_type.as_str(),
             "rows": args.rows,
             "value_size": args.value_size,
             "queries": args.queries,
             "miss_ratio": args.miss_ratio,
             "threads": args.threads,
+            "batch_rows": args.batch_rows,
+            "warmup_rounds": args.warmup_rounds,
+            "seed": args.seed,
             "write_rows_per_s": self.write_rows_per_s as u64,
             "write_cpu_s": format!("{:.3}", self.write_cpu_s),
             "read_p50_us": (self.read_p50_us * 1000.0).round() / 1000.0,
@@ -412,6 +426,7 @@ impl EngineResult {
 // ----------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 enum Engine {
     Lance,
     Rocksdb,
@@ -565,6 +580,7 @@ struct Args {
     batch_get: usize,
     uri: String,
     seed: u64,
+    #[allow(dead_code)]
     rocksdb_disable_wal: bool,
     /// Cold-storage mode: assume the dataset is larger than RAM so reads miss
     /// the caches and hit NVMe. Caps the RocksDB write buffer + uses a small
@@ -793,7 +809,7 @@ async fn run_lance(
         max_memtable_size: big,
         max_memtable_rows: args.rows * 4 + 1_000_000,
         max_memtable_batches: args.rows / args.batch_rows + 1_000_000,
-        max_unflushed_memtable_bytes: big,
+        max_unflushed_memtable_bytes: big.saturating_mul(2),
         max_wal_flush_interval: Some(Duration::from_millis(100)),
         ..ShardWriterConfig::default()
     };
@@ -915,7 +931,7 @@ async fn run_lance(
     // query (the equivalent of RocksDB keeping its DB + SSTs resident). Without
     // this, each plan-path lookup pays a fresh manifest read + Dataset open — a
     // fixed per-lookup cost independent of generation count.
-    let sstable_cache = Arc::new(SsTableCache::new((gens as u64).max(1)));
+    let sstable_cache: Arc<dyn DatasetCache> = Arc::new(SsTableCache::new((gens as u64).max(1)));
     if args.prewarm {
         dataset
             .prewarm_mem_wal(std::slice::from_ref(&shard_snapshot), Some(&sstable_cache))
@@ -1449,7 +1465,7 @@ async fn run_lance_sstable(
         let uuid = indices
             .iter()
             .find(|i| i.name == BTREE_INDEX_NAME)
-            .map(|i| i.uuid.to_string())
+            .map(|i| i.uuid)
             .ok_or_else(|| lance_core::Error::internal("sstable: btree index not found"))?;
         dataset
             .open_scalar_index(KEY_COL, &uuid, &NoOpMetricsCollector)

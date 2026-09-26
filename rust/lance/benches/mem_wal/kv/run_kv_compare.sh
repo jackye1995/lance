@@ -21,12 +21,16 @@ CONFIG_TIMEOUT="${CONFIG_TIMEOUT:-3600}"
 WORK="${WORK:-${TMPDIR:-/tmp}/kv_compare/$RUN_ID}"
 BASE_URI="${BASE_URI:-$WORK/data}"
 RESULT_DIR="${RESULT_DIR:-$REPO_ROOT/target/kv-compare-results/$RUN_ID}"
+SOURCE_REVISION="$(git rev-parse HEAD)"
+BENCH_HOST_TYPE="${BENCH_HOST_TYPE:-unknown}"
 
 if [[ "$BASE_URI" == s3://* ]]; then
     WARMUP_ROUNDS="${WARMUP_ROUNDS:-1}"
+    PREWARM_REPETITIONS="${PREWARM_REPETITIONS:-1}"
     REPETITIONS="${REPETITIONS:-3}"
 else
     WARMUP_ROUNDS="${WARMUP_ROUNDS:-0}"
+    PREWARM_REPETITIONS="${PREWARM_REPETITIONS:-0}"
     REPETITIONS="${REPETITIONS:-1}"
 fi
 
@@ -40,8 +44,7 @@ cargo bench -p lance --bench "$BENCH" --no-run || {
     exit 1
 }
 LANCE_BIN="$(find "$REPO_ROOT/target/release/deps" -maxdepth 1 -type f -perm -111 \
-    -name "${BENCH}-*" ! -name '*.d' -printf '%T@ %p\n' \
-    | sort -nr | head -1 | cut -d' ' -f2-)"
+    -name "${BENCH}-*" ! -name '*.d' | head -1)"
 
 REFERENCE_MANIFEST="$SCRIPT_DIR/reference/Cargo.toml"
 REFERENCE_TARGET="$REPO_ROOT/target/kv-reference"
@@ -58,16 +61,32 @@ echo "base uri: $BASE_URI"
 echo "sizes: $SIZES"
 echo "engines: $ENGINES"
 echo "storages: $STORAGES"
+echo "discarded prewarm repetitions: $PREWARM_REPETITIONS"
 echo "repetitions: $REPETITIONS"
 echo "read prewarm rounds: $WARMUP_ROUNDS"
+echo "source revision: $SOURCE_REVISION"
+echo "host type: $BENCH_HOST_TYPE"
+
+TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
 
 run_engine() {
-    local engine="$1" storage="$2" key_type="$3" rows="$4" tag="$5" repetition="$6"
-    local name="${engine}_${storage}_${key_type}_${tag}_r${repetition}"
-    local output="$RESULT_DIR/${name}.json"
-    local log="$RESULT_DIR/${name}.log"
-    local uri="${BASE_URI%/}/${RUN_ID}/${name}"
+    local engine="$1" storage="$2" key_type="$3" rows="$4" tag="$5" repetition="$6" phase="$7"
+    local case_name="${engine}_${storage}_${key_type}_${tag}"
+    local name output log uri
     local -a command
+
+    if [[ "$phase" == prewarm ]]; then
+        name="${case_name}_prewarm${repetition}"
+        output="$WORK/prewarm-results/$RUN_ID/${name}.json"
+        log="$WORK/prewarm-results/$RUN_ID/${name}.log"
+        uri="${BASE_URI%/}/${RUN_ID}/prewarm/${name}"
+    else
+        name="${case_name}_r${repetition}"
+        output="$RESULT_DIR/${name}.json"
+        log="$RESULT_DIR/${name}.log"
+        uri="${BASE_URI%/}/${RUN_ID}/measured/${name}"
+    fi
+    mkdir -p "$(dirname "$output")"
 
     if [[ -f "$output" ]]; then
         echo ">>> $name already completed"
@@ -101,7 +120,19 @@ run_engine() {
     if [[ "$uri" != s3://* ]]; then
         rm -rf "$uri"
     fi
-    timeout "$CONFIG_TIMEOUT" "${command[@]}" >"$log" 2>&1
+    if [[ -n "$TIMEOUT_BIN" ]]; then
+        BENCH_SOURCE_REVISION="$SOURCE_REVISION" \
+            BENCH_HOST_TYPE="$BENCH_HOST_TYPE" \
+            BENCH_CAMPAIGN_ID="$RUN_ID" \
+            BENCH_PHASE="$phase" \
+            "$TIMEOUT_BIN" "$CONFIG_TIMEOUT" "${command[@]}" >"$log" 2>&1
+    else
+        BENCH_SOURCE_REVISION="$SOURCE_REVISION" \
+            BENCH_HOST_TYPE="$BENCH_HOST_TYPE" \
+            BENCH_CAMPAIGN_ID="$RUN_ID" \
+            BENCH_PHASE="$phase" \
+            "${command[@]}" >"$log" 2>&1
+    fi
     local result=$?
     if [[ "$uri" != s3://* ]]; then
         rm -rf "$uri"
@@ -127,9 +158,15 @@ for rows in $SIZES; do
     esac
     for storage in $STORAGES; do
         for key_type in $KEY_TYPES; do
+            for prewarm in $(seq 1 "$PREWARM_REPETITIONS"); do
+                for engine in $ENGINES; do
+                    run_engine "$engine" "$storage" "$key_type" "$rows" "$tag" "$prewarm" prewarm \
+                        || failures=$((failures + 1))
+                done
+            done
             for repetition in $(seq 1 "$REPETITIONS"); do
                 for engine in $ENGINES; do
-                    run_engine "$engine" "$storage" "$key_type" "$rows" "$tag" "$repetition" \
+                    run_engine "$engine" "$storage" "$key_type" "$rows" "$tag" "$repetition" measured \
                         || failures=$((failures + 1))
                 done
             done

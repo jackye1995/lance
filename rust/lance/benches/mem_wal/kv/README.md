@@ -33,7 +33,7 @@ STORAGES="active flushed" \
 rust/lance/benches/mem_wal/kv/run_kv_compare.sh RUN_ID
 ```
 
-An S3 run defaults to one full read prewarm round and three measured repetitions. The prewarm queries are not included in the read metrics. Each engine, storage mode, size, and repetition gets a distinct object prefix.
+An S3 run defaults to one full discarded benchmark repetition before three measured repetitions. Each measured process also runs one discarded read sweep before it records read latency. Each engine, storage mode, size, phase, and repetition gets a distinct object prefix.
 
 The runner does not delete S3 objects. This preserves failed runs and raw inputs for diagnosis. Remove the dedicated experiment bucket only after the result bundle has been downloaded and reviewed.
 
@@ -49,6 +49,7 @@ The runner does not delete S3 objects. This preserves failed runs and raw inputs
 - `ENGINES` selects `lance`, `rocksdb`, or `slatedb`.
 - `STORAGES` selects `active`, `flushed`, or both.
 - `WARMUP_ROUNDS` sets discarded read passes.
+- `PREWARM_REPETITIONS` sets full discarded benchmark repetitions.
 - `REPETITIONS` sets measured repetitions.
 - `BASE_URI` sets a local path or S3 prefix.
 - `RESULT_DIR` sets the raw result directory.

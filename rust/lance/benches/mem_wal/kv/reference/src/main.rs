@@ -373,8 +373,17 @@ struct EngineResult {
 
 impl EngineResult {
     fn to_json(&self, args: &Args) -> serde_json::Value {
+        let engine_version = match args.engine {
+            Engine::RocksDb => "rocksdb crate 0.23.0, librocksdb 10.4.2",
+            Engine::SlateDb => "0.16.0",
+        };
         json!({
             "engine": self.engine,
+            "engine_version": engine_version,
+            "source_revision": std::env::var("BENCH_SOURCE_REVISION").ok(),
+            "host_type": std::env::var("BENCH_HOST_TYPE").ok(),
+            "campaign_id": std::env::var("BENCH_CAMPAIGN_ID").ok(),
+            "phase": std::env::var("BENCH_PHASE").ok(),
             "storage": args.storage.as_str(),
             "key_type": args.key_type.as_str(),
             "rows": args.rows,
@@ -382,7 +391,9 @@ impl EngineResult {
             "queries": args.queries,
             "miss_ratio": args.miss_ratio,
             "threads": args.threads,
+            "batch_rows": args.batch_rows,
             "warmup_rounds": args.warmup_rounds,
+            "seed": args.seed,
             "write_rows_per_s": self.write_rows_per_s as u64,
             "write_accepted_rows_per_s": self.write_accepted_rows_per_s.map(|value| value as u64),
             "wal_durable_rows_per_s": self.wal_durable_rows_per_s.map(|value| value as u64),

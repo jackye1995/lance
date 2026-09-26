@@ -128,12 +128,15 @@ def checked_id(value: Any, label: str) -> str:
     return value
 
 
+def md5_digest() -> Any:
+    try:
+        return hashlib.md5(usedforsecurity=False)
+    except TypeError:
+        return hashlib.md5()  # noqa: S324 -- verifies the publisher's legacy MD5
+
+
 def digest_file(path: Path, algorithm: str) -> str:
-    digest = (
-        hashlib.md5(usedforsecurity=False)
-        if algorithm == "md5"
-        else hashlib.new(algorithm)
-    )
+    digest = md5_digest() if algorithm == "md5" else hashlib.new(algorithm)
     with path.open("rb") as source:
         for block in iter(lambda: source.read(8 * 1024 * 1024), b""):
             digest.update(block)
@@ -197,7 +200,7 @@ def download_beir_archive(dataset: str, spec: BeirSpec, cache_dir: Path) -> Path
     url = f"{BEIR_BASE_URL}/{dataset}.zip"
     temporary = cache_dir / f".{dataset}.{os.getpid()}.part"
     temporary.unlink(missing_ok=True)
-    md5 = hashlib.md5(usedforsecurity=False)
+    md5 = md5_digest()
     try:
         request = urllib.request.Request(
             url, headers={"User-Agent": "lance-mem-wal-public-fts/1"}

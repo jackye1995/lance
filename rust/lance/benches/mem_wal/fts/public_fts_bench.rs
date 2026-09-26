@@ -183,7 +183,8 @@ fn read_queries(path: &FsPath) -> AnyResult<Vec<InputQuery>> {
 }
 
 fn percentile(sorted: &[f64], pct: f64) -> f64 {
-    let index = ((pct / 100.0) * (sorted.len() - 1) as f64).round() as usize;
+    let rank = ((pct / 100.0) * sorted.len() as f64).ceil() as usize;
+    let index = rank.saturating_sub(1);
     sorted[index.min(sorted.len() - 1)]
 }
 
@@ -474,6 +475,19 @@ fn tantivy_search(
     Ok(rows)
 }
 
+fn tantivy_search_count(
+    index: &Index,
+    searcher: &tantivy::Searcher,
+    text_field: Field,
+    text: &str,
+    k: usize,
+) -> AnyResult<usize> {
+    let query = tantivy_query(index, text_field, text);
+    Ok(searcher
+        .search(query.as_ref(), &TopDocs::with_limit(k))?
+        .len())
+}
+
 fn run_tantivy(args: &Args, queries: &[InputQuery]) -> AnyResult<serde_json::Value> {
     ensure_empty_index_dir(&args.index_dir)?;
     rayon::ThreadPoolBuilder::new()
@@ -498,7 +512,7 @@ fn run_tantivy(args: &Args, queries: &[InputQuery]) -> AnyResult<serde_json::Val
 
     for _ in 0..args.warmup_rounds {
         for query in queries {
-            tantivy_search(&index, &searcher, id_field, text_field, &query.text, args.k)?;
+            tantivy_search_count(&index, &searcher, text_field, &query.text, args.k)?;
         }
     }
 
@@ -508,13 +522,13 @@ fn run_tantivy(args: &Args, queries: &[InputQuery]) -> AnyResult<serde_json::Val
         let mut latencies = Vec::with_capacity(queries.len());
         for query in queries {
             let query_started = Instant::now();
-            tantivy_search(&index, &searcher, id_field, text_field, &query.text, args.k)?;
+            tantivy_search_count(&index, &searcher, text_field, &query.text, args.k)?;
             latencies.push(query_started.elapsed().as_secs_f64() * 1.0e6);
         }
         let elapsed = started.elapsed().as_secs_f64();
         let parallel_started = Instant::now();
         queries.par_iter().try_for_each(|query| {
-            tantivy_search(&index, &searcher, id_field, text_field, &query.text, args.k).map(|_| ())
+            tantivy_search_count(&index, &searcher, text_field, &query.text, args.k).map(|_| ())
         })?;
         let qps_nt = queries.len() as f64 / parallel_started.elapsed().as_secs_f64();
         measured.push(summarize(repetition, latencies, elapsed, qps_nt));

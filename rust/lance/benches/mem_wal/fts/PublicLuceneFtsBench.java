@@ -24,9 +24,11 @@ import org.apache.lucene.analysis.TokenStream;
 import org.apache.lucene.analysis.core.WhitespaceAnalyzer;
 import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 import org.apache.lucene.document.Document;
+import org.apache.lucene.document.Field;
+import org.apache.lucene.document.FieldType;
 import org.apache.lucene.document.StoredField;
-import org.apache.lucene.document.TextField;
 import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.IndexOptions;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.StoredFields;
@@ -147,7 +149,8 @@ public class PublicLuceneFtsBench {
     return builder.build();
   }
 
-  private static long buildIndex(Path corpus, Directory directory, Analyzer analyzer)
+  private static long buildIndex(
+      Path corpus, Directory directory, Analyzer analyzer, FieldType textFieldType)
       throws IOException {
     IndexWriterConfig config = new IndexWriterConfig(analyzer);
     config.setOpenMode(IndexWriterConfig.OpenMode.CREATE);
@@ -159,7 +162,7 @@ public class PublicLuceneFtsBench {
       while ((line = reader.readLine()) != null) {
         Document document = new Document();
         document.add(new StoredField(ID_FIELD, documentCount));
-        document.add(new TextField(TEXT_FIELD, line, TextField.Store.NO));
+        document.add(new Field(TEXT_FIELD, line, textFieldType));
         writer.addDocument(document);
         documentCount++;
       }
@@ -322,10 +325,15 @@ public class PublicLuceneFtsBench {
 
     Files.createDirectories(indexPath);
     List<InputQuery> queries = readQueries(queriesPath);
+    FieldType textFieldType = new FieldType();
+    textFieldType.setTokenized(true);
+    textFieldType.setOmitNorms(false);
+    textFieldType.setIndexOptions(IndexOptions.DOCS_AND_FREQS);
+    textFieldType.freeze();
     try (Analyzer analyzer = new WhitespaceAnalyzer();
         Directory directory = FSDirectory.open(indexPath)) {
       long buildStarted = System.nanoTime();
-      long documents = buildIndex(corpus, directory, analyzer);
+      long documents = buildIndex(corpus, directory, analyzer, textFieldType);
       double buildSeconds = (System.nanoTime() - buildStarted) / 1.0e9;
       long bytes = indexBytes(directory);
 

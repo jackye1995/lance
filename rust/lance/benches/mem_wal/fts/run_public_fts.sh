@@ -7,7 +7,7 @@
 #   PUBLIC_FTS_BIN  public_fts_bench executable (or set both runner variables)
 #
 # Optional environment:
-#   WORK_DIR        local persistent work area (default: /tmp/public-fts/<run-id>)
+#   WORK_DIR        local NVMe work area (default: /mnt/nvme/public-fts/<run-id>)
 #   RESULTS_DIR     result directory (default: <repo>/target/public-fts-results/<run-id>)
 #   LANCE_RUNNER    Lance runner executable (defaults to PUBLIC_FTS_BIN)
 #   TANTIVY_RUNNER  Tantivy runner executable (defaults to PUBLIC_FTS_BIN)
@@ -18,6 +18,7 @@
 #   K               timed-query top-k (default: 10)
 #   QUALITY_K       quality ranking depth (default: 1000)
 #   BATCH_ROWS      Rust runner input batch size (default: 8192)
+#   ENGINE_ORDER    space-separated permutation of lance tantivy lucene
 #
 # Each engine builds a separate index, performs one complete discarded query
 # round, and records three measured rounds.  Existing index directories cause
@@ -38,7 +39,14 @@ TANTIVY_RUNNER="${TANTIVY_RUNNER:-$PUBLIC_FTS_BIN}"
 : "${LANCE_RUNNER:?set PUBLIC_FTS_BIN or LANCE_RUNNER}"
 : "${TANTIVY_RUNNER:?set PUBLIC_FTS_BIN or TANTIVY_RUNNER}"
 
-WORK_DIR="${WORK_DIR:-${TMPDIR:-/tmp}/public-fts/$RUN_ID}"
+if [[ -z "${WORK_DIR:-}" ]]; then
+    if mountpoint -q /mnt/nvme; then
+        WORK_DIR="/mnt/nvme/public-fts/$RUN_ID"
+    else
+        echo "ERROR: set WORK_DIR to a local-NVMe path; /mnt/nvme is not mounted" >&2
+        exit 1
+    fi
+fi
 RESULTS_DIR="${RESULTS_DIR:-$REPO_ROOT/target/public-fts-results/$RUN_ID}"
 JAVA_BIN="${JAVA_BIN:-java}"
 JAVAC_BIN="${JAVAC_BIN:-javac}"
@@ -49,6 +57,13 @@ THREADS="${THREADS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)}"
 K="${K:-10}"
 QUALITY_K="${QUALITY_K:-1000}"
 BATCH_ROWS="${BATCH_ROWS:-8192}"
+ENGINE_ORDER="${ENGINE_ORDER:-lance tantivy lucene}"
+read -r -a ENGINE_SEQUENCE <<< "$ENGINE_ORDER"
+if [[ "$(printf '%s\n' "${ENGINE_SEQUENCE[@]}" | sort | tr '\n' ' ')" != \
+      "lance lucene tantivy " ]]; then
+    echo "ERROR: ENGINE_ORDER must contain lance, tantivy, and lucene exactly once" >&2
+    exit 1
+fi
 
 CORPUS="$DATASET_DIR/corpus.txt"
 DOCIDS="$DATASET_DIR/docids.txt"
@@ -57,7 +72,8 @@ QRELS="$DATASET_DIR/qrels.tsv"
 DATASET_MANIFEST="$DATASET_DIR/manifest.json"
 EVALUATOR="$SCRIPT_DIR/evaluate_public_fts.py"
 
-for required in "$CORPUS" "$DOCIDS" "$QUERIES" "$EVALUATOR" "$LUCENE_SOURCE"; do
+for required in "$CORPUS" "$DOCIDS" "$QUERIES" "$DATASET_MANIFEST" \
+                "$EVALUATOR" "$LUCENE_SOURCE"; do
     if [[ ! -f "$required" ]]; then
         echo "ERROR: required file not found: $required" >&2
         exit 1
@@ -99,11 +115,41 @@ mkdir -p "$INDEX_ROOT/lance" "$INDEX_ROOT/tantivy" "$INDEX_ROOT/lucene" \
     "$LUCENE_CLASS_DIR"
 
 validate_inputs() {
-    "$PYTHON_BIN" - "$CORPUS" "$DOCIDS" "$QUERIES" "$QRELS" <<'PY'
+    "$PYTHON_BIN" - "$CORPUS" "$DOCIDS" "$QUERIES" "$QRELS" \
+        "$DATASET_MANIFEST" <<'PY'
+import hashlib
+import json
 import sys
 from pathlib import Path
 
-corpus_path, docids_path, queries_path, qrels_path = map(Path, sys.argv[1:])
+corpus_path, docids_path, queries_path, qrels_path, manifest_path = map(
+    Path, sys.argv[1:]
+)
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+if manifest.get("status") != "complete" or not isinstance(manifest.get("request"), dict):
+    raise SystemExit("dataset manifest is not a complete pinned preparation manifest")
+recorded_files = manifest.get("files")
+if not isinstance(recorded_files, dict):
+    raise SystemExit("dataset manifest has no file metadata")
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+for path in (corpus_path, docids_path, queries_path, qrels_path):
+    if not path.is_file():
+        if path == qrels_path and path.name not in recorded_files:
+            continue
+        raise SystemExit(f"manifest input is missing: {path}")
+    recorded = recorded_files.get(path.name)
+    if not isinstance(recorded, dict):
+        raise SystemExit(f"manifest has no metadata for {path.name}")
+    if path.stat().st_size != recorded.get("bytes") or sha256(path) != recorded.get("sha256"):
+        raise SystemExit(f"manifest hash/size mismatch for {path.name}")
+
 with corpus_path.open(encoding="utf-8") as source:
     corpus_count = sum(1 for _ in source)
 with docids_path.open(encoding="utf-8") as source:
@@ -114,6 +160,8 @@ if corpus_count == 0 or corpus_count != len(docids):
     )
 if any(not docid for docid in docids) or len(set(docids)) != len(docids):
     raise SystemExit("docids.txt contains an empty or duplicate document ID")
+if manifest.get("counts", {}).get("corpus") != corpus_count:
+    raise SystemExit("manifest corpus count does not match corpus.txt")
 
 qids = []
 with queries_path.open(encoding="utf-8") as source:
@@ -126,9 +174,12 @@ with queries_path.open(encoding="utf-8") as source:
         qids.append(fields[0])
 if not qids or len(set(qids)) != len(qids):
     raise SystemExit("queries.tsv has no queries or contains duplicate query IDs")
+if manifest.get("counts", {}).get("queries") != len(qids):
+    raise SystemExit("manifest query count does not match queries.tsv")
 
 if qrels_path.is_file() and qrels_path.stat().st_size:
     qrel_qids = set()
+    qrel_count = 0
     with qrels_path.open(encoding="utf-8") as source:
         for line_number, raw in enumerate(source, 1):
             fields = raw.rstrip("\r\n").split("\t")
@@ -137,8 +188,11 @@ if qrels_path.is_file() and qrels_path.stat().st_size:
                     f"{qrels_path}:{line_number}: expected qid<TAB>docid<TAB>relevance"
                 )
             qrel_qids.add(fields[0])
+            qrel_count += 1
     if qrel_qids != set(qids):
         raise SystemExit("queries.tsv and qrels.tsv query ID sets differ")
+    if manifest.get("counts", {}).get("qrels") != qrel_count:
+        raise SystemExit("manifest qrel count does not match qrels.tsv")
 PY
 }
 
@@ -301,12 +355,63 @@ evaluate_quality() {
     done
 }
 
+evaluate_overlap() {
+    local output="$RESULTS_DIR/overlap.json"
+    if [[ -e "$output" ]]; then
+        echo "ERROR: refusing to overwrite overlap output: $output" >&2
+        exit 1
+    fi
+    "$PYTHON_BIN" - "$K" "$RESULTS_DIR" > "$output" <<'PY'
+import json
+import sys
+from itertools import combinations
+from pathlib import Path
+
+k = int(sys.argv[1])
+results_dir = Path(sys.argv[2])
+
+def rankings(engine):
+    values = {}
+    with (results_dir / f"{engine}.topk.tsv").open(encoding="utf-8") as source:
+        for raw in source:
+            qid, rows = raw.rstrip("\r\n").split("\t", 1)
+            values[qid] = rows.split()[:k]
+    return values
+
+all_rankings = {engine: rankings(engine) for engine in ("lance", "tantivy", "lucene")}
+pairs = {}
+for left, right in combinations(all_rankings, 2):
+    left_values = all_rankings[left]
+    right_values = all_rankings[right]
+    if list(left_values) != list(right_values):
+        raise SystemExit(f"query order mismatch for {left} and {right}")
+    overlap = []
+    jaccard = []
+    exact = 0
+    for qid in left_values:
+        left_rows = left_values[qid]
+        right_rows = right_values[qid]
+        left_set = set(left_rows)
+        right_set = set(right_rows)
+        intersection = len(left_set & right_set)
+        overlap.append(intersection / max(min(len(left_rows), len(right_rows), k), 1))
+        jaccard.append(intersection / max(len(left_set | right_set), 1))
+        exact += left_rows == right_rows
+    pairs[f"{left}_vs_{right}"] = {
+        "exact_order_fraction": exact / len(left_values),
+        "mean_jaccard_at_k": sum(jaccard) / len(jaccard),
+        "mean_overlap_at_k": sum(overlap) / len(overlap),
+    }
+print(json.dumps({"k": k, "pairs": pairs, "query_count": len(next(iter(all_rankings.values())))}, sort_keys=True))
+PY
+}
+
 write_manifest() {
     local status="$1"
     "$PYTHON_BIN" - "$status" "$REPO_ROOT" "$DATASET_DIR" "$WORK_DIR" \
         "$RESULTS_DIR" "$LANCE_RUNNER" "$TANTIVY_RUNNER" "$LUCENE_CP" \
         "$JAVA_BIN" "$JAVAC_BIN" "$TIME_BIN" "$THREADS" "$K" "$QUALITY_K" \
-        "$BATCH_ROWS" "$DATASET_MANIFEST" <<'PY'
+        "$BATCH_ROWS" "$ENGINE_ORDER" "$DATASET_MANIFEST" <<'PY'
 import hashlib
 import json
 import os
@@ -314,6 +419,8 @@ import platform
 import socket
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -333,6 +440,7 @@ from pathlib import Path
     k,
     quality_k,
     batch_rows,
+    engine_order,
     dataset_manifest_text,
 ) = sys.argv[1:]
 repo_root = Path(repo_root_text)
@@ -384,6 +492,39 @@ def memory_bytes():
         pass
     return None
 
+def imds(path):
+    try:
+        token_request = urllib.request.Request(
+            "http://169.254.169.254/latest/api/token",
+            data=b"",
+            method="PUT",
+            headers={"X-aws-ec2-metadata-token-ttl-seconds": "60"},
+        )
+        with urllib.request.urlopen(token_request, timeout=1) as response:
+            token = response.read().decode()
+        request = urllib.request.Request(
+            f"http://169.254.169.254/latest/meta-data/{path}",
+            headers={"X-aws-ec2-metadata-token": token},
+        )
+        with urllib.request.urlopen(request, timeout=1) as response:
+            return response.read().decode()
+    except (OSError, urllib.error.URLError):
+        return None
+
+def command_json(command):
+    try:
+        result = subprocess.run(
+            command,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=15,
+        )
+        return json.loads(result.stdout) if result.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        return None
+
 input_files = {}
 for name in ("corpus.txt", "docids.txt", "queries.tsv", "qrels.tsv", "manifest.json"):
     details = digest(dataset_dir / name)
@@ -416,6 +557,21 @@ if dataset_manifest.is_file():
     except (OSError, json.JSONDecodeError):
         dataset_metadata = None
 
+execution = {}
+for engine in ("lance", "tantivy", "lucene"):
+    result_path = results_dir / f"{engine}.json"
+    if result_path.is_file():
+        try:
+            value = json.loads(result_path.read_text(encoding="utf-8"))
+            execution[engine] = {
+                "warmup_rounds_completed": value.get("warmup_rounds"),
+                "measured_repetitions": [
+                    run.get("repetition") for run in value.get("runs", [])
+                ],
+            }
+        except (OSError, json.JSONDecodeError):
+            execution[engine] = None
+
 manifest = {
     "status": status,
     "written_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -430,6 +586,19 @@ manifest = {
         "processor": platform.processor(),
         "logical_cpus": os.cpu_count(),
         "memory_bytes": memory_bytes(),
+        "aws": {
+            "instance_id": imds("instance-id"),
+            "instance_type": imds("instance-type"),
+            "ami_id": imds("ami-id"),
+            "region": imds("placement/region"),
+            "availability_zone": imds("placement/availability-zone"),
+        },
+        "block_devices": command_json(
+            ["lsblk", "--json", "--bytes", "--output", "NAME,SIZE,TYPE,MOUNTPOINT,MODEL"]
+        ),
+        "work_filesystem": command_json(
+            ["findmnt", "--json", "--target", str(work_dir)]
+        ),
     },
     "configuration": {
         "dataset_dir": str(dataset_dir),
@@ -441,7 +610,8 @@ manifest = {
         "batch_rows": int(batch_rows),
         "warmup_rounds": 1,
         "measured_runs": 3,
-        "engine_order": ["lance", "tantivy", "lucene"],
+        "engine_order": engine_order.split(),
+        "input_prewarm": "complete SHA-256 validation before timed builds",
     },
     "tool_versions": {
         "python": platform.python_version(),
@@ -456,6 +626,7 @@ manifest = {
     "input_files": input_files,
     "result_files": result_files,
     "dataset_manifest": dataset_metadata,
+    "execution": execution,
 }
 manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 PY
@@ -474,9 +645,14 @@ finalize() {
 trap finalize EXIT
 
 validate_inputs
-run_rust_engine lance "$LANCE_RUNNER"
-run_rust_engine tantivy "$TANTIVY_RUNNER"
-run_lucene
+for engine in "${ENGINE_SEQUENCE[@]}"; do
+    case "$engine" in
+        lance) run_rust_engine lance "$LANCE_RUNNER" ;;
+        tantivy) run_rust_engine tantivy "$TANTIVY_RUNNER" ;;
+        lucene) run_lucene ;;
+    esac
+done
+evaluate_overlap
 evaluate_quality
 
 echo "results: $RESULTS_DIR"

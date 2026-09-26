@@ -101,6 +101,9 @@ run_engine() {
         command=("$LANCE_BIN" --bench --engine lance --lance-read-mode api)
     else
         command=("$REFERENCE_BIN" --engine "$engine")
+        if [[ "$engine" == rocksdb ]]; then
+            command+=(--rocksdb-sync)
+        fi
     fi
     command+=(
         --storage "$storage"

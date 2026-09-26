@@ -10,7 +10,7 @@ The JSON output separates API acceptance from WAL durability. `write_accepted_ro
 
 The `flushed` storage mode also measures `sstable_flush_s`. Lance seals the active MemTable and waits for its flush fence. SlateDB requests a MemTable flush and waits for it to finish. Reads then use the flushed tier.
 
-RocksDB keeps its historical asynchronous WAL behavior by default. Its WAL result is null because a returned write has not requested an `fsync`. Pass `--rocksdb-sync` directly to the reference binary when a synchronous durability result is needed.
+The comparison runner gives RocksDB the `--rocksdb-sync` flag so every returned batch has requested an `fsync`. This makes its accepted and durable boundaries the same. A direct reference-binary run can omit the flag to reproduce the historical asynchronous WAL behavior, in which case the WAL result is null.
 
 ## Local run
 

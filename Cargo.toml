@@ -190,6 +190,7 @@ opendal-service-goosefs = { version = "0.59.2", default-features = false }
 parquet = { version = "58.0.0", default-features = false, features = [
     "arrow",
     "async",
+    "snap",
 ] }
 pin-project = "1.0"
 path_abs = "0.5"

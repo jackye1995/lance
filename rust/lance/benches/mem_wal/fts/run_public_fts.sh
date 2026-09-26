@@ -286,6 +286,21 @@ run_timed() {
     "$TIME_BIN" -v -o "$time_log" "$@" > "$stdout_log" 2> "$stderr_log"
 }
 
+prewarm_corpus() {
+    local engine="$1"
+    local log="$RESULTS_DIR/${engine}.corpus-prewarm.txt"
+    if [[ -e "$log" ]]; then
+        echo "ERROR: refusing to overwrite corpus prewarm log: $log" >&2
+        exit 1
+    fi
+    local started finished
+    started="$(date +%s)"
+    dd if="$CORPUS" of=/dev/null bs=8M status=none
+    finished="$(date +%s)"
+    printf 'engine=%s\nstarted_unix=%s\nfinished_unix=%s\nbytes=%s\n' \
+        "$engine" "$started" "$finished" "$(wc -c < "$CORPUS" | tr -d ' ')" > "$log"
+}
+
 run_rust_engine() {
     local engine="$1"
     local runner="$2"
@@ -611,7 +626,7 @@ manifest = {
         "warmup_rounds": 1,
         "measured_runs": 3,
         "engine_order": engine_order.split(),
-        "input_prewarm": "complete SHA-256 validation before timed builds",
+        "input_prewarm": "complete sequential corpus read before every timed engine build",
     },
     "tool_versions": {
         "python": platform.python_version(),
@@ -646,6 +661,7 @@ trap finalize EXIT
 
 validate_inputs
 for engine in "${ENGINE_SEQUENCE[@]}"; do
+    prewarm_corpus "$engine"
     case "$engine" in
         lance) run_rust_engine lance "$LANCE_RUNNER" ;;
         tantivy) run_rust_engine tantivy "$TANTIVY_RUNNER" ;;

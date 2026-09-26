@@ -202,17 +202,15 @@ def download_beir_archive(dataset: str, spec: BeirSpec, cache_dir: Path) -> Path
         request = urllib.request.Request(
             url, headers={"User-Agent": "lance-mem-wal-public-fts/1"}
         )
-        with (
-            urllib.request.urlopen(request, timeout=60) as response,
-            temporary.open("wb") as output,
-        ):
-            if urllib.parse.urlparse(response.geturl()).scheme != "https":
-                raise RuntimeError(
-                    "refusing a BEIR download redirected away from HTTPS"
-                )
-            while block := response.read(8 * 1024 * 1024):
-                output.write(block)
-                md5.update(block)
+        with urllib.request.urlopen(request, timeout=60) as response:
+            with temporary.open("wb") as output:
+                if urllib.parse.urlparse(response.geturl()).scheme != "https":
+                    raise RuntimeError(
+                        "refusing a BEIR download redirected away from HTTPS"
+                    )
+                while block := response.read(8 * 1024 * 1024):
+                    output.write(block)
+                    md5.update(block)
         if md5.hexdigest() != spec.md5:
             raise ValueError(
                 f"{dataset} archive MD5 mismatch: expected {spec.md5}, "
@@ -342,21 +340,19 @@ def prepare_beir(args: argparse.Namespace) -> tuple[dict[str, Any], bool]:
                 raise ValueError(f"qrels reference missing query ids: {missing}")
 
             corpus_count = 0
-            with (
-                DigestWriter(staging_dir / "corpus.txt") as corpus_output,
-                DigestWriter(staging_dir / "docids.txt") as docids_output,
-            ):
-                for row in json_lines(archive, corpus_member):
-                    docid = checked_id(row.get("_id"), "document id")
-                    title = row.get("title", "") or ""
-                    text = row.get("text")
-                    if not isinstance(title, str) or not isinstance(text, str):
-                        raise ValueError(
-                            f"document {docid} has a non-string title or text field"
-                        )
-                    corpus_output.write_line(canonicalize_text(f"{title} {text}"))
-                    docids_output.write_line(docid)
-                    corpus_count += 1
+            with DigestWriter(staging_dir / "corpus.txt") as corpus_output:
+                with DigestWriter(staging_dir / "docids.txt") as docids_output:
+                    for row in json_lines(archive, corpus_member):
+                        docid = checked_id(row.get("_id"), "document id")
+                        title = row.get("title", "") or ""
+                        text = row.get("text")
+                        if not isinstance(title, str) or not isinstance(text, str):
+                            raise ValueError(
+                                f"document {docid} has a non-string title or text field"
+                            )
+                        corpus_output.write_line(canonicalize_text(f"{title} {text}"))
+                        docids_output.write_line(docid)
+                        corpus_count += 1
 
         counts = {
             "corpus": corpus_count,
@@ -498,52 +494,59 @@ def prepare_fineweb_edu(args: argparse.Namespace) -> tuple[dict[str, Any], bool]
     query_count = 0
     with tempfile.TemporaryDirectory(prefix=".prepare-", dir=output_dir) as temporary:
         staging_dir = Path(temporary)
-        with (
-            DigestWriter(staging_dir / "corpus.txt") as corpus_output,
-            DigestWriter(staging_dir / "docids.txt") as docids_output,
-            DigestWriter(staging_dir / "queries.tsv") as queries_output,
-        ):
-            for fragment in fragments:
-                if corpus_count >= args.rows:
-                    break
-                scanned_fragment_ids.append(fragment.fragment_id)
-                for batch in fragment.to_batches(
-                    columns=["text", "id", "token_count"],
-                    batch_size=args.batch_size,
-                ):
-                    remaining = args.rows - corpus_count
-                    if remaining == 0:
-                        break
-                    batch = batch.slice(0, min(batch.num_rows, remaining))
-                    texts = batch.column(
-                        batch.schema.get_field_index("text")
-                    ).to_pylist()
-                    ids = batch.column(batch.schema.get_field_index("id")).to_pylist()
-                    token_counts = batch.column(
-                        batch.schema.get_field_index("token_count")
-                    ).to_pylist()
-                    for text, docid_value, token_count in zip(
-                        texts, ids, token_counts, strict=True
-                    ):
-                        docid = checked_id(docid_value, "FineWeb-Edu document id")
-                        if not isinstance(text, str) or not isinstance(
-                            token_count, int
+        with DigestWriter(staging_dir / "corpus.txt") as corpus_output:
+            with DigestWriter(staging_dir / "docids.txt") as docids_output:
+                with DigestWriter(staging_dir / "queries.tsv") as queries_output:
+                    for fragment in fragments:
+                        if corpus_count >= args.rows:
+                            break
+                        scanned_fragment_ids.append(fragment.fragment_id)
+                        for batch in fragment.to_batches(
+                            columns=["text", "id", "token_count"],
+                            batch_size=args.batch_size,
                         ):
-                            raise ValueError(
-                                f"FineWeb-Edu document {docid} has null or invalid "
-                                "text/token_count"
-                            )
-                        canonical = canonicalize_text(text)
-                        corpus_output.write_line(canonical)
-                        docids_output.write_line(docid)
-                        if query_count < FINEWEB_QUERY_COUNT and token_count >= 2:
-                            query = query_from_document(canonical, docid, args.seed)
-                            if query is not None:
-                                queries_output.write_line(
-                                    f"fineweb-edu-{query_count:06d}", query
+                            remaining = args.rows - corpus_count
+                            if remaining == 0:
+                                break
+                            batch = batch.slice(0, min(batch.num_rows, remaining))
+                            texts = batch.column(
+                                batch.schema.get_field_index("text")
+                            ).to_pylist()
+                            ids = batch.column(
+                                batch.schema.get_field_index("id")
+                            ).to_pylist()
+                            token_counts = batch.column(
+                                batch.schema.get_field_index("token_count")
+                            ).to_pylist()
+                            for text, docid_value, token_count in zip(
+                                texts, ids, token_counts
+                            ):
+                                docid = checked_id(
+                                    docid_value, "FineWeb-Edu document id"
                                 )
-                                query_count += 1
-                        corpus_count += 1
+                                if not isinstance(text, str) or not isinstance(
+                                    token_count, int
+                                ):
+                                    raise ValueError(
+                                        f"FineWeb-Edu document {docid} has null or "
+                                        "invalid text/token_count"
+                                    )
+                                canonical = canonicalize_text(text)
+                                corpus_output.write_line(canonical)
+                                docids_output.write_line(docid)
+                                if (
+                                    query_count < FINEWEB_QUERY_COUNT
+                                    and token_count >= 2
+                                ):
+                                    query = query_from_document(
+                                        canonical, docid, args.seed
+                                    )
+                                    if query is not None:
+                                        queries_output.write_line(
+                                            f"fineweb-edu-{query_count:06d}", query
+                                        )
+                                        query_count += 1
+                                corpus_count += 1
 
         if corpus_count != args.rows:
             raise ValueError(

@@ -15,6 +15,7 @@
 #   LUCENE_CP    pre-built Lucene classpath; if set, the Lucene build is skipped
 #   LUCENE_DIR   Lucene source checkout — built when LUCENE_CP is unset
 #   JAVA_HOME    JDK 25 home; if unset the script searches common locations
+#   JAVA_OPTS    optional JVM flags, such as --add-modules=jdk.incubator.vector
 #   CACHE_DIR    FineWeb shard download cache (default <tmpdir>/lance-fineweb-cache)
 
 set -uo pipefail
@@ -43,6 +44,7 @@ if [ -z "${JAVA_HOME:-}" ] || [ ! -x "$JAVA_HOME/bin/java" ]; then
 fi
 JAVA="$JAVA_HOME/bin/java"
 JAVAC="$JAVA_HOME/bin/javac"
+read -r -a JAVA_OPTS_ARRAY <<< "${JAVA_OPTS:-}"
 echo "JDK: $($JAVA -version 2>&1 | head -1)"
 
 # ---- build Lucene classpath ----
@@ -134,7 +136,7 @@ for SIZE in $SIZES; do
             --threads "$THREADS" $LANCE_FLAGS | tee "$RESULT_DIR/lance_n${SIZE}_run${RUN}.txt" \
             | grep '^{' > "$RESULT_DIR/lance_n${SIZE}_run${RUN}.json"
         echo "--- run $RUN: lucene ---"
-        "$JAVA" -cp "$LUCENE_CP:$WORK" LuceneFtsBench --in-dir "$DIR" --run "$RUN" \
+        "$JAVA" "${JAVA_OPTS_ARRAY[@]}" -cp "$LUCENE_CP:$WORK" LuceneFtsBench --in-dir "$DIR" --run "$RUN" \
             --k "$K" --threads "$THREADS" $LUCENE_FLAGS | tee "$RESULT_DIR/lucene_n${SIZE}_run${RUN}.txt" \
             | grep '^{' > "$RESULT_DIR/lucene_n${SIZE}_run${RUN}.json"
         ov="$(mutual_overlap "$DIR/lance_fts_run${RUN}_topk.txt" \

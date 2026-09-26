@@ -34,7 +34,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use arrow_array::{Int64Array, RecordBatch, RecordBatchIterator, StringArray};
+use arrow_array::{BinaryArray, Int64Array, RecordBatch, RecordBatchIterator, StringArray};
 use arrow_schema::{DataType, Field, Schema as ArrowSchema};
 use datafusion::common::ScalarValue;
 use datafusion::prelude::SessionContext;
@@ -479,7 +479,7 @@ impl Engine {
 }
 
 /// Key column type. `Int` exercises the Lance `FixedKey` backend (8-byte key);
-/// `Uuid` stores `FixedSizeBinary(16)` and exercises the `BytesKey` backend.
+/// `Uuid` stores 16-byte `Binary` values and exercises the `BytesKey` backend.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum KeyType {
     Int,
@@ -503,7 +503,7 @@ impl KeyType {
     fn arrow_type(self) -> DataType {
         match self {
             Self::Int => DataType::Int64,
-            Self::Uuid => DataType::FixedSizeBinary(16),
+            Self::Uuid => DataType::Binary,
         }
     }
 }
@@ -551,7 +551,7 @@ fn uuid_bytes(key: i64) -> [u8; 16] {
 fn key_scalar(key: i64, key_type: KeyType) -> ScalarValue {
     match key_type {
         KeyType::Int => ScalarValue::Int64(Some(key)),
-        KeyType::Uuid => ScalarValue::FixedSizeBinary(16, Some(uuid_bytes(key).to_vec())),
+        KeyType::Uuid => ScalarValue::Binary(Some(uuid_bytes(key).to_vec())),
     }
 }
 
@@ -740,10 +740,9 @@ fn make_batch(
     use arrow_array::Array;
     let id_arr: Arc<dyn Array> = match key_type {
         KeyType::Int => Arc::new(Int64Array::from_iter_values(keys.iter().copied())),
-        KeyType::Uuid => Arc::new(
-            arrow_array::FixedSizeBinaryArray::try_from_iter(keys.iter().map(|k| uuid_bytes(*k)))
-                .unwrap(),
-        ),
+        KeyType::Uuid => Arc::new(BinaryArray::from_iter_values(
+            keys.iter().map(|k| uuid_bytes(*k)),
+        )),
     };
     let values: Vec<String> = keys
         .iter()

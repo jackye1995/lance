@@ -1,18 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The Lance Authors
 
-//! Head-to-head KV point-lookup benchmark: Lance MemTable vs RocksDB.
+//! Lance arm of the MemWAL KV point-lookup comparison.
 //!
-//! One binary times **both** engines with identical key/value/query sets and
-//! identical timing code, so the comparison is apples-to-apples. The RocksDB
-//! arm is compiled only with `--features bench-rocksdb` (bundled librocksdb);
-//! without it the bench runs the Lance arm alone.
+//! The companion crate in `kv/reference` runs RocksDB and SlateDB with the same
+//! deterministic key/value/query sets. The shell driver starts every engine in
+//! a separate process so peak RSS remains attributable to one engine.
 //!
-//! Both engines hold all `--rows` rows in a **single in-memory write buffer**
-//! (Lance: one active MemTable, ShardWriter configured to never flush;
-//! RocksDB: one skiplist memtable, `write_buffer_size` above the dataset so no
-//! SST flush). The table has a **BTree index on the key column**; the Lance
-//! MemTable maintains it. We measure:
+//! The active mode holds all `--rows` rows in one MemTable. The table has a
+//! BTree index on the key column and the MemTable maintains it. We measure:
 //!
 //!   - **write throughput** (rows/sec) for a fixed shuffled insert order
 //!   - **read latency** (p50/p95/p99/mean, single-thread) and **QPS**
@@ -24,12 +20,13 @@
 //! Example:
 //!
 //! ```bash
-//! cargo bench -p lance --bench mem_wal_kv_point_lookup --features bench-rocksdb -- \
+//! cargo bench -p lance --bench mem_wal_kv_point_lookup -- \
 //!   --rows 1000000 --value-size 100 --queries 5000 --miss-ratio 0.5 \
-//!   --threads 8 --engine both --uri /tmp/kv_bench --output result.json
+//!   --threads 8 --engine lance --uri /tmp/kv_bench --output result.json
 //! ```
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
+#![allow(unexpected_cfgs)]
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -374,6 +371,10 @@ struct EngineResult {
     misses_resolved: usize,
     peak_rss_mb: f64,
     rss_after_load_mb: f64,
+    write_accepted_rows_per_s: Option<f64>,
+    wal_durable_rows_per_s: Option<f64>,
+    durability_drain_s: Option<f64>,
+    sstable_flush_s: Option<f64>,
 }
 
 impl EngineResult {
@@ -398,6 +399,10 @@ impl EngineResult {
             "misses_resolved": self.misses_resolved,
             "peak_rss_mb": self.peak_rss_mb as u64,
             "rss_after_load_mb": self.rss_after_load_mb as u64,
+            "write_accepted_rows_per_s": self.write_accepted_rows_per_s.map(|v| v as u64),
+            "wal_durable_rows_per_s": self.wal_durable_rows_per_s.map(|v| v as u64),
+            "durability_drain_s": self.durability_drain_s.map(|v| format!("{v:.3}")),
+            "sstable_flush_s": self.sstable_flush_s.map(|v| format!("{v:.3}")),
         })
     }
 }
@@ -453,9 +458,7 @@ impl Engine {
     fn parse(v: &str) -> std::result::Result<Self, String> {
         match v {
             "lance" => Ok(Self::Lance),
-            "rocksdb" => Ok(Self::Rocksdb),
-            "both" => Ok(Self::Both),
-            _ => Err(format!("unknown engine '{v}', expected lance|rocksdb|both")),
+            _ => Err(format!("unknown engine '{v}', expected lance")),
         }
     }
 }
@@ -497,6 +500,7 @@ impl KeyType {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Storage {
     Active,
+    Flushed,
     SsTable,
 }
 
@@ -504,13 +508,17 @@ impl Storage {
     fn parse(v: &str) -> std::result::Result<Self, String> {
         match v {
             "active" => Ok(Self::Active),
+            "flushed" => Ok(Self::Flushed),
             "sstable" => Ok(Self::SsTable),
-            _ => Err(format!("unknown storage '{v}', expected active|sstable")),
+            _ => Err(format!(
+                "unknown storage '{v}', expected active|flushed|sstable"
+            )),
         }
     }
     fn as_str(self) -> &'static str {
         match self {
             Self::Active => "active",
+            Self::Flushed => "flushed",
             Self::SsTable => "sstable",
         }
     }
@@ -529,15 +537,6 @@ fn key_scalar(key: i64, key_type: KeyType) -> ScalarValue {
     match key_type {
         KeyType::Int => ScalarValue::Int64(Some(key)),
         KeyType::Uuid => ScalarValue::FixedSizeBinary(16, Some(uuid_bytes(key).to_vec())),
-    }
-}
-
-/// The RocksDB key bytes for a logical key under `key_type`.
-#[cfg(feature = "bench-rocksdb")]
-fn rocks_key(key: i64, key_type: KeyType) -> Vec<u8> {
-    match key_type {
-        KeyType::Int => key.to_be_bytes().to_vec(),
-        KeyType::Uuid => uuid_bytes(key).to_vec(),
     }
 }
 
@@ -566,8 +565,6 @@ struct Args {
     batch_get: usize,
     uri: String,
     seed: u64,
-    /// Skip the RocksDB WAL on writes. Off by default so RocksDB writes a WAL
-    /// like Lance's durable MemTable path, keeping the write comparison fair.
     rocksdb_disable_wal: bool,
     /// Cold-storage mode: assume the dataset is larger than RAM so reads miss
     /// the caches and hit NVMe. Caps the RocksDB write buffer + uses a small
@@ -582,6 +579,9 @@ struct Args {
     /// on its first gen-key lookup instead of up front). Only affects the Lance
     /// `--storage active` LSM path.
     prewarm: bool,
+    /// Complete query sweeps to run before recording read latency. The driver
+    /// sets this to one for S3 comparisons.
+    warmup_rounds: usize,
     output: Option<PathBuf>,
 }
 
@@ -594,7 +594,7 @@ impl Default for Args {
             miss_ratio: 0.5,
             threads: 8,
             batch_rows: 1_000,
-            engine: Engine::Both,
+            engine: Engine::Lance,
             key_type: KeyType::Int,
             storage: Storage::Active,
             generations: 0,
@@ -605,6 +605,7 @@ impl Default for Args {
             rocksdb_disable_wal: false,
             cold: false,
             prewarm: true,
+            warmup_rounds: 0,
             output: None,
         }
     }
@@ -626,10 +627,6 @@ fn parse_args() -> Result<Args> {
     let mut has_uri = false;
     while let Some(flag) = iter.next() {
         if flag == "--bench" {
-            continue;
-        }
-        if flag == "--rocksdb-disable-wal" {
-            args.rocksdb_disable_wal = true;
             continue;
         }
         if flag == "--cold" {
@@ -658,6 +655,7 @@ fn parse_args() -> Result<Args> {
             }
             "--generations" => args.generations = parse_val(&flag, &value)?,
             "--prewarm" => args.prewarm = parse_val(&flag, &value)?,
+            "--warmup-rounds" => args.warmup_rounds = parse_val(&flag, &value)?,
             "--lance-read-mode" => {
                 args.lance_read_mode =
                     LanceReadMode::parse(&value).map_err(lance_core::Error::invalid_input)?
@@ -686,6 +684,16 @@ fn parse_args() -> Result<Args> {
     if !(0.0..=1.0).contains(&args.miss_ratio) {
         return Err(lance_core::Error::invalid_input(
             "miss-ratio must be in [0, 1]",
+        ));
+    }
+    if args.storage == Storage::Flushed && args.lance_read_mode == LanceReadMode::Fast {
+        return Err(lance_core::Error::invalid_input(
+            "flushed storage requires lance-read-mode plan or api",
+        ));
+    }
+    if args.storage == Storage::Flushed && args.generations > 0 {
+        return Err(lance_core::Error::invalid_input(
+            "flushed storage cannot be combined with generations",
         ));
     }
     Ok(args)
@@ -772,17 +780,8 @@ async fn run_lance(
     let dataset = Arc::new(dataset);
     let arrow_schema: Arc<ArrowSchema> = Arc::new(ArrowSchema::from(dataset.schema()));
 
-    // No-flush config: every *memtable*-flush threshold is set above the
-    // dataset so the single active MemTable holds all rows (no generation is
-    // sealed to disk). Read visibility is gated on the WAL durability
-    // watermark (`max_visible_batch_position`), which only advances on a WAL
-    // flush — so we use `durable_write=true`: each put flushes its batch to
-    // the WAL and awaits, which both populates the maintained BTree and
-    // advances the watermark, leaving every row visible the moment the write
-    // loop ends (no background-drain race). This is the durable ingestion
-    // path; per the goal it is acceptable for writes to be slower than
-    // RocksDB. The RocksDB arm keeps its WAL on by default too (see
-    // `--rocksdb-disable-wal`) so the write comparison is apples-to-apples.
+    // Keep the active MemTable above the dataset size. Durable watchers split
+    // API acceptance from the final WAL durability drain.
     let shard_id = Uuid::new_v4();
     let big = args.rows.saturating_mul(args.value_size + 256).max(1 << 30);
     let config = ShardWriterConfig {
@@ -809,50 +808,90 @@ async fn run_lance(
     let cpu0 = process_cpu_secs();
     let t_write = Instant::now();
     let mut lo = 0usize;
-    for g in 0..=gens {
-        let part_end = if g < gens {
-            ((g + 1) * part).min(insert_order.len())
-        } else {
-            insert_order.len()
-        };
-        while lo < part_end {
-            let hi = (lo + args.batch_rows).min(part_end);
+    let (accepted_s, durability_drain_s) = if gens == 0 {
+        let mut watchers = Vec::with_capacity(insert_order.len().div_ceil(args.batch_rows));
+        while lo < insert_order.len() {
+            let hi = (lo + args.batch_rows).min(insert_order.len());
             let batch = make_batch(
                 schema.clone(),
                 &insert_order[lo..hi],
                 args.value_size,
                 key_type,
             );
-            writer.put(vec![batch]).await?;
+            let (_, watcher) = writer.put_no_wait(vec![batch]).await?;
+            if let Some(watcher) = watcher {
+                watchers.push(watcher);
+            }
             lo = hi;
         }
-        if g < gens {
-            writer.force_seal_active().await?;
-            for _ in 0..600 {
-                let n = writer
-                    .manifest()
-                    .await?
-                    .map(|m| m.sstables.len())
-                    .unwrap_or(0);
-                if n > g {
-                    break;
+        let accepted_s = t_write.elapsed().as_secs_f64();
+        let t_drain = Instant::now();
+        for watcher in &mut watchers {
+            watcher.wait().await?;
+        }
+        (accepted_s, t_drain.elapsed().as_secs_f64())
+    } else {
+        for g in 0..=gens {
+            let part_end = if g < gens {
+                ((g + 1) * part).min(insert_order.len())
+            } else {
+                insert_order.len()
+            };
+            while lo < part_end {
+                let hi = (lo + args.batch_rows).min(part_end);
+                let batch = make_batch(
+                    schema.clone(),
+                    &insert_order[lo..hi],
+                    args.value_size,
+                    key_type,
+                );
+                writer.put(vec![batch]).await?;
+                lo = hi;
+            }
+            if g < gens {
+                writer.force_seal_active().await?.wait().await?;
+                for _ in 0..600 {
+                    let n = writer
+                        .manifest()
+                        .await?
+                        .map(|m| m.sstables.len())
+                        .unwrap_or(0);
+                    if n > g {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(25)).await;
                 }
-                tokio::time::sleep(Duration::from_millis(25)).await;
             }
         }
-    }
+        (t_write.elapsed().as_secs_f64(), 0.0)
+    };
     let write_s = t_write.elapsed().as_secs_f64();
     let write_cpu_s = process_cpu_secs() - cpu0;
     let write_rows_per_s = args.rows as f64 / write_s.max(1e-9);
+    let write_accepted_rows_per_s = args.rows as f64 / accepted_s.max(1e-9);
     let rss_after_load_mb = sampler.peak_mb();
+
+    let sstable_flush_s = if args.storage == Storage::Flushed {
+        let t_flush = Instant::now();
+        writer.force_seal_active().await?.wait().await?;
+        Some(t_flush.elapsed().as_secs_f64())
+    } else {
+        None
+    };
     let n_gens = writer
         .manifest()
         .await?
         .map(|m| m.sstables.len())
         .unwrap_or(0);
     println!(
-        "[lance] wrote {} rows in {:.2}s = {:.0} rows/s (cpu {:.2}s, sstables={n_gens}+active)",
-        args.rows, write_s, write_rows_per_s, write_cpu_s
+        "[lance] accepted {} rows in {:.2}s = {:.0} rows/s; durable in {:.2}s = {:.0} rows/s (drain {:.2}s, cpu {:.2}s, sstables={n_gens}+active)",
+        args.rows,
+        accepted_s,
+        write_accepted_rows_per_s,
+        write_s,
+        write_rows_per_s,
+        durability_drain_s,
+        write_cpu_s
     );
 
     // Build the point-lookup planner over base + active MemTable.
@@ -913,6 +952,33 @@ async fn run_lance(
                 .unwrap_or(0),
         };
         assert_eq!(n, 1, "warmup lookup for key {probe} returned {n} rows");
+    }
+
+    for round in 0..args.warmup_rounds {
+        let ctx = SessionContext::new();
+        let task_ctx = ctx.task_ctx();
+        for &(key, expect_hit) in queries {
+            let n = match args.lance_read_mode {
+                LanceReadMode::Plan => {
+                    let plan = planner
+                        .plan_lookup(&[key_scalar(key, key_type)], None)
+                        .await?;
+                    let batches: Vec<RecordBatch> =
+                        plan.execute(0, task_ctx.clone())?.try_collect().await?;
+                    batches.iter().map(|batch| batch.num_rows()).sum()
+                }
+                LanceReadMode::Fast => fast_lookup(&active, key, key_type)
+                    .map(|batch| batch.num_rows())
+                    .unwrap_or(0),
+                LanceReadMode::Api => planner
+                    .lookup(&[key_scalar(key, key_type)], None)
+                    .await?
+                    .map(|batch| batch.num_rows())
+                    .unwrap_or(0),
+            };
+            assert_eq!(n, if expect_hit { 1 } else { 0 });
+        }
+        println!("[lance] completed read prewarm round {}", round + 1);
     }
 
     // --- batch-get path: one vectorized BTree gather per `batch_get` keys ---
@@ -1034,6 +1100,10 @@ async fn run_lance(
             misses_resolved: 0,
             peak_rss_mb,
             rss_after_load_mb,
+            write_accepted_rows_per_s: Some(write_accepted_rows_per_s),
+            wal_durable_rows_per_s: Some(write_rows_per_s),
+            durability_drain_s: Some(durability_drain_s),
+            sstable_flush_s,
         });
     }
 
@@ -1176,17 +1246,15 @@ async fn run_lance(
         peak_rss_mb
     );
 
-    // Reads are done; release the writer (and, when this function returns, the
-    // planner/collector that hold the MemTable Arcs) so Lance memory is freed
-    // before any subsequent in-process engine — otherwise `--engine both`
-    // would inflate the RocksDB RSS sample. ShardWriter has no blocking Drop.
+    // Reads are done. ShardWriter has no blocking Drop.
     drop(writer);
 
     Ok(EngineResult {
-        engine: match args.lance_read_mode {
-            LanceReadMode::Plan => "lance",
-            LanceReadMode::Fast => "lance-fast",
-            LanceReadMode::Api => "lance-api",
+        engine: match (args.storage, args.lance_read_mode) {
+            (Storage::Flushed, _) => "lance-flushed",
+            (_, LanceReadMode::Plan) => "lance",
+            (_, LanceReadMode::Fast) => "lance-fast",
+            (_, LanceReadMode::Api) => "lance-api",
         },
         write_rows_per_s,
         write_cpu_s,
@@ -1201,6 +1269,10 @@ async fn run_lance(
         misses_resolved,
         peak_rss_mb,
         rss_after_load_mb,
+        write_accepted_rows_per_s: Some(write_accepted_rows_per_s),
+        wal_durable_rows_per_s: Some(write_rows_per_s),
+        durability_drain_s: Some(durability_drain_s),
+        sstable_flush_s,
     })
 }
 
@@ -1469,6 +1541,10 @@ async fn run_lance_sstable(
             misses_resolved: 0,
             peak_rss_mb,
             rss_after_load_mb,
+            write_accepted_rows_per_s: None,
+            wal_durable_rows_per_s: None,
+            durability_drain_s: None,
+            sstable_flush_s: Some(write_s),
         });
     }
 
@@ -1549,6 +1625,10 @@ async fn run_lance_sstable(
         misses_resolved,
         peak_rss_mb,
         rss_after_load_mb,
+        write_accepted_rows_per_s: None,
+        wal_durable_rows_per_s: None,
+        durability_drain_s: None,
+        sstable_flush_s: Some(write_s),
     })
 }
 
@@ -1761,6 +1841,10 @@ fn run_rocksdb(args: &Args, insert_order: &[i64], queries: &[(i64, bool)]) -> Re
             misses_resolved: 0,
             peak_rss_mb,
             rss_after_load_mb,
+            write_accepted_rows_per_s: Some(write_rows_per_s),
+            wal_durable_rows_per_s: None,
+            durability_drain_s: None,
+            sstable_flush_s: None,
         });
     }
 
@@ -1848,6 +1932,10 @@ fn run_rocksdb(args: &Args, insert_order: &[i64], queries: &[(i64, bool)]) -> Re
         misses_resolved,
         peak_rss_mb,
         rss_after_load_mb,
+        write_accepted_rows_per_s: Some(write_rows_per_s),
+        wal_durable_rows_per_s: None,
+        durability_drain_s: None,
+        sstable_flush_s: None,
     })
 }
 
@@ -1914,11 +2002,12 @@ fn print_comparison(results: &[EngineResult]) {
 
 async fn run(args: Args) -> Result<()> {
     println!(
-        "bench=mem_wal_kv_point_lookup engine={:?} storage={} generations={} prewarm={} key_type={} lance_read_mode={} batch_get={} rows={} value_size={} queries={} miss_ratio={} threads={} batch_rows={} uri={}",
+        "bench=mem_wal_kv_point_lookup engine={:?} storage={} generations={} prewarm={} warmup_rounds={} key_type={} lance_read_mode={} batch_get={} rows={} value_size={} queries={} miss_ratio={} threads={} batch_rows={} uri={}",
         args.engine,
         args.storage.as_str(),
         args.generations,
         args.prewarm,
+        args.warmup_rounds,
         args.key_type.as_str(),
         args.lance_read_mode.as_str(),
         args.batch_get,
@@ -1937,7 +2026,7 @@ async fn run(args: Args) -> Result<()> {
     let mut results = Vec::new();
     if matches!(args.engine, Engine::Lance | Engine::Both) {
         let res = match args.storage {
-            Storage::Active => run_lance(&args, &insert_order, &queries).await?,
+            Storage::Active | Storage::Flushed => run_lance(&args, &insert_order, &queries).await?,
             Storage::SsTable => run_lance_sstable(&args, &insert_order, &queries).await?,
         };
         results.push(res);
@@ -1964,6 +2053,9 @@ async fn run(args: Args) -> Result<()> {
         "miss_ratio": args.miss_ratio,
         "threads": args.threads,
         "batch_get": args.batch_get,
+        "storage": args.storage.as_str(),
+        "key_type": args.key_type.as_str(),
+        "warmup_rounds": args.warmup_rounds,
         "results": results.iter().map(|r| r.to_json(&args)).collect::<Vec<_>>(),
     });
     let text = serde_json::to_string_pretty(&out)

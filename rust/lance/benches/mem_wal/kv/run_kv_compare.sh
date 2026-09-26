@@ -1,27 +1,8 @@
 #!/usr/bin/env bash
-# KV point-lookup comparison driver — Lance MemTable vs RocksDB.
-# Sibling of run_fts_compare.sh (Lance FTS vs Lucene).
-#
-# Sweeps `mem_wal_kv_point_lookup` over a set of MemTable sizes. For each size
-# it runs the Lance and RocksDB arms in *separate processes* (clean per-engine
-# peak RSS), then prints build/read/RSS side by side. A single mixed query set
-# (hits + guaranteed misses) is used per size, identical across engines via a
-# fixed seed in the bench itself.
-#
-# Usage:
-#   rust/lance/benches/mem_wal/kv/run_kv_compare.sh [run_id]
-#
-# Env:
-#   SIZES         row-count sweep (default "100000 500000 1000000")
-#   VALUE_SIZE    payload bytes per row (default 100)
-#   QUERIES       point lookups per size (default 5000)
-#   MISS_RATIO    fraction of lookups that miss (default 0.5)
-#   THREADS       reader threads for the N-thread QPS run (default nproc)
-#   BATCH_ROWS    rows per write batch (default 1000)
-#   WORK          scratch dir for datasets/DBs (default <tmpdir>/kv_compare/<run_id>)
-#   CONFIG_TIMEOUT  per-config seconds (default 3600)
+# Run Lance, RocksDB, and SlateDB with identical deterministic KV inputs.
 
 set -uo pipefail
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
@@ -33,102 +14,176 @@ QUERIES="${QUERIES:-5000}"
 MISS_RATIO="${MISS_RATIO:-0.5}"
 THREADS="${THREADS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)}"
 BATCH_ROWS="${BATCH_ROWS:-1000}"
-WORK="${WORK:-${TMPDIR:-/tmp}/kv_compare/$RUN_ID}"
+KEY_TYPES="${KEY_TYPES:-int}"
+ENGINES="${ENGINES:-lance rocksdb slatedb}"
+STORAGES="${STORAGES:-active}"
 CONFIG_TIMEOUT="${CONFIG_TIMEOUT:-3600}"
-RESULT_DIR="$REPO_ROOT/target/kv-compare-results/$RUN_ID"
+WORK="${WORK:-${TMPDIR:-/tmp}/kv_compare/$RUN_ID}"
+BASE_URI="${BASE_URI:-$WORK/data}"
+RESULT_DIR="${RESULT_DIR:-$REPO_ROOT/target/kv-compare-results/$RUN_ID}"
+
+if [[ "$BASE_URI" == s3://* ]]; then
+    WARMUP_ROUNDS="${WARMUP_ROUNDS:-1}"
+    REPETITIONS="${REPETITIONS:-3}"
+else
+    WARMUP_ROUNDS="${WARMUP_ROUNDS:-0}"
+    REPETITIONS="${REPETITIONS:-1}"
+fi
+
 mkdir -p "$WORK" "$RESULT_DIR"
 
 BENCH=mem_wal_kv_point_lookup
-echo "=== Building $BENCH (--features bench-rocksdb) ==="
-# Drop stale binaries so the freshest build is unambiguous.
+echo "Building Lance KV benchmark"
 rm -f "$REPO_ROOT"/target/release/deps/${BENCH}-*
-cargo bench -p lance --bench "$BENCH" --features bench-rocksdb --no-run || {
-    echo "ERROR: build failed" >&2; exit 1; }
-BIN="$(find "$REPO_ROOT/target/release/deps" -maxdepth 1 -type f -perm -111 \
+cargo bench -p lance --bench "$BENCH" --no-run || {
+    echo "ERROR: Lance benchmark build failed" >&2
+    exit 1
+}
+LANCE_BIN="$(find "$REPO_ROOT/target/release/deps" -maxdepth 1 -type f -perm -111 \
     -name "${BENCH}-*" ! -name '*.d' -printf '%T@ %p\n' \
     | sort -nr | head -1 | cut -d' ' -f2-)"
-echo "bench binary: $BIN"
-echo "run id:       $RUN_ID"
-echo "sizes:        $SIZES  value_size=$VALUE_SIZE queries=$QUERIES miss_ratio=$MISS_RATIO threads=$THREADS"
-echo ""
 
-run_engine() {  # $1=engine $2=rows $3=tag
-    local engine="$1" rows="$2" tag="$3"
-    local name="${engine}_${tag}"
-    local out="$RESULT_DIR/${name}.json"
+REFERENCE_MANIFEST="$SCRIPT_DIR/reference/Cargo.toml"
+REFERENCE_TARGET="$REPO_ROOT/target/kv-reference"
+echo "Building RocksDB and SlateDB KV benchmark"
+CARGO_TARGET_DIR="$REFERENCE_TARGET" cargo build \
+    --release --manifest-path "$REFERENCE_MANIFEST" || {
+    echo "ERROR: reference benchmark build failed" >&2
+    exit 1
+}
+REFERENCE_BIN="$REFERENCE_TARGET/release/mem-wal-kv-reference"
+
+echo "run id: $RUN_ID"
+echo "base uri: $BASE_URI"
+echo "sizes: $SIZES"
+echo "engines: $ENGINES"
+echo "storages: $STORAGES"
+echo "repetitions: $REPETITIONS"
+echo "read prewarm rounds: $WARMUP_ROUNDS"
+
+run_engine() {
+    local engine="$1" storage="$2" key_type="$3" rows="$4" tag="$5" repetition="$6"
+    local name="${engine}_${storage}_${key_type}_${tag}_r${repetition}"
+    local output="$RESULT_DIR/${name}.json"
     local log="$RESULT_DIR/${name}.log"
-    local uri="$WORK/${name}"
-    if [ -f "$out" ]; then
-        echo ">>> $name (already done, skipping)"; return 0
+    local uri="${BASE_URI%/}/${RUN_ID}/${name}"
+    local -a command
+
+    if [[ -f "$output" ]]; then
+        echo ">>> $name already completed"
+        return 0
     fi
-    echo ">>> $name (rows=$rows)"
-    rm -rf "$uri"
-    timeout "$CONFIG_TIMEOUT" "$BIN" --bench \
-        --engine "$engine" --rows "$rows" --value-size "$VALUE_SIZE" \
-        --queries "$QUERIES" --miss-ratio "$MISS_RATIO" --threads "$THREADS" \
-        --batch-rows "$BATCH_ROWS" --uri "$uri" --output "$out" > "$log" 2>&1
-    local rc=$?
-    rm -rf "$uri"
-    if [ "$rc" -eq 124 ]; then
-        echo "    !!! TIMED OUT after ${CONFIG_TIMEOUT}s (see $log)"; return 1
-    elif [ "$rc" -ne 0 ]; then
-        echo "    !!! failed rc=$rc (see $log)"; return 1
+    if [[ "$engine" == rocksdb && "$uri" == s3://* ]]; then
+        echo ">>> $name skipped because RocksDB has no S3 object-store backend"
+        return 0
+    fi
+
+    if [[ "$engine" == lance ]]; then
+        command=("$LANCE_BIN" --bench --engine lance --lance-read-mode api)
+    else
+        command=("$REFERENCE_BIN" --engine "$engine")
+    fi
+    command+=(
+        --storage "$storage"
+        --key-type "$key_type"
+        --rows "$rows"
+        --value-size "$VALUE_SIZE"
+        --queries "$QUERIES"
+        --miss-ratio "$MISS_RATIO"
+        --threads "$THREADS"
+        --batch-rows "$BATCH_ROWS"
+        --warmup-rounds "$WARMUP_ROUNDS"
+        --uri "$uri"
+        --output "$output"
+    )
+
+    echo ">>> $name"
+    if [[ "$uri" != s3://* ]]; then
+        rm -rf "$uri"
+    fi
+    timeout "$CONFIG_TIMEOUT" "${command[@]}" >"$log" 2>&1
+    local result=$?
+    if [[ "$uri" != s3://* ]]; then
+        rm -rf "$uri"
+    fi
+    if [[ "$result" -eq 124 ]]; then
+        echo "    timed out after ${CONFIG_TIMEOUT}s, see $log"
+        return 1
+    fi
+    if [[ "$result" -ne 0 ]]; then
+        echo "    failed with status $result, see $log"
+        return 1
     fi
     echo "    ok"
 }
 
+failures=0
 for rows in $SIZES; do
     case "$rows" in
-        1000000) tag=1M ;;
-        500000)  tag=500k ;;
-        100000)  tag=100k ;;
-        *)       tag="$rows" ;;
+        1000000) tag=1m ;;
+        500000) tag=500k ;;
+        100000) tag=100k ;;
+        *) tag="$rows" ;;
     esac
-    # Separate processes => clean per-engine peak RSS.
-    run_engine lance   "$rows" "$tag"
-    run_engine rocksdb "$rows" "$tag"
+    for storage in $STORAGES; do
+        for key_type in $KEY_TYPES; do
+            for repetition in $(seq 1 "$REPETITIONS"); do
+                for engine in $ENGINES; do
+                    run_engine "$engine" "$storage" "$key_type" "$rows" "$tag" "$repetition" \
+                        || failures=$((failures + 1))
+                done
+            done
+        done
+    done
 done
 
-echo ""
-echo "=== summary ==="
 python3 - "$RESULT_DIR" <<'PY'
-import glob, json, os, sys
-d = sys.argv[1]
-rows_map = {}
-for p in sorted(glob.glob(os.path.join(d, "*.json"))):
-    try:
-        r = json.load(open(p))
-    except Exception as e:
-        print(f"  bad {p}: {e}"); continue
-    for res in r.get("results", []):
-        rows_map.setdefault(res["rows"], {})[res["engine"]] = res
+import glob
+import json
+import os
+import statistics
+import sys
 
-hdr = (f"{'rows':>9} {'engine':>8} {'write_rows/s':>13} {'rd_p50_us':>10} "
-       f"{'rd_p95_us':>10} {'rd_p99_us':>10} {'qps_1t':>9} {'qps_nt':>10} "
-       f"{'rss_load_mb':>12} {'rss_peak_mb':>12} {'rd_cpu_s':>9}")
-print(hdr)
-for rows in sorted(rows_map):
-    for engine in ("lance", "rocksdb"):
-        res = rows_map[rows].get(engine)
-        if not res:
-            continue
-        print(f"{rows:>9} {engine:>8} {res['write_rows_per_s']:>13} "
-              f"{res['read_p50_us']:>10} {res['read_p95_us']:>10} {res['read_p99_us']:>10} "
-              f"{res['read_qps_1t']:>9} {res['read_qps_nt']:>10} "
-              f"{res['rss_after_load_mb']:>12} {res['peak_rss_mb']:>12} {res['read_cpu_s']:>9}")
-    # ratios
-    l = rows_map[rows].get("lance"); g = rows_map[rows].get("rocksdb")
-    if l and g:
-        def sd(a, b): return (a / b) if b else float('nan')
-        print(f"{rows:>9} {'ratio':>8} "
-              f"{sd(l['write_rows_per_s'], g['write_rows_per_s']):>12.2f}x "
-              f"{sd(l['read_p50_us'], g['read_p50_us']):>9.2f}x "
-              f"{sd(l['read_p95_us'], g['read_p95_us']):>9.2f}x "
-              f"{sd(l['read_p99_us'], g['read_p99_us']):>9.2f}x "
-              f"{sd(l['read_qps_1t'], g['read_qps_1t']):>8.2f}x "
-              f"{sd(l['read_qps_nt'], g['read_qps_nt']):>9.2f}x "
-              f"{sd(l['rss_after_load_mb'], g['rss_after_load_mb']):>11.2f}x")
-print("\n(write/qps ratio >1 = lance faster; p50/rss ratio <1 = lance better)")
+directory = sys.argv[1]
+groups = {}
+metrics = (
+    "write_accepted_rows_per_s",
+    "wal_durable_rows_per_s",
+    "sstable_flush_s",
+    "read_p50_us",
+    "read_p99_us",
+    "read_qps_1t",
+    "read_qps_nt",
+    "peak_rss_mb",
+)
+for path in sorted(glob.glob(os.path.join(directory, "*.json"))):
+    with open(path, encoding="utf-8") as source:
+        document = json.load(source)
+    for result in document.get("results", []):
+        key = (
+            result["rows"],
+            result.get("storage", "active"),
+            result.get("key_type", "int"),
+            result["engine"],
+        )
+        groups.setdefault(key, []).append(result)
+
+print("rows storage key engine runs accepted/s durable/s flush_s p50_us p99_us qps_1t qps_nt rss_mb")
+for key in sorted(groups):
+    runs = groups[key]
+    values = []
+    for metric in metrics:
+        samples = []
+        for run in runs:
+            value = run.get(metric)
+            if value is not None:
+                samples.append(float(value))
+        values.append("-" if not samples else f"{statistics.median(samples):.3f}")
+    print(*key, len(runs), *values)
 PY
-echo ""
+
 echo "results: $RESULT_DIR"
+if [[ "$failures" -ne 0 ]]; then
+    echo "$failures benchmark cases failed" >&2
+    exit 1
+fi

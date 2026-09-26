@@ -50,10 +50,6 @@ byteorder.workspace = true
 bytes.workspace = true
 chrono.workspace = true
 clap = { workspace = true, optional = true }
-# Only used by the (disabled) `mem_wal_kv_point_lookup` benchmark's RocksDB arm.
-# Commented out so CI's all-features build never compiles the bundled librocksdb
-# C++ sources (needs libclang). Uncomment with the bench target + feature to run.
-# rocksdb = { version = "0.23", optional = true, default-features = false }
 crossbeam-queue = { workspace = true }
 crossbeam-skiplist.workspace = true
 # This is already used by datafusion
@@ -168,9 +164,6 @@ metrics = ["lance-io/metrics"]
 geo = ["lance-datafusion/geo", "lance-index/geo"]
 # Enable slow integration tests (disabled by default in CI)
 slow_tests = []
-# Compile the RocksDB comparison arm of the (disabled) mem_wal_kv_point_lookup
-# bench. Commented out so it stays out of CI's all-features build.
-# bench-rocksdb = ["dep:rocksdb"]
 
 [[bin]]
 name = "lq"
@@ -312,14 +305,13 @@ name = "mem_wal_fts_read_bench"
 path = "benches/mem_wal/fts/mem_wal_fts_read_bench.rs"
 harness = false
 
-# MemTable KV point-lookup benchmark (Lance vs RocksDB). Disabled as a build
-# target: it needs the optional `rocksdb` dep (bundled librocksdb C++, needs
-# libclang) which CI's all-features build can't compile. To run it, uncomment
-# this entry plus the `rocksdb` dependency and the `bench-rocksdb` feature.
-# [[bench]]
-# name = "mem_wal_kv_point_lookup"
-# path = "benches/mem_wal/kv/mem_wal_kv_point_lookup.rs"
-# harness = false
+# Lance arm of the KV comparison. RocksDB and SlateDB live in the isolated
+# companion crate under benches/mem_wal/kv/reference so their dependencies do
+# not enter normal Lance builds or all-features CI.
+[[bench]]
+name = "mem_wal_kv_point_lookup"
+path = "benches/mem_wal/kv/mem_wal_kv_point_lookup.rs"
+harness = false
 
 [[bench]]
 name = "manifest_commit"

@@ -18,6 +18,7 @@
 #   K               timed-query top-k (default: 10)
 #   QUALITY_K       quality ranking depth (default: 1000)
 #   BATCH_ROWS      Rust runner input batch size (default: 8192)
+#   CACHE_BYTES     Lance decoded index-cache capacity (default: 64 GiB)
 #   ENGINE_ORDER    space-separated permutation of lance tantivy lucene
 #
 # Each engine builds a separate index, performs one complete discarded query
@@ -57,6 +58,7 @@ THREADS="${THREADS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)}"
 K="${K:-10}"
 QUALITY_K="${QUALITY_K:-1000}"
 BATCH_ROWS="${BATCH_ROWS:-8192}"
+CACHE_BYTES="${CACHE_BYTES:-68719476736}"
 ENGINE_ORDER="${ENGINE_ORDER:-lance tantivy lucene}"
 read -r -a ENGINE_SEQUENCE <<< "$ENGINE_ORDER"
 if [[ "$(printf '%s\n' "${ENGINE_SEQUENCE[@]}" | sort | tr '\n' ' ')" != \
@@ -92,8 +94,9 @@ for command_name in "$JAVA_BIN" "$JAVAC_BIN" "$PYTHON_BIN"; do
     fi
 done
 if [[ ! "$THREADS" =~ ^[1-9][0-9]*$ || ! "$K" =~ ^[1-9][0-9]*$ \
-      || ! "$QUALITY_K" =~ ^[1-9][0-9]*$ || ! "$BATCH_ROWS" =~ ^[1-9][0-9]*$ ]]; then
-    echo "ERROR: THREADS, K, QUALITY_K, and BATCH_ROWS must be positive integers" >&2
+      || ! "$QUALITY_K" =~ ^[1-9][0-9]*$ || ! "$BATCH_ROWS" =~ ^[1-9][0-9]*$ \
+      || ! "$CACHE_BYTES" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: THREADS, K, QUALITY_K, BATCH_ROWS, and CACHE_BYTES must be positive integers" >&2
     exit 1
 fi
 if (( QUALITY_K < 100 )); then
@@ -233,6 +236,24 @@ if result.get("warmup_rounds") != 1 or result.get("measured_runs") != 3:
     raise SystemExit("result does not record one warmup and three measured runs")
 if not isinstance(result.get("runs"), list) or len(result["runs"]) != 3:
     raise SystemExit("result does not contain three measured run records")
+query_cache = result.get("query_cache")
+if not isinstance(query_cache, dict):
+    raise SystemExit("result does not describe the query-cache prewarm")
+if not query_cache.get("index_prewarm_seconds", 0) > 0:
+    raise SystemExit("result does not record a positive full-index prewarm duration")
+if result.get("impl") == "lance":
+    if query_cache.get("mode") != "lance_strict_full_index":
+        raise SystemExit("Lance result does not use strict full-index cache prewarm")
+    if not query_cache.get("fully_resident_before_measurement"):
+        raise SystemExit("Lance cache was not fully resident before measurement")
+    if not query_cache.get("fully_resident_after_measurement"):
+        raise SystemExit("Lance cache was not fully resident after measurement")
+    if query_cache.get("capacity_bytes", 0) <= 0:
+        raise SystemExit("Lance result does not record a positive cache capacity")
+elif not query_cache.get("prewarm_completed"):
+    raise SystemExit("Lucene/Tantivy full-index page-cache prewarm did not complete")
+elif query_cache.get("index_prewarm_bytes") != result.get("index_bytes"):
+    raise SystemExit("Lucene/Tantivy prewarm byte count differs from index size")
 
 seen_qids = []
 with topk_path.open(encoding="utf-8") as source:
@@ -322,7 +343,8 @@ run_rust_engine() {
         --threads "$THREADS" \
         --warmup-rounds 1 \
         --measured-runs 3 \
-        --batch-rows "$BATCH_ROWS"
+        --batch-rows "$BATCH_ROWS" \
+        --cache-bytes "$CACHE_BYTES"
     validate_output "$result_json" "$topk_file"
 }
 
@@ -426,7 +448,7 @@ write_manifest() {
     "$PYTHON_BIN" - "$status" "$REPO_ROOT" "$DATASET_DIR" "$WORK_DIR" \
         "$RESULTS_DIR" "$LANCE_RUNNER" "$TANTIVY_RUNNER" "$LUCENE_CP" \
         "$JAVA_BIN" "$JAVAC_BIN" "$TIME_BIN" "$THREADS" "$K" "$QUALITY_K" \
-        "$BATCH_ROWS" "$ENGINE_ORDER" "$DATASET_MANIFEST" <<'PY'
+        "$BATCH_ROWS" "$CACHE_BYTES" "$ENGINE_ORDER" "$DATASET_MANIFEST" <<'PY'
 import hashlib
 import json
 import os
@@ -455,6 +477,7 @@ from pathlib import Path
     k,
     quality_k,
     batch_rows,
+    cache_bytes,
     engine_order,
     dataset_manifest_text,
 ) = sys.argv[1:]
@@ -583,6 +606,7 @@ for engine in ("lance", "tantivy", "lucene"):
                 "measured_repetitions": [
                     run.get("repetition") for run in value.get("runs", [])
                 ],
+                "query_cache": value.get("query_cache"),
             }
         except (OSError, json.JSONDecodeError):
             execution[engine] = None
@@ -623,10 +647,12 @@ manifest = {
         "k": int(k),
         "quality_k": int(quality_k),
         "batch_rows": int(batch_rows),
+        "lance_cache_bytes": int(cache_bytes),
         "warmup_rounds": 1,
         "measured_runs": 3,
         "engine_order": engine_order.split(),
         "input_prewarm": "complete sequential corpus read before every timed engine build",
+        "index_prewarm": "full persisted index before the discarded query sweep",
     },
     "tool_versions": {
         "python": platform.python_version(),

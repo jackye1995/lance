@@ -18,6 +18,7 @@ use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use futures::{StreamExt, TryStreamExt, stream};
 use lance_core::ROW_ID;
 use lance_core::cache::LanceCache;
+use lance_index::FtsPrewarmOptions;
 use lance_index::metrics::NoOpMetricsCollector;
 use lance_index::prefilter::NoFilter;
 use lance_index::scalar::InvertedIndexParams;
@@ -73,6 +74,7 @@ struct Args {
     warmup_rounds: usize,
     measured_runs: usize,
     batch_rows: usize,
+    cache_bytes: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -105,6 +107,7 @@ fn parse_args() -> AnyResult<Args> {
     let mut warmup_rounds = 1;
     let mut measured_runs = 3;
     let mut batch_rows = 8_192;
+    let mut cache_bytes = 64 * 1024 * 1024 * 1024;
     while let Some(flag) = values.next() {
         let value = values
             .next()
@@ -122,6 +125,7 @@ fn parse_args() -> AnyResult<Args> {
             "--warmup-rounds" => warmup_rounds = value.parse()?,
             "--measured-runs" => measured_runs = value.parse()?,
             "--batch-rows" => batch_rows = value.parse()?,
+            "--cache-bytes" => cache_bytes = value.parse()?,
             _ => return Err(format!("unknown argument {flag}").into()),
         }
     }
@@ -138,6 +142,7 @@ fn parse_args() -> AnyResult<Args> {
         warmup_rounds,
         measured_runs,
         batch_rows,
+        cache_bytes,
     };
     if args.k == 0
         || args.quality_k < args.k
@@ -145,8 +150,9 @@ fn parse_args() -> AnyResult<Args> {
         || args.warmup_rounds == 0
         || args.measured_runs == 0
         || args.batch_rows == 0
+        || args.cache_bytes == 0
     {
-        return Err("k, threads, warmup-rounds, measured-runs, and batch-rows must be positive; quality-k must be at least k".into());
+        return Err("k, threads, warmup-rounds, measured-runs, batch-rows, and cache-bytes must be positive; quality-k must be at least k".into());
     }
     Ok(args)
 }
@@ -210,6 +216,22 @@ fn dir_bytes(path: &FsPath) -> AnyResult<u64> {
         } else {
             metadata.len()
         };
+    }
+    Ok(total)
+}
+
+fn prewarm_index_dir(path: &FsPath) -> AnyResult<u64> {
+    let mut entries = fs::read_dir(path)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.path());
+    let mut total = 0;
+    for entry in entries {
+        let path = entry.path();
+        if entry.metadata()?.is_dir() {
+            total += prewarm_index_dir(&path)?;
+        } else {
+            let mut reader = BufReader::new(File::open(path)?);
+            total += std::io::copy(&mut reader, &mut std::io::sink())?;
+        }
     }
     Ok(total)
 }
@@ -352,12 +374,37 @@ async fn run_lance(args: &Args, queries: &[InputQuery]) -> AnyResult<serde_json:
     if docs == 0 {
         return Err(format!("{} contained no documents", args.corpus.display()).into());
     }
-    let index = InvertedIndex::load(store, None, &LanceCache::no_cache()).await?;
+    drop(builder);
+    drop(store);
+    let query_cache = Arc::new(LanceCache::with_capacity(args.cache_bytes));
+    let query_store = Arc::new(LanceIndexStore::new(
+        Arc::new(ObjectStore::local()),
+        Path::from_filesystem_path(&args.index_dir)?,
+        query_cache.clone(),
+    ));
+    let index = InvertedIndex::load(query_store, None, query_cache.as_ref()).await?;
+    let prewarm_started = Instant::now();
+    let prewarm_result = index
+        .prewarm_with_options_result(&FtsPrewarmOptions::default())
+        .await?;
+    let index_prewarm_s = prewarm_started.elapsed().as_secs_f64();
+    if !prewarm_result.fully_resident {
+        return Err(
+            "Lance strict full-index prewarm did not retain the full query working set".into(),
+        );
+    }
+    let cache_bytes_after_prewarm = query_cache.size_bytes().await;
+    let cache_entries_after_prewarm = query_cache.size().await;
 
     for _ in 0..args.warmup_rounds {
         for query in queries {
             lance_search(index.clone(), query.text.clone(), args.k).await?;
         }
+    }
+    let fully_resident_before_measurement =
+        index.prewarm_residency_result(false).await.fully_resident;
+    if !fully_resident_before_measurement {
+        return Err("Lance index cache lost full residency before measurement".into());
     }
 
     let mut measured = Vec::with_capacity(args.measured_runs);
@@ -385,6 +432,11 @@ async fn run_lance(args: &Args, queries: &[InputQuery]) -> AnyResult<serde_json:
         writeln!(topk, "{}\t{}", query.id, values)?;
     }
     topk.flush()?;
+    let fully_resident_after_measurement =
+        index.prewarm_residency_result(false).await.fully_resident;
+    if !fully_resident_after_measurement {
+        return Err("Lance index cache lost full residency during measurement".into());
+    }
     Ok(json!({
         "impl": "lance",
         "mode": "direct_persisted_index",
@@ -398,6 +450,15 @@ async fn run_lance(args: &Args, queries: &[InputQuery]) -> AnyResult<serde_json:
         "build_seconds": build_s,
         "build_docs_per_second": docs as f64 / build_s,
         "index_bytes": index_bytes,
+        "query_cache": {
+            "mode": "lance_strict_full_index",
+            "capacity_bytes": args.cache_bytes,
+            "bytes_after_prewarm": cache_bytes_after_prewarm,
+            "entries_after_prewarm": cache_entries_after_prewarm,
+            "index_prewarm_seconds": index_prewarm_s,
+            "fully_resident_before_measurement": fully_resident_before_measurement,
+            "fully_resident_after_measurement": fully_resident_after_measurement,
+        },
         "runs": measured,
     }))
 }
@@ -507,6 +568,9 @@ fn run_tantivy(args: &Args, queries: &[InputQuery]) -> AnyResult<serde_json::Val
     writer.commit()?;
     drop(writer);
     let build_s = build_started.elapsed().as_secs_f64();
+    let prewarm_started = Instant::now();
+    let prewarm_bytes = prewarm_index_dir(&args.index_dir)?;
+    let index_prewarm_s = prewarm_started.elapsed().as_secs_f64();
     let reader = index.reader()?;
     let searcher = reader.searcher();
 
@@ -565,6 +629,12 @@ fn run_tantivy(args: &Args, queries: &[InputQuery]) -> AnyResult<serde_json::Val
         "build_seconds": build_s,
         "build_docs_per_second": docs as f64 / build_s,
         "index_bytes": dir_bytes(&args.index_dir)?,
+        "query_cache": {
+            "mode": "mmap_os_page_cache_full_index_read",
+            "index_prewarm_bytes": prewarm_bytes,
+            "index_prewarm_seconds": index_prewarm_s,
+            "prewarm_completed": true,
+        },
         "runs": measured,
     }))
 }

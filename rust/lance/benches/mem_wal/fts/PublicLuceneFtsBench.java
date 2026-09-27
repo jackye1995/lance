@@ -44,6 +44,8 @@ import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.similarities.BM25Similarity;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
+import org.apache.lucene.store.IOContext;
+import org.apache.lucene.store.IndexInput;
 
 public class PublicLuceneFtsBench {
   private static final String TEXT_FIELD = "text";
@@ -225,6 +227,23 @@ public class PublicLuceneFtsBench {
     return bytes;
   }
 
+  private static long prewarmIndex(Directory directory) throws IOException {
+    byte[] buffer = new byte[8 * 1024 * 1024];
+    long bytes = 0;
+    for (String file : directory.listAll()) {
+      try (IndexInput input = directory.openInput(file, IOContext.READONCE)) {
+        long remaining = input.length();
+        while (remaining > 0) {
+          int chunk = (int) Math.min(buffer.length, remaining);
+          input.readBytes(buffer, 0, chunk);
+          remaining -= chunk;
+          bytes += chunk;
+        }
+      }
+    }
+    return bytes;
+  }
+
   private static void writeTopK(
       Path output,
       IndexSearcher searcher,
@@ -272,6 +291,9 @@ public class PublicLuceneFtsBench {
       int measuredRuns,
       double buildSeconds,
       long indexBytes,
+      String directoryImpl,
+      long indexPrewarmBytes,
+      double indexPrewarmSeconds,
       List<RunResult> runs) {
     StringBuilder out = new StringBuilder();
     out.append('{');
@@ -290,6 +312,16 @@ public class PublicLuceneFtsBench {
             ",\"build_docs_per_second\":%.3f",
             documents / buildSeconds));
     out.append(",\"index_bytes\":").append(indexBytes);
+    out.append(",\"query_cache\":{");
+    out.append("\"mode\":\"lucene_directory_full_index_read\"");
+    out.append(",\"directory_impl\":\"").append(directoryImpl).append("\"");
+    out.append(",\"index_prewarm_bytes\":").append(indexPrewarmBytes);
+    out.append(
+        String.format(
+            Locale.ROOT,
+            ",\"index_prewarm_seconds\":%.6f",
+            indexPrewarmSeconds));
+    out.append(",\"prewarm_completed\":true}");
     out.append(",\"runs\":[");
     for (int i = 0; i < runs.size(); i++) {
       if (i > 0) {
@@ -336,6 +368,9 @@ public class PublicLuceneFtsBench {
       long documents = buildIndex(corpus, directory, analyzer, textFieldType);
       double buildSeconds = (System.nanoTime() - buildStarted) / 1.0e9;
       long bytes = indexBytes(directory);
+      long prewarmStarted = System.nanoTime();
+      long prewarmBytes = prewarmIndex(directory);
+      double prewarmSeconds = (System.nanoTime() - prewarmStarted) / 1.0e9;
 
       try (DirectoryReader reader = DirectoryReader.open(directory)) {
         IndexSearcher searcher = new IndexSearcher(reader);
@@ -384,6 +419,9 @@ public class PublicLuceneFtsBench {
                 measuredRuns,
                 buildSeconds,
                 bytes,
+                directory.getClass().getName(),
+                prewarmBytes,
+                prewarmSeconds,
                 runs);
         Path parent = output.getParent();
         if (parent != null) {

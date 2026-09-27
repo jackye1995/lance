@@ -977,7 +977,7 @@ pub struct WalEntryData {
     /// Record batches from the WAL entry.
     pub batches: Vec<RecordBatch>,
     /// Preassigned SSTable target, when this is a MemTable WAL entry.
-    pub target: Option<MemTableDataTarget>,
+    pub(crate) target: Option<MemTableDataTarget>,
 }
 
 impl WalEntryData {
@@ -1102,7 +1102,7 @@ pub struct WalReadEntry {
     /// Writer epoch recorded in the WAL entry's IPC schema metadata.
     /// Replay logic uses this to fence-check against the current epoch.
     pub writer_epoch: u64,
-    pub target: Option<MemTableDataTarget>,
+    pub(crate) target: Option<MemTableDataTarget>,
     pub batches: Vec<RecordBatch>,
 }
 

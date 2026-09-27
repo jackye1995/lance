@@ -4886,6 +4886,7 @@ pub fn new_shared_stats() -> SharedWriteStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Dataset;
     use crate::blob::{
         BlobArrayBuilder, BlobFieldOptions, blob_field_with_options, blob_v2_layout,
     };
@@ -4898,6 +4899,7 @@ mod tests {
     use arrow_schema::{DataType, Field};
     use lance_core::FenceReason;
     use lance_core::datatypes::{BlobKind, BlobV2Layout, LANCE_FIELD_ID_KEY};
+    use object_store::ObjectStoreExt;
     use rstest::rstest;
     use std::collections::HashMap;
     use std::num::NonZeroUsize;

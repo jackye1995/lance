@@ -1479,8 +1479,7 @@ fn prepared_field_to_descriptor(
                 .map(|(array, field)| prepared_field_to_descriptor(array, field))
                 .collect::<Result<Vec<_>>>()?;
             let (arrays, fields): (Vec<_>, Vec<_>) = converted.into_iter().unzip();
-            let output =
-                StructArray::try_new(fields.clone().into(), arrays, values.nulls().cloned())?;
+            let output = StructArray::try_new(fields.into(), arrays, values.nulls().cloned())?;
             let field = Arc::new(
                 ArrowField::new(
                     field.name(),
@@ -1533,7 +1532,7 @@ fn prepared_field_to_descriptor(
     }
 }
 
-pub(crate) fn prepared_blob_batch_to_descriptors(batch: &RecordBatch) -> Result<RecordBatch> {
+pub fn prepared_blob_batch_to_descriptors(batch: &RecordBatch) -> Result<RecordBatch> {
     let converted = batch
         .columns()
         .iter()

@@ -5030,9 +5030,9 @@ mod tests {
                 "the 1 MiB payload must not remain resident: {row_bytes} bytes"
             );
 
+            let tailer = WalTailer::new(store.clone(), base_path.clone(), config.shard_id);
             for position in [1, 2] {
-                let path = writer.wal_flusher.wal_appender().wal_entry_path(position);
-                let entry = WalEntryData::read(store.as_ref(), &path).await.unwrap();
+                let entry = tailer.read_entry(position).await.unwrap().unwrap();
                 assert_eq!(entry.target.as_ref(), Some(&target));
                 assert_eq!(
                     blob_v2_layout(entry.batches[0].schema().field(1)),

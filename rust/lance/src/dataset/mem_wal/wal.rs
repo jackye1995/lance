@@ -976,8 +976,6 @@ pub struct WalEntryData {
     pub writer_epoch: u64,
     /// Record batches from the WAL entry.
     pub batches: Vec<RecordBatch>,
-    /// Preassigned SSTable target, when this is a MemTable WAL entry.
-    pub(crate) target: Option<MemTableDataTarget>,
 }
 
 impl WalEntryData {
@@ -1015,8 +1013,6 @@ impl WalEntryData {
             .get(WRITER_EPOCH_KEY)
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(0);
-        let target = target_from_metadata(schema.metadata())?;
-
         // Read all batches
         let mut batches = Vec::new();
         for batch_result in reader {
@@ -1029,7 +1025,6 @@ impl WalEntryData {
         Ok(Self {
             writer_epoch,
             batches,
-            target,
         })
     }
 }

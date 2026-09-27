@@ -144,6 +144,7 @@ pub async fn write_fragments(
     params: WriteParams,
     target_bases_info: Option<Vec<TargetBaseInfo>>,
     file_row_counts: Option<Vec<usize>>,
+    data_file_name: Option<String>,
 ) -> Result<(Vec<Fragment>, Schema)> {
     let normalized_schema = match version {
         ConcreteFileVersion::V2_2 | ConcreteFileVersion::V2_3 => {
@@ -178,6 +179,7 @@ pub async fn write_fragments(
         target_bases_info,
         seed_writers,
         file_row_counts,
+        data_file_name,
     )
     .await?;
     Ok((fragments, schema))
@@ -195,6 +197,7 @@ pub async fn write_fragments_direct(
     target_bases_info: Option<Vec<TargetBaseInfo>>,
     seed_writers: Vec<Box<dyn IndexSeedWriter>>,
     file_row_counts: Option<Vec<usize>>,
+    data_file_name: Option<String>,
 ) -> Result<Vec<Fragment>> {
     let buffered_reader = if let Some(file_row_counts) = file_row_counts.as_ref() {
         if file_row_counts.contains(&0) {
@@ -257,6 +260,7 @@ pub async fn write_fragments_direct(
         target_bases_info,
         seed_writers,
         file_row_counts,
+        data_file_name,
     )
     .await
 }

@@ -34,7 +34,7 @@ use lance_linalg::distance::DistanceType;
 use super::super::builder::VectorQuery;
 use super::newest_pk_positions;
 use super::vector::DISTANCE_COLUMN;
-use crate::dataset::mem_wal::memtable::scanner::exec::take_projected_columns;
+use crate::dataset::mem_wal::memtable::scanner::exec::{scan_record_batch, take_projected_columns};
 use crate::dataset::mem_wal::write::BatchStore;
 
 /// Distance metric used when [`VectorQuery::distance_type`] is `None`. The
@@ -358,6 +358,7 @@ impl MemTableBruteForceVectorExec {
         let mut all_batches = Vec::new();
         for (batch_id, rows_with_dist) in batches_data {
             if let Some(stored) = self.batch_store.get(batch_id) {
+                let data = scan_record_batch(&stored.data)?;
                 let rows: Vec<u32> = rows_with_dist.iter().map(|&(r, _, _)| r as u32).collect();
                 let distances: Vec<f32> = rows_with_dist.iter().map(|&(_, d, _)| d).collect();
                 let row_positions: Vec<u64> =
@@ -365,8 +366,7 @@ impl MemTableBruteForceVectorExec {
 
                 let indices = arrow_array::UInt32Array::from(rows);
 
-                let mut columns: Vec<Arc<dyn arrow_array::Array>> = stored
-                    .data
+                let mut columns: Vec<Arc<dyn arrow_array::Array>> = data
                     .columns()
                     .iter()
                     .map(|col| arrow_select::take::take(col.as_ref(), &indices, None).unwrap())
@@ -374,7 +374,7 @@ impl MemTableBruteForceVectorExec {
 
                 columns.push(Arc::new(Float32Array::from(distances)));
 
-                let source_schema = stored.data.schema();
+                let source_schema = data.schema();
                 let mut final_columns = if let Some(ref proj_indices) = self.projection {
                     let mut projected: Vec<_> = take_projected_columns(
                         &columns,

@@ -14,7 +14,8 @@ use std::{
 use arrow::array::AsArray;
 use arrow::datatypes::{UInt8Type, UInt32Type, UInt64Type};
 use arrow_array::{
-    Array, ArrayRef, GenericListArray, OffsetSizeTrait, RecordBatch, builder::LargeBinaryBuilder,
+    Array, ArrayRef, GenericListArray, OffsetSizeTrait, RecordBatch, StringArray, StructArray,
+    UInt8Array, UInt32Array, UInt64Array, builder::LargeBinaryBuilder,
 };
 use arrow_buffer::{ArrowNativeType, OffsetBuffer, ScalarBuffer};
 use arrow_schema::{
@@ -42,10 +43,9 @@ use crate::blob::{
     BlobDescriptor, BlobDescriptorArrayBuilder, BlobIdAllocator, BlobRange, PackedBlobWriter,
     blob_v2_layout, blob_v2_shape_error, validate_prepared_blob_array,
 };
-use arrow_array::StructArray;
 use lance_core::datatypes::{
-    BLOB_DESC_FIELDS, BlobKind, BlobV2Layout, BlobVersion, Field as LanceField, Schema,
-    parse_field_path,
+    BLOB_DESC_FIELDS, BLOB_V2_DESC_FIELDS, BlobKind, BlobV2Layout, BlobVersion,
+    Field as LanceField, Schema, parse_field_path,
 };
 use lance_core::utils::blob::blob_path;
 use lance_core::{Error, ROW_ADDR, Result, utils::address::RowAddress};
@@ -674,6 +674,14 @@ impl BlobPreprocessor {
             processor.force_non_empty_inline_to_sidecar();
         }
         Ok(self)
+    }
+
+    pub(crate) fn for_mem_wal(mut self, blob_id_allocator: BlobIdAllocator) -> Self {
+        self.blob_id_allocator = blob_id_allocator;
+        for processor in &mut self.field_processors {
+            processor.force_non_empty_inline_to_sidecar();
+        }
+        self
     }
 
     fn blob_writer_with_metadata(
@@ -1331,6 +1339,218 @@ impl BlobPreprocessor {
     pub(super) fn abort(&mut self) {
         self.pack_writer.abort();
     }
+}
+
+fn prepared_blob_to_descriptor(
+    array: &ArrayRef,
+    field: &ArrowField,
+) -> Result<(ArrayRef, Arc<ArrowField>)> {
+    validate_prepared_blob_array(field, array)?;
+    let values = array.as_struct();
+    let kinds = values
+        .column_by_name("kind")
+        .expect("validated prepared Blob has kind")
+        .as_primitive::<UInt8Type>();
+    let data = values
+        .column_by_name("data")
+        .expect("validated prepared Blob has data")
+        .as_binary::<i64>();
+    let uris = values
+        .column_by_name("uri")
+        .expect("validated prepared Blob has uri")
+        .as_string::<i32>();
+    let blob_ids = values
+        .column_by_name("blob_id")
+        .expect("validated prepared Blob has blob_id")
+        .as_primitive::<UInt32Type>();
+    let sizes = values
+        .column_by_name("blob_size")
+        .expect("validated prepared Blob has blob_size")
+        .as_primitive::<UInt64Type>();
+    let positions = values
+        .column_by_name("position")
+        .expect("validated prepared Blob has position")
+        .as_primitive::<UInt64Type>();
+
+    let mut output_kinds = Vec::with_capacity(values.len());
+    let mut output_positions = Vec::with_capacity(values.len());
+    let mut output_sizes = Vec::with_capacity(values.len());
+    let mut output_ids = Vec::with_capacity(values.len());
+    let mut output_uris = Vec::with_capacity(values.len());
+
+    for row in 0..values.len() {
+        if values.is_null(row) {
+            output_kinds.push(BlobKind::Inline as u8);
+            output_positions.push(0);
+            output_sizes.push(0);
+            output_ids.push(0);
+            output_uris.push(String::new());
+            continue;
+        }
+        match BlobKind::try_from(kinds.value(row))? {
+            BlobKind::Inline => {
+                let inline = data.value(row);
+                if !inline.is_empty() {
+                    return Err(Error::internal(format!(
+                        "MemWAL prepared Blob field '{}' row {row} still contains {} inline bytes",
+                        field.name(),
+                        inline.len()
+                    )));
+                }
+                output_kinds.push(BlobKind::Inline as u8);
+                output_positions.push(0);
+                output_sizes.push(0);
+                output_ids.push(0);
+                output_uris.push(String::new());
+            }
+            BlobKind::Packed => {
+                output_kinds.push(BlobKind::Packed as u8);
+                output_positions.push(positions.value(row));
+                output_sizes.push(sizes.value(row));
+                output_ids.push(blob_ids.value(row));
+                output_uris.push(String::new());
+            }
+            BlobKind::Dedicated => {
+                output_kinds.push(BlobKind::Dedicated as u8);
+                output_positions.push(0);
+                output_sizes.push(sizes.value(row));
+                output_ids.push(blob_ids.value(row));
+                output_uris.push(String::new());
+            }
+            BlobKind::External => {
+                output_kinds.push(BlobKind::External as u8);
+                output_positions.push(if positions.is_null(row) {
+                    0
+                } else {
+                    positions.value(row)
+                });
+                output_sizes.push(if sizes.is_null(row) {
+                    0
+                } else {
+                    sizes.value(row)
+                });
+                output_ids.push(if blob_ids.is_null(row) {
+                    0
+                } else {
+                    blob_ids.value(row)
+                });
+                output_uris.push(uris.value(row).to_string());
+            }
+        }
+    }
+
+    let descriptor = StructArray::try_new(
+        BLOB_V2_DESC_FIELDS.clone(),
+        vec![
+            Arc::new(UInt8Array::from(output_kinds)),
+            Arc::new(UInt64Array::from(output_positions)),
+            Arc::new(UInt64Array::from(output_sizes)),
+            Arc::new(UInt32Array::from(output_ids)),
+            Arc::new(StringArray::from(output_uris)),
+        ],
+        values.nulls().cloned(),
+    )?;
+    let field = Arc::new(
+        ArrowField::new(
+            field.name(),
+            descriptor.data_type().clone(),
+            field.is_nullable(),
+        )
+        .with_metadata(field.metadata().clone()),
+    );
+    Ok((Arc::new(descriptor), field))
+}
+
+fn prepared_field_to_descriptor(
+    array: &ArrayRef,
+    field: &Arc<ArrowField>,
+) -> Result<(ArrayRef, Arc<ArrowField>)> {
+    if blob_v2_layout(field.as_ref()) == Some(BlobV2Layout::Prepared) {
+        return prepared_blob_to_descriptor(array, field.as_ref());
+    }
+
+    match field.data_type() {
+        ArrowDataType::Struct(children) => {
+            let values = array.as_struct();
+            let converted = values
+                .columns()
+                .iter()
+                .zip(children.iter())
+                .map(|(array, field)| prepared_field_to_descriptor(array, field))
+                .collect::<Result<Vec<_>>>()?;
+            let (arrays, fields): (Vec<_>, Vec<_>) = converted.into_iter().unzip();
+            let output =
+                StructArray::try_new(fields.clone().into(), arrays, values.nulls().cloned())?;
+            let field = Arc::new(
+                ArrowField::new(
+                    field.name(),
+                    output.data_type().clone(),
+                    field.is_nullable(),
+                )
+                .with_metadata(field.metadata().clone()),
+            );
+            Ok((Arc::new(output), field))
+        }
+        ArrowDataType::List(child) => {
+            let values = array.as_list::<i32>();
+            let (child_array, child_field) = prepared_field_to_descriptor(values.values(), child)?;
+            let output = GenericListArray::<i32>::try_new(
+                child_field,
+                values.offsets().clone(),
+                child_array,
+                values.nulls().cloned(),
+            )?;
+            let field = Arc::new(
+                ArrowField::new(
+                    field.name(),
+                    output.data_type().clone(),
+                    field.is_nullable(),
+                )
+                .with_metadata(field.metadata().clone()),
+            );
+            Ok((Arc::new(output), field))
+        }
+        ArrowDataType::LargeList(child) => {
+            let values = array.as_list::<i64>();
+            let (child_array, child_field) = prepared_field_to_descriptor(values.values(), child)?;
+            let output = GenericListArray::<i64>::try_new(
+                child_field,
+                values.offsets().clone(),
+                child_array,
+                values.nulls().cloned(),
+            )?;
+            let field = Arc::new(
+                ArrowField::new(
+                    field.name(),
+                    output.data_type().clone(),
+                    field.is_nullable(),
+                )
+                .with_metadata(field.metadata().clone()),
+            );
+            Ok((Arc::new(output), field))
+        }
+        _ => Ok((array.clone(), field.clone())),
+    }
+}
+
+pub(crate) fn prepared_blob_batch_to_descriptors(batch: &RecordBatch) -> Result<RecordBatch> {
+    let converted = batch
+        .columns()
+        .iter()
+        .zip(batch.schema().fields().iter())
+        .map(|(array, field)| prepared_field_to_descriptor(array, field))
+        .collect::<Result<Vec<_>>>()?;
+    let (columns, fields): (Vec<_>, Vec<_>) = converted.into_iter().unzip();
+    let schema = Arc::new(ArrowSchema::new_with_metadata(
+        fields,
+        batch.schema().metadata().clone(),
+    ));
+    RecordBatch::try_new_with_options(
+        schema,
+        columns,
+        &arrow_array::RecordBatchOptions::new().with_row_count(Some(batch.num_rows())),
+    )
+    .map_err(|error| Error::internal(format!("convert prepared MemWAL Blob batch: {error}")))
 }
 
 /// Shared physical read context for blob handles that resolve to the same object.

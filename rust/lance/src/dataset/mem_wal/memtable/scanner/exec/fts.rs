@@ -3,7 +3,7 @@
 
 //! FtsIndexExec - Full-text search with MVCC visibility.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map::Entry};
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
@@ -345,12 +345,10 @@ impl FtsIndexExec {
             if let Some(batch_range) = self.find_batch(pos as usize)
                 && let Some(stored) = self.batch_store.get(batch_range.batch_id)
             {
-                if !scan_batches.contains_key(&batch_range.batch_id) {
-                    scan_batches.insert(batch_range.batch_id, scan_record_batch(&stored.data)?);
-                }
-                let data = scan_batches
-                    .get(&batch_range.batch_id)
-                    .expect("scan batch was inserted above");
+                let data = match scan_batches.entry(batch_range.batch_id) {
+                    Entry::Occupied(entry) => entry.into_mut(),
+                    Entry::Vacant(entry) => entry.insert(scan_record_batch(&stored.data)?),
+                };
                 let row_in_batch = (pos as usize - batch_range.start) as u32;
                 let indices = UInt32Array::from(vec![row_in_batch]);
 

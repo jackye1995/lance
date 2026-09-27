@@ -2550,7 +2550,7 @@ impl ShardWriter {
                 .expect("memtable_validation is Some when enable_memtable is true");
             let prepared_storage_schema =
                 Arc::new(logical_to_prepared_blob_schema(storage_schema.as_ref())?);
-            Self::open_memtable_mode(
+            Box::pin(Self::open_memtable_mode(
                 &config,
                 &storage_schema,
                 &prepared_storage_schema,
@@ -2569,7 +2569,7 @@ impl ShardWriter {
                 manifest_store.clone(),
                 stats.clone(),
                 &task_executor,
-            )
+            ))
             .await?
         } else {
             Self::open_wal_only_mode(

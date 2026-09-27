@@ -2367,6 +2367,25 @@ impl ShardWriter {
         schema: Arc<ArrowSchema>,
         index_configs: Vec<MemIndexConfig>,
     ) -> Result<Self> {
+        Box::pin(Self::open_inner(
+            object_store,
+            base_path,
+            base_uri.into(),
+            config,
+            schema,
+            index_configs,
+        ))
+        .await
+    }
+
+    async fn open_inner(
+        object_store: Arc<ObjectStore>,
+        base_path: Path,
+        base_uri: String,
+        config: ShardWriterConfig,
+        schema: Arc<ArrowSchema>,
+        index_configs: Vec<MemIndexConfig>,
+    ) -> Result<Self> {
         if !config.enable_memtable && !index_configs.is_empty() {
             return Err(Error::invalid_input(
                 "indexes require enable_memtable = true; \
@@ -2397,7 +2416,6 @@ impl ShardWriter {
         // none, and Arrow compares a struct's children in full.
         let logical_schema = Arc::new(without_field_ids(&schema));
 
-        let base_uri = base_uri.into();
         let shard_id = config.shard_id;
         let manifest_store = Arc::new(ShardManifestStore::new(
             object_store.clone(),

@@ -49,6 +49,7 @@ pub mod write;
 
 use std::sync::Arc;
 
+use lance_core::Result;
 use lance_core::datatypes::{Field, LANCE_FIELD_ID_KEY, Schema};
 
 use arrow_array::RecordBatch;

@@ -34,7 +34,7 @@ use lance_io::traits::Writer;
 use lance_table::format::{BasePath, DataFile, Fragment, IndexMetadata};
 use lance_table::io::commit::{CommitHandler, commit_handler_from_url};
 use lance_table::io::manifest::ManifestDescribing;
-use object_store::path::Path;
+use object_store::{ObjectStoreExt, path::Path};
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::future::Future;

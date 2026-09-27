@@ -5074,6 +5074,15 @@ mod tests {
             assert_eq!(kinds.value(6), BlobKind::Packed as u8);
             assert_ne!(blob_ids.value(0), blob_ids.value(6));
 
+            let mut point_lookup = writer.scan().await.unwrap();
+            point_lookup.filter("id = 0").unwrap();
+            let point_lookup = point_lookup.try_into_batch().await.unwrap();
+            assert_eq!(point_lookup.num_rows(), 1);
+            assert_eq!(
+                blob_v2_layout(point_lookup.schema().field(1)),
+                Some(BlobV2Layout::Descriptor)
+            );
+
             let data_dir = target.generation_path(&base_path, &shard_id).join(DATA_DIR);
             let sidecars = blob_sidecars(store.as_ref(), &data_dir).await;
             assert_eq!(sidecars.len(), 3, "two packed puts plus one dedicated blob");

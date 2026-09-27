@@ -566,7 +566,7 @@ fn run_tantivy(args: &Args, queries: &[InputQuery]) -> AnyResult<serde_json::Val
         docs += 1;
     }
     writer.commit()?;
-    drop(writer);
+    writer.wait_merging_threads()?;
     let build_s = build_started.elapsed().as_secs_f64();
     let prewarm_started = Instant::now();
     let prewarm_bytes = prewarm_index_dir(&args.index_dir)?;

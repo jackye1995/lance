@@ -74,6 +74,8 @@ use crate::dataset::fragment::write::generate_random_filename;
 /// [`write::ShardWriter::delete`]), so no caller ever constructs or names it.
 pub const TOMBSTONE: &str = "_tombstone";
 
+const BLOB_PREWRITE_MARKER_PREFIX: &str = "_blob_prewrite_epoch_";
+
 /// The storage identity reserved for one MemTable generation.
 ///
 /// Managed Blob v2 payloads are written beneath `data_file_name` before the
@@ -108,6 +110,15 @@ impl MemTableDataTarget {
         self.data_file_name
             .strip_suffix(".lance")
             .unwrap_or(&self.data_file_name)
+    }
+
+    fn prewrite_marker_name(&self) -> String {
+        format!("{BLOB_PREWRITE_MARKER_PREFIX}{}", self.creator_epoch)
+    }
+
+    pub fn prewrite_marker_path(&self, base_path: &Path, shard_id: &Uuid) -> Path {
+        self.generation_path(base_path, shard_id)
+            .join(self.prewrite_marker_name())
     }
 
     fn validate(&self) -> Result<()> {

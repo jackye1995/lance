@@ -23,6 +23,7 @@ use arc_swap::ArcSwap;
 use arrow_array::{ArrayRef, BooleanArray, RecordBatch, RecordBatchOptions, new_null_array};
 use arrow_schema::Schema as ArrowSchema;
 use async_trait::async_trait;
+use bytes::Bytes;
 use lance_core::datatypes::Schema;
 use lance_core::{Error, Result};
 use lance_index::mem_wal::ShardManifest;
@@ -57,7 +58,10 @@ use super::wal::{
     BatchDurableWatcher, TriggerIndexApply, TriggerWalFlush, WalAppender, WalFlushSource,
     WalOnlyState, WalRetryConfig, WalTailer, WriterCursors, apply_index_range, empty_flush_result,
 };
-use super::{MemTableDataTarget, TOMBSTONE, relax_non_pk_nullability, schema_with_tombstone};
+use super::{
+    BLOB_PREWRITE_MARKER_PREFIX, MemTableDataTarget, TOMBSTONE, relax_non_pk_nullability,
+    schema_with_tombstone,
+};
 use crate::blob::logical_to_prepared_blob_schema;
 use crate::dataset::DATA_DIR;
 use crate::dataset::blob::BlobPreprocessor;
@@ -1733,10 +1737,11 @@ fn is_generation_dir_name(name: &str) -> bool {
         && generation.parse::<u64>().is_ok()
 }
 
-async fn cleanup_orphaned_generation_dirs(
+async fn cleanup_abandoned_blob_targets(
     object_store: &ObjectStore,
     base_path: &Path,
     shard_id: Uuid,
+    epoch: u64,
     manifest_store: &ShardManifestStore,
     active_target: Option<&MemTableDataTarget>,
 ) -> Result<()> {
@@ -1757,10 +1762,19 @@ async fn cleanup_orphaned_generation_dirs(
 
     let shard_path = shard_base_path(base_path, &shard_id);
     for child in object_store.read_dir(shard_path.clone()).await? {
-        if is_generation_dir_name(&child) && !live_dirs.contains(&child) {
-            object_store
-                .remove_dir_all(shard_path.clone().join(child.as_str()))
-                .await?;
+        if !is_generation_dir_name(&child) || live_dirs.contains(&child) {
+            continue;
+        }
+        let generation_path = shard_path.clone().join(child.as_str());
+        let is_abandoned = object_store
+            .read_dir(generation_path.clone())
+            .await?
+            .iter()
+            .filter_map(|name| name.strip_prefix(BLOB_PREWRITE_MARKER_PREFIX))
+            .filter_map(|marker_epoch| marker_epoch.parse::<u64>().ok())
+            .any(|marker_epoch| marker_epoch < epoch);
+        if is_abandoned {
+            object_store.remove_dir_all(generation_path).await?;
         }
     }
     Ok(())
@@ -1906,6 +1920,7 @@ struct SharedWriterState {
     input_schema: Arc<ArrowSchema>,
     schema: Arc<ArrowSchema>,
     preassign_data_target: bool,
+    blob_target_markers: StdRwLock<HashSet<String>>,
     pk_field_ids: Vec<i32>,
     /// Primary-key column names, used to (re)enable the PK-position index on
     /// each fresh active memtable created at freeze.
@@ -1951,12 +1966,37 @@ impl SharedWriterState {
             input_schema,
             schema,
             preassign_data_target,
+            blob_target_markers: StdRwLock::new(HashSet::new()),
             pk_field_ids,
             pk_columns,
             max_memtable_batches,
             max_memtable_rows,
             index_configs,
         }
+    }
+
+    async fn ensure_blob_target_marker(&self, target: &MemTableDataTarget) -> Result<()> {
+        {
+            let mut marked_targets = self.blob_target_markers.write().unwrap();
+            if !marked_targets.insert(target.generation_dir.clone()) {
+                return Ok(());
+            }
+        }
+
+        let marker_path = target.prewrite_marker_path(&self.base_path, &self.shard_id);
+        if let Err(error) = self
+            .object_store
+            .inner
+            .put(&marker_path, Bytes::new().into())
+            .await
+        {
+            self.blob_target_markers
+                .write()
+                .unwrap()
+                .remove(&target.generation_dir);
+            return Err(error.into());
+        }
+        Ok(())
     }
 
     async fn prepare_batches(
@@ -1995,6 +2035,7 @@ impl SharedWriterState {
         for batch in &batches {
             preprocessor.validate_batch(batch).await?;
         }
+        self.ensure_blob_target_marker(target).await?;
         let prepared = async {
             let mut prepared = Vec::with_capacity(batches.len());
             for batch in batches {
@@ -2809,17 +2850,18 @@ impl ShardWriter {
             .seed_next_position(next_wal_position)
             .await;
 
-        if let Err(error) = cleanup_orphaned_generation_dirs(
+        if let Err(error) = cleanup_abandoned_blob_targets(
             object_store.as_ref(),
             &base_path,
             shard_id,
+            epoch,
             manifest_store.as_ref(),
             memtable.target(),
         )
         .await
         {
             warn!(
-                "failed to clean orphaned MemWAL generation directories for shard {}: {}",
+                "failed to clean abandoned MemWAL Blob targets for shard {}: {}",
                 shard_id, error
             );
         }
@@ -5417,6 +5459,14 @@ mod tests {
         store
             .inner
             .put(&orphan_path, bytes::Bytes::from_static(b"orphan").into())
+            .await
+            .unwrap();
+        store
+            .inner
+            .put(
+                &orphan.prewrite_marker_path(&base_path, &shard_id),
+                bytes::Bytes::new().into(),
+            )
             .await
             .unwrap();
 
@@ -9454,6 +9504,13 @@ mod tests {
             "writer A's close() should have stamped an SSTable"
         );
         let cursor_at_flush = pre.replay_after_wal_entry_position;
+        let old_generation_uri = format!(
+            "{}/_mem_wal/{}/{}",
+            base_uri.trim_end_matches('/'),
+            shard_id,
+            pre.sstables[0].path
+        );
+        assert!(Dataset::open(&old_generation_uri).await.is_ok());
         assert!(
             cursor_at_flush >= 1,
             "expected cursor to land on a 1-based WAL position after flush, got {cursor_at_flush}"
@@ -9494,6 +9551,10 @@ mod tests {
         )
         .await
         .unwrap();
+        assert!(
+            Dataset::open(&old_generation_uri).await.is_ok(),
+            "writer reopen removed an SSTable retained by the older shard manifest"
+        );
         let stats = writer_b.memtable_stats().await.unwrap();
         assert_eq!(
             stats.row_count, 0,

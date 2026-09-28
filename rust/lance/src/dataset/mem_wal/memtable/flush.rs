@@ -286,6 +286,17 @@ impl MemTableFlusher {
         Ok(())
     }
 
+    async fn retire_blob_target_marker(&self, memtable: &MemTable) -> Result<()> {
+        let Some(target) = memtable.target() else {
+            return Ok(());
+        };
+        let marker_path = target.prewrite_marker_path(&self.base_path, &self.shard_id);
+        match self.object_store.inner.delete(&marker_path).await {
+            Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     /// Storage file version of the shard's base dataset. SSTables
     /// (data fragments and index files) are written at this same version so the
     /// whole shard stays on one format (e.g. a 2.2 base => 2.2 SSTables).
@@ -366,6 +377,12 @@ impl MemTableFlusher {
         // Warm before commit (zero cold window); no-op without a warmer.
         let warm_uri = self.path_to_uri(&gen_path);
         self.warm_generation(&warm_uri).await;
+
+        // Once the marker is gone, writer-open reclamation can no longer treat
+        // this generation as an abandoned prewrite target. Retire it before the
+        // shard manifest publishes the SSTable so retained snapshots are never
+        // exposed to the prewrite cleanup path.
+        self.retire_blob_target_marker(memtable).await?;
 
         let new_manifest = self
             .update_manifest(
@@ -702,6 +719,8 @@ impl MemTableFlusher {
         // Warm before commit (zero cold window); no-op without a warmer.
         let warm_uri = self.path_to_uri(&gen_path);
         self.warm_generation(&warm_uri).await;
+
+        self.retire_blob_target_marker(memtable).await?;
 
         let new_manifest = self
             .update_manifest(

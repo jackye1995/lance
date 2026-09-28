@@ -4918,6 +4918,7 @@ mod tests {
     };
     use arrow_schema::Field as ArrowField;
     use arrow_schema::{DataType, Field};
+    use lance_arrow::FixedSizeListArrayExt;
     use lance_core::FenceReason;
     use lance_core::datatypes::{BlobKind, BlobV2Layout, LANCE_FIELD_ID_KEY};
     use object_store::ObjectStoreExt;

@@ -2647,24 +2647,27 @@ impl ShardWriter {
                                    global_offset: usize,
                                    target: Option<MemTableDataTarget>|
          -> Result<MemTable> {
+            let target = target.or_else(|| {
+                preassign_data_target.then(|| {
+                    MemTableDataTarget::new(generation, epoch, config.max_memtable_batches)
+                })
+            });
+            let batch_capacity = target
+                .as_ref()
+                .map(|target| target.batch_capacity)
+                .unwrap_or(config.max_memtable_batches)
+                .max(config.max_memtable_batches);
             let mut memtable = MemTable::with_capacity_at_target(
                 prepared_schema.clone(),
                 generation,
                 pk_field_ids.clone(),
                 CacheConfig::default(),
-                config.max_memtable_batches,
+                batch_capacity,
                 global_offset,
-                target.or_else(|| {
-                    preassign_data_target.then(|| {
-                        MemTableDataTarget::new(generation, epoch, config.max_memtable_batches)
-                    })
-                }),
+                target,
             )?;
-            let mut indexes = IndexStore::from_configs(
-                index_configs,
-                config.max_memtable_rows,
-                config.max_memtable_batches,
-            )?;
+            let mut indexes =
+                IndexStore::from_configs(index_configs, config.max_memtable_rows, batch_capacity)?;
             if !pk_columns.is_empty() {
                 indexes.enable_pk_index(&pk_index_columns(&pk_columns, &pk_field_ids));
             }
@@ -4944,7 +4947,12 @@ mod tests {
             "lance-schema:unenforced-primary-key".to_string(),
             "true".to_string(),
         )]));
-        let schema = Arc::new(ArrowSchema::new(vec![id, field]));
+        let vector = Field::new(
+            "vector",
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 2),
+            false,
+        );
+        let schema = Arc::new(ArrowSchema::new(vec![id, field, vector]));
         let mut blobs = BlobArrayBuilder::new(values.len());
         for value in values {
             match value {
@@ -4961,6 +4969,15 @@ mod tests {
                     start_id..start_id + values.len() as i32,
                 )),
                 blobs.finish().unwrap(),
+                Arc::new(
+                    FixedSizeListArray::try_new_from_values(
+                        Float32Array::from_iter_values(
+                            (0..values.len() * 2).map(|value| value as f32),
+                        ),
+                        2,
+                    )
+                    .unwrap(),
+                ),
             ],
         )
         .unwrap()
@@ -5011,6 +5028,12 @@ mod tests {
         );
         let schema = first.schema();
         let second = create_blob_v2_batch(6, &[BlobTestValue::Bytes(b"later".to_vec())]);
+        let index_configs = vec![MemIndexConfig::Hnsw(Box::new(HnswIndexConfig::new(
+            "vector_idx".to_string(),
+            2,
+            "vector".to_string(),
+            lance_linalg::distance::DistanceType::L2,
+        )))];
         let config = ShardWriterConfig {
             shard_id,
             durable_write: true,
@@ -5026,7 +5049,7 @@ mod tests {
                 base_uri.clone(),
                 config.clone(),
                 schema.clone(),
-                vec![],
+                index_configs.clone(),
             )
             .await
             .unwrap();
@@ -5111,7 +5134,8 @@ mod tests {
 
         // Reopening claims a new epoch. Replay must flush the predecessor's
         // partial target as-is instead of rewriting its payloads or appending
-        // into its Blob ID namespace.
+        // into its Blob ID namespace. The lower batch limit also verifies that
+        // both the batch store and HNSW storage retain the target's capacity.
         let replay_config = ShardWriterConfig {
             max_memtable_batches: 1,
             ..config
@@ -5122,7 +5146,7 @@ mod tests {
             base_uri.clone(),
             replay_config,
             schema,
-            vec![],
+            index_configs,
         )
         .await
         .unwrap();

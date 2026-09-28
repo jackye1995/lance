@@ -229,7 +229,7 @@ impl<'a> InsertBuilder<'a> {
                     "a fixed data file name cannot be combined with target bases",
                 ));
             }
-            write_fragments_internal_to_file(
+            Box::pin(write_fragments_internal_to_file(
                 context.storage_version,
                 context.dest.dataset(),
                 context.object_store.clone(),
@@ -238,10 +238,10 @@ impl<'a> InsertBuilder<'a> {
                 stream,
                 context.params.clone(),
                 data_file_name.clone(),
-            )
+            ))
             .await?
         } else {
-            write_fragments_internal(
+            Box::pin(write_fragments_internal(
                 context.storage_version,
                 context.dest.dataset(),
                 context.object_store.clone(),
@@ -250,7 +250,7 @@ impl<'a> InsertBuilder<'a> {
                 stream,
                 context.params.clone(),
                 target_base_info,
-            )
+            ))
             .await?
         };
 

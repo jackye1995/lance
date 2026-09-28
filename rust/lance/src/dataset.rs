@@ -951,16 +951,12 @@ impl Dataset {
         dest: impl Into<WriteDestination<'_>>,
         params: Option<WriteParams>,
     ) -> Result<Self> {
-        Box::pin(async move {
-            let mut builder = InsertBuilder::new(dest);
-            if let Some(params) = &params {
-                builder = builder.with_params(params);
-            }
-            builder
-                .execute_stream(Box::new(batches) as Box<dyn RecordBatchReader + Send>)
-                .await
-        })
-        .await
+        let mut builder = InsertBuilder::new(dest);
+        if let Some(params) = &params {
+            builder = builder.with_params(params);
+        }
+        Box::pin(builder.execute_stream(Box::new(batches) as Box<dyn RecordBatchReader + Send>))
+            .await
     }
 
     /// Write into a namespace client-managed table with automatic credential vending.

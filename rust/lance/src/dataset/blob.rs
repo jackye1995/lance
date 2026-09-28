@@ -898,7 +898,7 @@ impl BlobPreprocessor {
         Ok((array, Arc::new(field)))
     }
 
-    async fn resolve_external_reference(&self, uri: &str) -> Result<(u32, String)> {
+    async fn resolve_external_reference(&mut self, uri: &str) -> Result<(u32, String)> {
         let mapped = if let Some(resolver) = &self.external_base_resolver {
             resolver.resolve_external_uri(uri).await?
         } else {
@@ -919,7 +919,7 @@ impl BlobPreprocessor {
         )))
     }
 
-    pub(crate) async fn validate_batch(&self, batch: &RecordBatch) -> Result<()> {
+    pub(crate) async fn validate_batch(&mut self, batch: &RecordBatch) -> Result<()> {
         let selected_rows = vec![true; batch.num_rows()];
         let mut external_uris = Vec::new();
         for (field, array) in batch.schema().fields().iter().zip(batch.columns()) {

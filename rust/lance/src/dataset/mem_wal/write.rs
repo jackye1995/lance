@@ -1759,7 +1759,7 @@ async fn cleanup_orphaned_generation_dirs(
     for child in object_store.read_dir(shard_path.clone()).await? {
         if is_generation_dir_name(&child) && !live_dirs.contains(&child) {
             object_store
-                .remove_dir_all(shard_path.clone().join(&child))
+                .remove_dir_all(shard_path.clone().join(child.as_str()))
                 .await?;
         }
     }
@@ -5300,7 +5300,10 @@ mod tests {
         assert!(blob_sidecars(store.as_ref(), &data_dir).await.is_empty());
 
         let scanned = writer.scan().await.unwrap().try_into_batch().await.unwrap();
-        let descriptions = scanned["blob"].as_struct();
+        let descriptions = scanned["blob"]
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .unwrap();
         let kinds = descriptions
             .column_by_name("kind")
             .unwrap()

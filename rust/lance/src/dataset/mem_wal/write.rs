@@ -30,7 +30,7 @@ use lance_index::mem_wal::ShardManifest;
 use lance_index::vector::hnsw::builder::HnswBuildParams;
 use lance_io::object_store::{ObjectStore, ObjectStoreParams};
 use log::{debug, error, info, warn};
-use object_store::path::Path;
+use object_store::{ObjectStoreExt, path::Path};
 use tokio::sync::{RwLock, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::{Interval, interval_at};

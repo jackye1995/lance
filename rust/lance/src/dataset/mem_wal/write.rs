@@ -5031,7 +5031,7 @@ mod tests {
         let second = create_blob_v2_batch(6, &[BlobTestValue::Bytes(b"later".to_vec())]);
         let index_configs = vec![MemIndexConfig::Hnsw(Box::new(HnswIndexConfig::new(
             "vector_idx".to_string(),
-            2,
+            4,
             "vector".to_string(),
             lance_linalg::distance::DistanceType::L2,
         )))];

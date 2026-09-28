@@ -5307,11 +5307,15 @@ mod tests {
         let kinds = descriptions
             .column_by_name("kind")
             .unwrap()
-            .as_primitive::<arrow_array::types::UInt8Type>();
+            .as_any()
+            .downcast_ref::<UInt8Array>()
+            .unwrap();
         let sizes = descriptions
             .column_by_name("size")
             .unwrap()
-            .as_primitive::<arrow_array::types::UInt64Type>();
+            .as_any()
+            .downcast_ref::<arrow_array::UInt64Array>()
+            .unwrap();
         assert_eq!(kinds.value(0), BlobKind::Inline as u8);
         assert_eq!(kinds.value(1), BlobKind::Inline as u8);
         assert_eq!(sizes.value(0), 1);

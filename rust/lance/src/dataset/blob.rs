@@ -1690,7 +1690,7 @@ fn collect_prepared_blob_ids(
     Ok(())
 }
 
-pub(crate) fn prepared_blob_ids(batch: &RecordBatch) -> Result<HashSet<u32>> {
+pub fn prepared_blob_ids(batch: &RecordBatch) -> Result<HashSet<u32>> {
     let mut blob_ids = HashSet::new();
     for (array, field) in batch.columns().iter().zip(batch.schema().fields().iter()) {
         collect_prepared_blob_ids(array, field, &mut blob_ids)?;

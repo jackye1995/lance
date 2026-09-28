@@ -54,7 +54,7 @@ pub struct InsertBuilder<'a> {
     // TODO: make these parameters a part of the builder, and add specific methods.
     params: Option<&'a WriteParams>,
     write_progress: Option<WriteProgressFn>,
-    data_file_name: Option<String>,
+    data_file_name: Option<Arc<String>>,
 }
 
 impl<'a> InsertBuilder<'a> {
@@ -73,7 +73,7 @@ impl<'a> InsertBuilder<'a> {
     }
 
     pub(crate) fn with_data_file_name(mut self, data_file_name: impl Into<String>) -> Self {
-        self.data_file_name = Some(data_file_name.into());
+        self.data_file_name = Some(Arc::new(data_file_name.into()));
         self
     }
 

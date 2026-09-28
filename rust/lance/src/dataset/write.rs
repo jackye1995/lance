@@ -929,7 +929,7 @@ pub(super) async fn do_write_fragments_impl<OpenWriter, OpenWriterFuture>(
     target_bases_info: Option<Vec<TargetBaseInfo>>,
     mut seed_writers: Vec<Box<dyn lance_index::scalar::seed::IndexSeedWriter>>,
     file_row_counts: Option<Vec<usize>>,
-    data_file_name: Option<String>,
+    data_file_name: Option<Arc<String>>,
 ) -> Result<Vec<Fragment>>
 where
     OpenWriter: Fn(Arc<ObjectStore>, Schema, Path, WriterOptions) -> OpenWriterFuture + Send + Sync,
@@ -1782,7 +1782,7 @@ pub(crate) async fn write_fragments_internal_to_file(
     schema: Schema,
     data: SendableRecordBatchStream,
     params: WriteParams,
-    data_file_name: String,
+    data_file_name: Arc<String>,
 ) -> Result<(Vec<Fragment>, Schema)> {
     write_fragments_internal_impl(
         storage_version,
@@ -1810,7 +1810,7 @@ async fn write_fragments_internal_impl(
     params: WriteParams,
     target_bases_info: Option<Vec<TargetBaseInfo>>,
     file_row_counts: Option<Vec<usize>>,
-    data_file_name: Option<String>,
+    data_file_name: Option<Arc<String>>,
 ) -> Result<(Vec<Fragment>, Schema)> {
     let mut params = params;
 
@@ -2270,7 +2270,7 @@ impl GenericWriter for V2WriterAdapter {
 pub(crate) struct WriterOptions {
     add_data_dir: bool,
     base_id: Option<u32>,
-    data_file_name: Option<String>,
+    data_file_name: Option<Arc<String>>,
     external_base_resolver: Option<Arc<ExternalBaseResolver>>,
     allow_external_blob_outside_bases: bool,
     external_blob_mode: ExternalBlobMode,
@@ -2308,8 +2308,11 @@ pub(crate) async fn open_v1_writer(
         data_file_name,
         ..
     } = options;
-    let (_data_file_key, filename, _data_dir, full_path) =
-        prepare_data_file_path(base_dir, add_data_dir, data_file_name.as_deref());
+    let (_data_file_key, filename, _data_dir, full_path) = prepare_data_file_path(
+        base_dir,
+        add_data_dir,
+        data_file_name.as_deref().map(String::as_str),
+    );
     Ok(Box::new(V1WriterAdapter {
         writer: V1FileWriter::<ManifestDescribing>::try_new(
             object_store,
@@ -2346,8 +2349,11 @@ where
         file_writer_options,
         ..
     } = options;
-    let (_data_file_key, filename, data_dir, final_path) =
-        prepare_data_file_path(base_dir, add_data_dir, data_file_name.as_deref());
+    let (_data_file_key, filename, data_dir, final_path) = prepare_data_file_path(
+        base_dir,
+        add_data_dir,
+        data_file_name.as_deref().map(String::as_str),
+    );
     let (writer_path, promotion) =
         staged_writer_path(object_store, data_dir, final_path, data_file_name.is_some());
     let writer = object_store.create(&writer_path).await?;
@@ -2394,8 +2400,11 @@ where
         blob_pack_file_size_threshold,
         file_writer_options,
     } = options;
-    let (data_file_key, filename, data_dir, final_path) =
-        prepare_data_file_path(base_dir, add_data_dir, data_file_name.as_deref());
+    let (data_file_key, filename, data_dir, final_path) = prepare_data_file_path(
+        base_dir,
+        add_data_dir,
+        data_file_name.as_deref().map(String::as_str),
+    );
     let (writer_path, promotion) = staged_writer_path(
         object_store,
         data_dir.clone(),
@@ -2507,7 +2516,7 @@ struct WriterGenerator<OpenWriter> {
     source_store_params: ObjectStoreParams,
     blob_pack_file_size_threshold: Option<usize>,
     file_writer_options: FileWriterOptions,
-    data_file_name: Option<String>,
+    data_file_name: Option<Arc<String>>,
     writers_created: AtomicUsize,
     /// Counter for round-robin selection
     next_base_index: AtomicUsize,
@@ -2532,7 +2541,7 @@ where
         source_store_params: ObjectStoreParams,
         blob_pack_file_size_threshold: Option<usize>,
         file_writer_options: FileWriterOptions,
-        data_file_name: Option<String>,
+        data_file_name: Option<Arc<String>>,
     ) -> Self {
         Self {
             object_store,

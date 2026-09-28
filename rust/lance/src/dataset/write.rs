@@ -2197,7 +2197,7 @@ impl V2WriterAdapter {
     pub(in crate::dataset) async fn abort(&mut self) {
         self.writer.abort().await;
         if let Some(pre) = self.preprocessor.as_mut() {
-            pre.abort();
+            pre.abort().await;
         }
         if let Some(promotion) = &self.promotion {
             promotion.abort().await;

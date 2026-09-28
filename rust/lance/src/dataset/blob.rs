@@ -227,15 +227,74 @@ fn collect_external_blob_uris(
 
     if field.is_blob_v2() {
         let struct_array = array.as_struct();
-        if BlobV2Layout::classify(struct_array.fields()) != Some(BlobV2Layout::Logical) {
-            return Err(blob_v2_shape_error(field, &[BlobV2Layout::Logical]));
+        match BlobV2Layout::classify(struct_array.fields()) {
+            Some(BlobV2Layout::Prepared) => {
+                validate_prepared_blob_array(field, array)?;
+                return Ok(());
+            }
+            Some(BlobV2Layout::Logical) => {}
+            _ => {
+                return Err(blob_v2_shape_error(
+                    field,
+                    &[BlobV2Layout::Logical, BlobV2Layout::Prepared],
+                ));
+            }
         }
+        let data_column = struct_array
+            .column_by_name("data")
+            .ok_or_else(|| Error::invalid_input("Blob struct missing `data` field"))?
+            .as_binary::<i64>();
         let uri_column = struct_array
             .column_by_name("uri")
             .ok_or_else(|| Error::invalid_input("Blob struct missing `uri` field"))?
             .as_string::<i32>();
+        let position_column = struct_array
+            .column_by_name("position")
+            .map(|column| column.as_primitive::<UInt64Type>());
+        let size_column = struct_array
+            .column_by_name("size")
+            .map(|column| column.as_primitive::<UInt64Type>());
         for (row_idx, is_selected) in selected_rows.iter().copied().enumerate() {
-            if is_selected && struct_array.is_valid(row_idx) && uri_column.is_valid(row_idx) {
+            if !is_selected || struct_array.is_null(row_idx) {
+                continue;
+            }
+            let has_data = data_column.is_valid(row_idx);
+            let has_uri = uri_column.is_valid(row_idx);
+            let has_position = position_column
+                .as_ref()
+                .is_some_and(|column| column.is_valid(row_idx));
+            let has_size = size_column
+                .as_ref()
+                .is_some_and(|column| column.is_valid(row_idx));
+            if has_position != has_size {
+                return Err(Error::invalid_input(format!(
+                    "Blob v2 field '{}' row {row_idx} must set both `position` and `size`, or neither",
+                    field_path
+                )));
+            }
+            if has_position && !has_uri {
+                return Err(Error::invalid_input(format!(
+                    "Blob v2 field '{}' row {row_idx} sets `position` and `size` but `uri` is null",
+                    field_path
+                )));
+            }
+            if has_data == has_uri {
+                return Err(Error::invalid_input(format!(
+                    "Blob v2 field '{}' row {row_idx} must set exactly one of `data` and `uri`",
+                    field_path
+                )));
+            }
+            if has_size
+                && size_column
+                    .as_ref()
+                    .is_some_and(|column| column.value(row_idx) == 0)
+            {
+                return Err(Error::invalid_input(format!(
+                    "Blob v2 field '{}' row {row_idx} external range `size` must be greater than zero",
+                    field_path
+                )));
+            }
+            if has_uri {
                 external_uris.push((
                     field_path.to_string(),
                     uri_column.value(row_idx).to_string(),
@@ -347,6 +406,7 @@ struct RollingPackedBlobWriter {
     current: Option<PackedBlobWriter>,
     current_size: usize,
     current_max_pack_size: Option<usize>,
+    started_blob_ids: Vec<u32>,
 }
 
 impl RollingPackedBlobWriter {
@@ -355,6 +415,7 @@ impl RollingPackedBlobWriter {
             current: None,
             current_size: 0,
             current_max_pack_size: None,
+            started_blob_ids: Vec::new(),
         }
     }
 
@@ -368,6 +429,7 @@ impl RollingPackedBlobWriter {
     ) -> Result<()> {
         self.finish().await?;
         let blob_id = blob_id_allocator.next()?;
+        self.started_blob_ids.push(blob_id);
         let data_file_path = data_dir.join(format!("{data_file_key}.lance"));
         self.current =
             Some(PackedBlobWriter::try_new(object_store, data_file_path, blob_id).await?);
@@ -431,9 +493,14 @@ impl RollingPackedBlobWriter {
         self.current_size = 0;
         self.current_max_pack_size = None;
     }
+
+    fn take_started_blob_ids(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.started_blob_ids)
+    }
 }
 
-/// Preprocesses blob v2 columns on the write path so the encoder only sees lightweight descriptors:
+/// Preprocesses blob v2 columns on the write path so the encoder sees bounded inline values and
+/// lightweight descriptors for larger payloads:
 ///
 /// - Spills large blobs to sidecar files before encoding, reducing memory/CPU and avoiding copying huge payloads through page builders.
 /// - Emits `blob_id/blob_size` tied to the data file stem, giving readers a stable path independent of temporary fragment IDs assigned during write.
@@ -445,6 +512,7 @@ pub struct BlobPreprocessor {
     blob_id_allocator: BlobIdAllocator,
     part_blob_ids: Option<Range<u32>>,
     pack_writer: RollingPackedBlobWriter,
+    dedicated_blob_ids: Vec<u32>,
     /// Write-param override for the pack-file roll size. When set, it takes
     /// precedence over each field's `blob-pack-file-size-threshold` metadata for
     /// this write job only; it is not persisted into the dataset schema.
@@ -657,6 +725,7 @@ impl BlobPreprocessor {
             blob_id_allocator: BlobIdAllocator::new(1),
             part_blob_ids: None,
             pack_writer,
+            dedicated_blob_ids: Vec::new(),
             pack_file_size_override,
             field_processors,
             external_base_resolver,
@@ -678,9 +747,6 @@ impl BlobPreprocessor {
 
     pub(crate) fn for_mem_wal(mut self, blob_id_allocator: BlobIdAllocator) -> Self {
         self.blob_id_allocator = blob_id_allocator;
-        for processor in &mut self.field_processors {
-            processor.force_non_empty_inline_to_sidecar();
-        }
         self
     }
 
@@ -692,18 +758,19 @@ impl BlobPreprocessor {
         BlobDescriptorArrayBuilder::new_with_metadata(field.name(), field.is_nullable(), metadata)
     }
 
-    async fn write_dedicated(
-        object_store: ObjectStore,
-        data_dir: Path,
-        data_file_key: String,
-        blob_id_allocator: BlobIdAllocator,
-        source: BlobWriteSource<'_>,
-    ) -> Result<BlobDescriptor> {
-        let blob_id = blob_id_allocator.next()?;
-        let data_file_path = data_dir.join(format!("{data_file_key}.lance"));
-        let mut writer =
-            crate::blob::DedicatedBlobWriter::try_new(object_store, data_file_path, blob_id)
-                .await?;
+    async fn write_dedicated(&mut self, source: BlobWriteSource<'_>) -> Result<BlobDescriptor> {
+        let blob_id = self.blob_id_allocator.next()?;
+        self.dedicated_blob_ids.push(blob_id);
+        let data_file_path = self
+            .data_dir
+            .clone()
+            .join(format!("{}.lance", self.data_file_key));
+        let mut writer = crate::blob::DedicatedBlobWriter::try_new(
+            self.object_store.clone(),
+            data_file_path,
+            blob_id,
+        )
+        .await?;
         match source {
             BlobWriteSource::Bytes(data) => writer.write(data).await?,
             BlobWriteSource::External(source) => {
@@ -831,7 +898,7 @@ impl BlobPreprocessor {
         Ok((array, Arc::new(field)))
     }
 
-    async fn resolve_external_reference(&mut self, uri: &str) -> Result<(u32, String)> {
+    async fn resolve_external_reference(&self, uri: &str) -> Result<(u32, String)> {
         let mapped = if let Some(resolver) = &self.external_base_resolver {
             resolver.resolve_external_uri(uri).await?
         } else {
@@ -850,6 +917,30 @@ impl BlobPreprocessor {
             "External blob URI '{}' is outside registered external bases (dataset root is not allowed). Set allow_external_blob_outside_bases=true to store it as absolute external URI.",
             uri
         )))
+    }
+
+    pub(crate) async fn validate_batch(&self, batch: &RecordBatch) -> Result<()> {
+        let selected_rows = vec![true; batch.num_rows()];
+        let mut external_uris = Vec::new();
+        for (field, array) in batch.schema().fields().iter().zip(batch.columns()) {
+            collect_external_blob_uris(
+                field,
+                array,
+                &selected_rows,
+                field.name(),
+                &mut external_uris,
+            )?;
+        }
+
+        if self.external_blob_mode == ExternalBlobMode::Reference {
+            let mut validated_uris = HashSet::new();
+            for (_, uri) in external_uris {
+                if validated_uris.insert(uri.clone()) {
+                    self.resolve_external_reference(&uri).await?;
+                }
+            }
+        }
+        Ok(())
     }
 
     async fn open_external_source(
@@ -895,6 +986,7 @@ impl BlobPreprocessor {
     }
 
     pub(crate) async fn preprocess_batch(&mut self, batch: &RecordBatch) -> Result<RecordBatch> {
+        self.validate_batch(batch).await?;
         let expected_columns = self.field_processors.len();
         if batch.num_columns() != expected_columns {
             return Err(Error::invalid_input(format!(
@@ -1228,14 +1320,9 @@ impl BlobPreprocessor {
             let data_len = if has_data { data_col.value(i).len() } else { 0 };
 
             if has_data && data_len > dedicated_threshold {
-                let value = Self::write_dedicated(
-                    self.object_store.clone(),
-                    self.data_dir.clone(),
-                    self.data_file_key.clone(),
-                    self.blob_id_allocator.clone(),
-                    BlobWriteSource::Bytes(data_col.value(i)),
-                )
-                .await?;
+                let value = self
+                    .write_dedicated(BlobWriteSource::Bytes(data_col.value(i)))
+                    .await?;
                 blob_writer.push(value)?;
                 continue;
             }
@@ -1273,14 +1360,9 @@ impl BlobPreprocessor {
                     let data_len = source.size();
 
                     if data_len > dedicated_threshold as u64 {
-                        let value = Self::write_dedicated(
-                            self.object_store.clone(),
-                            self.data_dir.clone(),
-                            self.data_file_key.clone(),
-                            self.blob_id_allocator.clone(),
-                            BlobWriteSource::External(&source),
-                        )
-                        .await?;
+                        let value = self
+                            .write_dedicated(BlobWriteSource::External(&source))
+                            .await?;
                         blob_writer.push(value)?;
                         continue;
                     }
@@ -1336,8 +1418,24 @@ impl BlobPreprocessor {
         self.pack_writer.finish().await
     }
 
-    pub(super) fn abort(&mut self) {
+    pub(super) async fn abort(&mut self) {
         self.pack_writer.abort();
+        let blob_ids = self
+            .pack_writer
+            .take_started_blob_ids()
+            .into_iter()
+            .chain(self.dedicated_blob_ids.drain(..))
+            .collect::<Vec<_>>();
+        for blob_id in blob_ids {
+            let path = blob_path(&self.data_dir, &self.data_file_key, blob_id);
+            if let Err(error) = self.object_store.delete(&path).await {
+                log::warn!(
+                    "failed to remove abandoned Blob sidecar '{}': {}",
+                    path,
+                    error
+                );
+            }
+        }
     }
 }
 
@@ -1390,16 +1488,9 @@ fn prepared_blob_to_descriptor(
         match BlobKind::try_from(kinds.value(row))? {
             BlobKind::Inline => {
                 let inline = data.value(row);
-                if !inline.is_empty() {
-                    return Err(Error::internal(format!(
-                        "MemWAL prepared Blob field '{}' row {row} still contains {} inline bytes",
-                        field.name(),
-                        inline.len()
-                    )));
-                }
                 output_kinds.push(BlobKind::Inline as u8);
                 output_positions.push(0);
-                output_sizes.push(0);
+                output_sizes.push(inline.len() as u64);
                 output_ids.push(0);
                 output_uris.push(String::new());
             }
@@ -1550,6 +1641,61 @@ pub fn prepared_blob_batch_to_descriptors(batch: &RecordBatch) -> Result<RecordB
         &arrow_array::RecordBatchOptions::new().with_row_count(Some(batch.num_rows())),
     )
     .map_err(|error| Error::internal(format!("convert prepared MemWAL Blob batch: {error}")))
+}
+
+fn collect_prepared_blob_ids(
+    array: &ArrayRef,
+    field: &Arc<ArrowField>,
+    blob_ids: &mut HashSet<u32>,
+) -> Result<()> {
+    if blob_v2_layout(field.as_ref()) == Some(BlobV2Layout::Prepared) {
+        validate_prepared_blob_array(field.as_ref(), array)?;
+        let values = array.as_struct();
+        let kinds = values
+            .column_by_name("kind")
+            .expect("validated prepared Blob has kind")
+            .as_primitive::<UInt8Type>();
+        let ids = values
+            .column_by_name("blob_id")
+            .expect("validated prepared Blob has blob_id")
+            .as_primitive::<UInt32Type>();
+        for row in 0..values.len() {
+            if values.is_valid(row)
+                && matches!(
+                    BlobKind::try_from(kinds.value(row))?,
+                    BlobKind::Packed | BlobKind::Dedicated
+                )
+            {
+                blob_ids.insert(ids.value(row));
+            }
+        }
+        return Ok(());
+    }
+
+    match field.data_type() {
+        ArrowDataType::Struct(children) => {
+            let values = array.as_struct();
+            for (child_array, child_field) in values.columns().iter().zip(children.iter()) {
+                collect_prepared_blob_ids(child_array, child_field, blob_ids)?;
+            }
+        }
+        ArrowDataType::List(child) => {
+            collect_prepared_blob_ids(array.as_list::<i32>().values(), child, blob_ids)?;
+        }
+        ArrowDataType::LargeList(child) => {
+            collect_prepared_blob_ids(array.as_list::<i64>().values(), child, blob_ids)?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+pub(crate) fn prepared_blob_ids(batch: &RecordBatch) -> Result<HashSet<u32>> {
+    let mut blob_ids = HashSet::new();
+    for (array, field) in batch.columns().iter().zip(batch.schema().fields().iter()) {
+        collect_prepared_blob_ids(array, field, &mut blob_ids)?;
+    }
+    Ok(blob_ids)
 }
 
 /// Shared physical read context for blob handles that resolve to the same object.

@@ -12,7 +12,7 @@
 //! - [`IndexStore`] - In-memory index management
 //! - [`MemTableFlusher`] - Flush MemTable to storage as single Lance file
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Debug;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock as StdRwLock};
@@ -65,6 +65,7 @@ use crate::dataset::write::ExternalBlobMode;
 use crate::session::Session;
 
 use super::manifest::ShardManifestStore;
+use super::util::shard_base_path;
 
 // ============================================================================
 // Configuration
@@ -1723,6 +1724,48 @@ fn memtable_resident_bytes(memtable: &MemTable) -> usize {
         + super::memtable::pk_bloom_filter_bytes()
 }
 
+fn is_generation_dir_name(name: &str) -> bool {
+    let Some((hash, generation)) = name.rsplit_once("_gen_") else {
+        return false;
+    };
+    hash.len() == 8
+        && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && generation.parse::<u64>().is_ok()
+}
+
+async fn cleanup_orphaned_generation_dirs(
+    object_store: &ObjectStore,
+    base_path: &Path,
+    shard_id: Uuid,
+    manifest_store: &ShardManifestStore,
+    active_target: Option<&MemTableDataTarget>,
+) -> Result<()> {
+    let mut live_dirs = manifest_store
+        .latest()
+        .await?
+        .map(|manifest| {
+            manifest
+                .sstables
+                .iter()
+                .map(|sstable| sstable.path.clone())
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default();
+    if let Some(target) = active_target {
+        live_dirs.insert(target.generation_dir.clone());
+    }
+
+    let shard_path = shard_base_path(base_path, &shard_id);
+    for child in object_store.read_dir(shard_path.clone()).await? {
+        if is_generation_dir_name(&child) && !live_dirs.contains(&child) {
+            object_store
+                .remove_dir_all(shard_path.clone().join(&child))
+                .await?;
+        }
+    }
+    Ok(())
+}
+
 /// Flush a sealed replay memtable to a Lance generation, choosing the indexed
 /// path when secondary indexes are configured (mirroring the live memtable-flush
 /// handler). Commits the manifest, stamping `covered` as the generation's
@@ -1920,9 +1963,9 @@ impl SharedWriterState {
         &self,
         memtable: &MemTable,
         batches: Vec<RecordBatch>,
-    ) -> Result<Vec<RecordBatch>> {
+    ) -> Result<(Vec<RecordBatch>, Option<BlobPreprocessor>)> {
         let Some(target) = memtable.target() else {
-            return Ok(batches);
+            return Ok((batches, None));
         };
         let logical_schema = Schema::try_from(self.input_schema.as_ref())?;
         let data_dir = target
@@ -1949,6 +1992,9 @@ impl SharedWriterState {
         )?
         .for_mem_wal(memtable.blob_id_allocator());
 
+        for batch in &batches {
+            preprocessor.validate_batch(batch).await?;
+        }
         let prepared = async {
             let mut prepared = Vec::with_capacity(batches.len());
             for batch in batches {
@@ -1959,9 +2005,9 @@ impl SharedWriterState {
         }
         .await;
         if prepared.is_err() {
-            preprocessor.abort();
+            preprocessor.abort().await;
         }
-        prepared
+        prepared.map(|batches| (batches, Some(preprocessor)))
     }
 
     /// Ask the index-apply task to cover `[indexed, end_batch_position)` of this
@@ -2763,6 +2809,21 @@ impl ShardWriter {
             .seed_next_position(next_wal_position)
             .await;
 
+        if let Err(error) = cleanup_orphaned_generation_dirs(
+            object_store.as_ref(),
+            &base_path,
+            shard_id,
+            manifest_store.as_ref(),
+            memtable.target(),
+        )
+        .await
+        {
+            warn!(
+                "failed to clean orphaned MemWAL generation directories for shard {}: {}",
+                shard_id, error
+            );
+        }
+
         // Seed the writer's covered-WAL cursor from the post-replay tip:
         // `next_wal_position` is one past the highest WAL entry we just
         // replayed into the active memtable, so everything strictly below
@@ -3280,12 +3341,20 @@ impl ShardWriter {
 
             // 1. Spill Blob v2 payloads into the active target, then retain only
             //    prepared descriptors in the memtable and WAL.
-            let batches = writer_state
+            let (batches, mut blob_preprocessor) = writer_state
                 .prepare_batches(&state.memtable, batches)
                 .await?;
 
             // 2. Insert all batches into memtable atomically
-            let results = state.memtable.insert_batches_only(batches).await?;
+            let results = match state.memtable.insert_batches_only(batches).await {
+                Ok(results) => results,
+                Err(error) => {
+                    if let Some(preprocessor) = blob_preprocessor.as_mut() {
+                        preprocessor.abort().await;
+                    }
+                    return Err(error);
+                }
+            };
 
             // 2. Capture the store the batches actually landed in, *before* step
             //    6 below can freeze and swap the active memtable. Reading it
@@ -4940,7 +5009,7 @@ mod tests {
             "blob",
             true,
             BlobFieldOptions {
-                inline_size_threshold: None,
+                inline_size_threshold: Some(4),
                 dedicated_size_threshold: NonZeroUsize::new(8),
             },
         );
@@ -5021,6 +5090,8 @@ mod tests {
             &[
                 BlobTestValue::Bytes(b"abc".to_vec()),
                 BlobTestValue::Bytes(b"de".to_vec()),
+                BlobTestValue::Bytes(b"12345".to_vec()),
+                BlobTestValue::Bytes(b"123456".to_vec()),
                 BlobTestValue::Bytes(vec![7; 1024 * 1024]),
                 BlobTestValue::Empty,
                 BlobTestValue::Null,
@@ -5028,7 +5099,7 @@ mod tests {
             ],
         );
         let schema = first.schema();
-        let second = create_blob_v2_batch(6, &[BlobTestValue::Bytes(b"later".to_vec())]);
+        let second = create_blob_v2_batch(8, &[BlobTestValue::Bytes(b"later".to_vec())]);
         let index_configs = vec![MemIndexConfig::Hnsw(Box::new(HnswIndexConfig::new(
             "vector_idx".to_string(),
             4,
@@ -5108,15 +5179,25 @@ mod tests {
                 .as_any()
                 .downcast_ref::<UInt32Array>()
                 .unwrap();
-            assert_eq!(kinds.value(0), BlobKind::Packed as u8);
-            assert_eq!(kinds.value(1), BlobKind::Packed as u8);
-            assert_eq!(blob_ids.value(0), blob_ids.value(1));
-            assert_eq!(kinds.value(2), BlobKind::Dedicated as u8);
-            assert_eq!(kinds.value(3), BlobKind::Inline as u8);
-            assert!(descriptions.is_null(4));
-            assert_eq!(kinds.value(5), BlobKind::External as u8);
-            assert_eq!(kinds.value(6), BlobKind::Packed as u8);
-            assert_ne!(blob_ids.value(0), blob_ids.value(6));
+            let sizes = descriptions
+                .column_by_name("size")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<arrow_array::UInt64Array>()
+                .unwrap();
+            assert_eq!(kinds.value(0), BlobKind::Inline as u8);
+            assert_eq!(sizes.value(0), 3);
+            assert_eq!(kinds.value(1), BlobKind::Inline as u8);
+            assert_eq!(sizes.value(1), 2);
+            assert_eq!(kinds.value(2), BlobKind::Packed as u8);
+            assert_eq!(kinds.value(3), BlobKind::Packed as u8);
+            assert_eq!(blob_ids.value(2), blob_ids.value(3));
+            assert_eq!(kinds.value(4), BlobKind::Dedicated as u8);
+            assert_eq!(kinds.value(5), BlobKind::Inline as u8);
+            assert!(descriptions.is_null(6));
+            assert_eq!(kinds.value(7), BlobKind::External as u8);
+            assert_eq!(kinds.value(8), BlobKind::Packed as u8);
+            assert_ne!(blob_ids.value(2), blob_ids.value(8));
 
             let mut point_lookup = writer.scan().await.unwrap();
             point_lookup.filter("id = 0").unwrap();
@@ -5130,6 +5211,14 @@ mod tests {
             let data_dir = target.generation_path(&base_path, &shard_id).join(DATA_DIR);
             let sidecars = blob_sidecars(store.as_ref(), &data_dir).await;
             assert_eq!(sidecars.len(), 3, "two packed puts plus one dedicated blob");
+            store
+                .inner
+                .put(
+                    &data_dir.join(target.data_file_key()).join("orphan.blob"),
+                    bytes::Bytes::from_static(b"orphan").into(),
+                )
+                .await
+                .unwrap();
             (target, sidecars)
         };
 
@@ -5163,7 +5252,7 @@ mod tests {
             target.generation_dir
         );
         let dataset = Dataset::open(&generation_uri).await.unwrap();
-        assert_eq!(dataset.count_rows(None).await.unwrap(), 7);
+        assert_eq!(dataset.count_rows(None).await.unwrap(), 9);
         let fragment = dataset.get_fragments().pop().unwrap();
         assert_eq!(fragment.metadata().files.len(), 1);
         assert_eq!(fragment.metadata().files[0].path, target.data_file_name);
@@ -5172,8 +5261,174 @@ mod tests {
         assert_eq!(
             blob_sidecars(store.as_ref(), &data_dir).await,
             sidecars_before,
-            "replay flush must reuse the sidecars written by put"
+            "replay flush must reuse referenced sidecars and prune unreferenced ones"
         );
+        writer.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_mem_wal_keeps_small_blobs_inline_without_sidecars() {
+        let (store, base_path, base_uri, _temp_dir) = create_local_store().await;
+        let shard_id = Uuid::new_v4();
+        let first = create_blob_v2_batch(0, &[BlobTestValue::Bytes(vec![1])]);
+        let schema = first.schema();
+        let second = create_blob_v2_batch(1, &[BlobTestValue::Bytes(vec![2])]);
+        let writer = ShardWriter::open(
+            store.clone(),
+            base_path.clone(),
+            base_uri,
+            ShardWriterConfig {
+                shard_id,
+                durable_write: false,
+                ..Default::default()
+            },
+            schema,
+            vec![],
+        )
+        .await
+        .unwrap();
+        writer.put(vec![first]).await.unwrap();
+        writer.put(vec![second]).await.unwrap();
+
+        let target = match &writer.mode {
+            WriterMode::MemTable { state, .. } => {
+                state.read().await.memtable.target().unwrap().clone()
+            }
+            WriterMode::WalOnly { .. } => unreachable!(),
+        };
+        let data_dir = target.generation_path(&base_path, &shard_id).join(DATA_DIR);
+        assert!(blob_sidecars(store.as_ref(), &data_dir).await.is_empty());
+
+        let scanned = writer.scan().await.unwrap().try_into_batch().await.unwrap();
+        let descriptions = scanned["blob"].as_struct();
+        let kinds = descriptions
+            .column_by_name("kind")
+            .unwrap()
+            .as_primitive::<arrow_array::types::UInt8Type>();
+        let sizes = descriptions
+            .column_by_name("size")
+            .unwrap()
+            .as_primitive::<arrow_array::types::UInt64Type>();
+        assert_eq!(kinds.value(0), BlobKind::Inline as u8);
+        assert_eq!(kinds.value(1), BlobKind::Inline as u8);
+        assert_eq!(sizes.value(0), 1);
+        assert_eq!(sizes.value(1), 1);
+        writer.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rejected_blob_put_does_not_leave_sidecars() {
+        let (store, base_path, base_uri, _temp_dir) = create_local_store().await;
+        let shard_id = Uuid::new_v4();
+        let rejected = create_blob_v2_batch(
+            0,
+            &[
+                BlobTestValue::Bytes(vec![7; 9]),
+                BlobTestValue::Uri("relative-uri".to_string()),
+            ],
+        );
+        let schema = rejected.schema();
+        let writer = ShardWriter::open(
+            store.clone(),
+            base_path.clone(),
+            base_uri,
+            ShardWriterConfig {
+                shard_id,
+                durable_write: false,
+                ..Default::default()
+            },
+            schema,
+            vec![],
+        )
+        .await
+        .unwrap();
+        assert!(writer.put(vec![rejected]).await.is_err());
+
+        let target = match &writer.mode {
+            WriterMode::MemTable { state, .. } => {
+                state.read().await.memtable.target().unwrap().clone()
+            }
+            WriterMode::WalOnly { .. } => unreachable!(),
+        };
+        let data_dir = target.generation_path(&base_path, &shard_id).join(DATA_DIR);
+        assert!(blob_sidecars(store.as_ref(), &data_dir).await.is_empty());
+
+        writer
+            .put(vec![create_blob_v2_batch(
+                2,
+                &[BlobTestValue::Bytes(vec![8])],
+            )])
+            .await
+            .unwrap();
+        writer.close().await.unwrap();
+        assert!(blob_sidecars(store.as_ref(), &data_dir).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_blob_descriptor_filter_on_fresh_vector_scan() {
+        let (store, base_path, base_uri, _temp_dir) = create_local_store().await;
+        let batch =
+            create_blob_v2_batch(0, &[BlobTestValue::Bytes(vec![7; 9]), BlobTestValue::Empty]);
+        let writer = ShardWriter::open(
+            store,
+            base_path,
+            base_uri,
+            ShardWriterConfig {
+                durable_write: false,
+                ..Default::default()
+            },
+            batch.schema(),
+            vec![],
+        )
+        .await
+        .unwrap();
+        writer.put(vec![batch]).await.unwrap();
+
+        let mut full = writer.scan().await.unwrap();
+        full.filter("blob.size > 0").unwrap();
+        assert_eq!(full.try_into_batch().await.unwrap().num_rows(), 1);
+
+        let mut vector = writer.scan().await.unwrap();
+        vector.filter("blob.size > 0").unwrap();
+        vector
+            .nearest("vector", &Float32Array::from(vec![0.0, 1.0]), 1)
+            .unwrap();
+        assert_eq!(vector.try_into_batch().await.unwrap().num_rows(), 1);
+        writer.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_open_removes_orphaned_blob_generation() {
+        let (store, base_path, base_uri, _temp_dir) = create_local_store().await;
+        let shard_id = Uuid::new_v4();
+        let orphan = MemTableDataTarget::new(0, 0, 1);
+        let orphan_path = orphan
+            .generation_path(&base_path, &shard_id)
+            .join(DATA_DIR)
+            .join(orphan.data_file_key())
+            .join("orphan.blob");
+        store
+            .inner
+            .put(&orphan_path, bytes::Bytes::from_static(b"orphan").into())
+            .await
+            .unwrap();
+
+        let batch = create_blob_v2_batch(0, &[BlobTestValue::Bytes(vec![1])]);
+        let writer = ShardWriter::open(
+            store.clone(),
+            base_path,
+            base_uri,
+            ShardWriterConfig {
+                shard_id,
+                durable_write: false,
+                ..Default::default()
+            },
+            batch.schema(),
+            vec![],
+        )
+        .await
+        .unwrap();
+        assert!(store.inner.head(&orphan_path).await.is_err());
         writer.close().await.unwrap();
     }
 

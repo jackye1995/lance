@@ -3,12 +3,14 @@
 
 //! MemTable flush to persistent storage.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use bytes::Bytes;
+use futures::TryStreamExt;
 use lance_core::cache::LanceCache;
+use lance_core::utils::blob::blob_path;
 use lance_core::utils::deletion::DeletionVector;
 use lance_core::{Error, Result};
 use lance_index::IndexType;
@@ -25,9 +27,12 @@ use roaring::RoaringBitmap;
 use tracing::instrument;
 use uuid::Uuid;
 
+use super::super::MemTableDataTarget;
 use super::super::index::MemIndexConfig;
 use super::super::memtable::MemTable;
 use crate::Dataset;
+use crate::dataset::DATA_DIR;
+use crate::dataset::blob::prepared_blob_ids;
 use crate::dataset::builder::DatasetBuilder;
 use crate::dataset::mem_wal::manifest::ShardManifestStore;
 use crate::dataset::mem_wal::scanner::SsTableWarmer;
@@ -251,6 +256,36 @@ impl MemTableFlusher {
         ))
     }
 
+    async fn prune_unreferenced_blob_sidecars(
+        &self,
+        generation_path: &Path,
+        target: &MemTableDataTarget,
+        batches: &[RecordBatch],
+    ) -> Result<()> {
+        let mut referenced_ids = HashSet::new();
+        for batch in batches {
+            referenced_ids.extend(prepared_blob_ids(batch)?);
+        }
+        let data_dir = generation_path.clone().join(DATA_DIR);
+        let live_paths = referenced_ids
+            .into_iter()
+            .map(|blob_id| blob_path(&data_dir, target.data_file_key(), blob_id))
+            .collect::<HashSet<_>>();
+        let sidecar_prefix = data_dir.join(target.data_file_key());
+        let objects = self
+            .object_store
+            .list(Some(sidecar_prefix))
+            .try_collect::<Vec<_>>()
+            .await?;
+        for object in objects {
+            if object.location.as_ref().ends_with(".blob") && !live_paths.contains(&object.location)
+            {
+                self.object_store.delete(&object.location).await?;
+            }
+        }
+        Ok(())
+    }
+
     /// Storage file version of the shard's base dataset. SSTables
     /// (data fragments and index files) are written at this same version so the
     /// whole shard stays on one format (e.g. a 2.2 base => 2.2 SSTables).
@@ -379,6 +414,10 @@ impl MemTableFlusher {
         let batches = memtable.scan_batches().await?;
         if batches.is_empty() {
             return Ok((0, RoaringBitmap::new()));
+        }
+        if let Some(target) = memtable.target() {
+            self.prune_unreferenced_blob_sidecars(path, target, &batches)
+                .await?;
         }
         let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
 

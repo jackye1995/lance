@@ -247,15 +247,13 @@ impl MemTableBruteForceVectorExec {
                 continue;
             }
 
-            let column = stored_batch
-                .data
-                .column_by_name(column_name)
-                .ok_or_else(|| {
-                    Error::invalid_input(format!(
-                        "Vector column '{}' not found in memtable schema",
-                        column_name
-                    ))
-                })?;
+            let scan_batch = scan_record_batch(&stored_batch.data)?;
+            let column = scan_batch.column_by_name(column_name).ok_or_else(|| {
+                Error::invalid_input(format!(
+                    "Vector column '{}' not found in memtable schema",
+                    column_name
+                ))
+            })?;
             let column_fsl = column.as_fixed_size_list_opt().ok_or_else(|| {
                 Error::invalid_input(format!(
                     "Vector column '{}' must be FixedSizeList; got {:?}",
@@ -273,7 +271,7 @@ impl MemTableBruteForceVectorExec {
 
             // Prefilter: drop rows that fail the predicate before they reach the
             // top-k heap (a NULL predicate result excludes the row, matching SQL).
-            let filter_mask = self.filter_mask(&stored_batch.data)?;
+            let filter_mask = self.filter_mask(&scan_batch)?;
 
             for row in 0..n {
                 let pos = current_row + row as u64;

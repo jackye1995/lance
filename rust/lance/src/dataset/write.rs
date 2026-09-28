@@ -2354,9 +2354,14 @@ where
         add_data_dir,
         data_file_name.as_deref().map(String::as_str),
     );
-    let (writer_path, promotion) =
-        staged_writer_path(object_store, data_dir, final_path, data_file_name.is_some());
+    let (writer_path, promotion_target) =
+        staged_writer_path(data_dir, final_path, data_file_name.is_some());
     let writer = object_store.create(&writer_path).await?;
+    let promotion = promotion_target.map(|final_path| FilePromotion {
+        object_store: object_store.clone(),
+        staging_path: writer_path,
+        final_path,
+    });
     let (file_writer, data_file) = create_file_writer(
         writer,
         schema.clone(),
@@ -2405,13 +2410,14 @@ where
         add_data_dir,
         data_file_name.as_deref().map(String::as_str),
     );
-    let (writer_path, promotion) = staged_writer_path(
-        object_store,
-        data_dir.clone(),
-        final_path,
-        data_file_name.is_some(),
-    );
+    let (writer_path, promotion_target) =
+        staged_writer_path(data_dir.clone(), final_path, data_file_name.is_some());
     let writer = object_store.create(&writer_path).await?;
+    let promotion = promotion_target.map(|final_path| FilePromotion {
+        object_store: object_store.clone(),
+        staging_path: writer_path,
+        final_path,
+    });
     let (file_writer, data_file) = create_file_writer(
         writer,
         schema.clone(),
@@ -2460,22 +2466,12 @@ fn prepare_data_file_path(
     (data_file_key, filename, data_dir, full_path)
 }
 
-fn staged_writer_path(
-    object_store: &ObjectStore,
-    data_dir: Path,
-    final_path: Path,
-    stage: bool,
-) -> (Path, Option<FilePromotion>) {
+fn staged_writer_path(data_dir: Path, final_path: Path, stage: bool) -> (Path, Option<Path>) {
     if !stage {
         return (final_path, None);
     }
     let staging_path = data_dir.join(format!("{}.lance-stage", generate_random_filename()));
-    let promotion = FilePromotion {
-        object_store: object_store.clone(),
-        staging_path: staging_path.clone(),
-        final_path,
-    };
-    (staging_path, Some(promotion))
+    (staging_path, Some(final_path))
 }
 
 /// Reserved base id that refers to the dataset's primary storage in

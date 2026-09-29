@@ -12,7 +12,7 @@
 //! - [`IndexStore`] - In-memory index management
 //! - [`MemTableFlusher`] - Flush MemTable to storage as single Lance file
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::fmt::Debug;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock as StdRwLock};
@@ -23,14 +23,13 @@ use arc_swap::ArcSwap;
 use arrow_array::{ArrayRef, BooleanArray, RecordBatch, RecordBatchOptions, new_null_array};
 use arrow_schema::Schema as ArrowSchema;
 use async_trait::async_trait;
-use bytes::Bytes;
 use lance_core::datatypes::Schema;
 use lance_core::{Error, Result};
 use lance_index::mem_wal::ShardManifest;
 use lance_index::vector::hnsw::builder::HnswBuildParams;
 use lance_io::object_store::{ObjectStore, ObjectStoreParams};
 use log::{debug, error, info, warn};
-use object_store::{ObjectStoreExt, path::Path};
+use object_store::path::Path;
 use tokio::sync::{RwLock, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::{Interval, interval_at};
@@ -58,19 +57,14 @@ use super::wal::{
     BatchDurableWatcher, TriggerIndexApply, TriggerWalFlush, WalAppender, WalFlushSource,
     WalOnlyState, WalRetryConfig, WalTailer, WriterCursors, apply_index_range, empty_flush_result,
 };
-use super::{
-    BLOB_PREWRITE_MARKER_PREFIX, MemTableDataTarget, TOMBSTONE, relax_non_pk_nullability,
-    schema_with_tombstone,
-};
+use super::{MemTableDataTarget, TOMBSTONE, relax_non_pk_nullability, schema_with_tombstone};
 use crate::blob::logical_to_prepared_blob_schema;
 use crate::dataset::DATA_DIR;
-use crate::dataset::blob::BlobPreprocessor;
+use crate::dataset::blob::{BlobPreprocessor, prepared_blob_ids};
 use crate::dataset::write::ExternalBlobMode;
 use crate::session::Session;
 
 use super::manifest::ShardManifestStore;
-use super::util::shard_base_path;
-
 // ============================================================================
 // Configuration
 // ============================================================================
@@ -1475,10 +1469,10 @@ async fn replay_memtable_from_wal(
                     )));
                 }
                 if let Some(target) = entry.target.as_ref()
-                    && target.creator_epoch != entry.writer_epoch
+                    && target.creator_epoch > entry.writer_epoch
                 {
                     return Err(Error::io(format!(
-                        "WAL entry at position {} has writer_epoch {} but target creator_epoch {}",
+                        "WAL entry at position {} has writer_epoch {} older than target creator_epoch {}",
                         position, entry.writer_epoch, target.creator_epoch
                     )));
                 }
@@ -1526,6 +1520,19 @@ async fn replay_memtable_from_wal(
                         .into_iter()
                         .map(|b| conform_to_storage_schema(b, &storage_schema, pk_columns))
                         .collect::<Result<Vec<_>>>()?;
+                    // Reconstruct the target's allocator state from the
+                    // prepared descriptors persisted in the WAL. Reservations
+                    // are idempotent across rows and batches that share a pack,
+                    // while the allocator skips every recovered ID for new
+                    // sidecars written by this successor.
+                    if active.target().is_some() {
+                        let allocator = active.blob_id_allocator();
+                        for batch in &batches {
+                            for blob_id in prepared_blob_ids(batch)? {
+                                allocator.reserve(blob_id)?;
+                            }
+                        }
+                    }
 
                     // Seal + flush on the same criteria the live path uses, measured
                     // against this whole entry, so no entry is split across two
@@ -1579,29 +1586,6 @@ async fn replay_memtable_from_wal(
                 })?;
             }
         }
-    }
-
-    // A recovered target cannot accept new blobs: its allocator state is not in
-    // the WAL, and reusing IDs could overwrite sidecars from the predecessor.
-    // Flush even a partial tail and return a fresh target for this writer.
-    if active
-        .target()
-        .is_some_and(|target| target.creator_epoch < our_epoch)
-        && !active.batch_store().is_empty()
-    {
-        let global_end = active.batch_store().global_end();
-        let generation = active.generation() + 1;
-        wal_flusher.advance_durable(global_end);
-        flush_replayed_memtable(
-            flusher,
-            &active,
-            our_epoch,
-            position.saturating_sub(1),
-            global_end,
-            index_configs,
-        )
-        .await?;
-        active = make_memtable(generation, global_end, None)?;
     }
 
     // Rebuild the active memtable's in-memory indexes from the batches just
@@ -1726,58 +1710,6 @@ fn memtable_resident_bytes(memtable: &MemTable) -> usize {
     memtable.batch_store().retained_bytes()
         + memtable.indexes().map_or(0, IndexStore::resident_bytes)
         + super::memtable::pk_bloom_filter_bytes()
-}
-
-fn is_generation_dir_name(name: &str) -> bool {
-    let Some((hash, generation)) = name.rsplit_once("_gen_") else {
-        return false;
-    };
-    hash.len() == 8
-        && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
-        && generation.parse::<u64>().is_ok()
-}
-
-async fn cleanup_abandoned_blob_targets(
-    object_store: &ObjectStore,
-    base_path: &Path,
-    shard_id: Uuid,
-    epoch: u64,
-    manifest_store: &ShardManifestStore,
-    active_target: Option<&MemTableDataTarget>,
-) -> Result<()> {
-    let mut live_dirs = manifest_store
-        .latest()
-        .await?
-        .map(|manifest| {
-            manifest
-                .sstables
-                .iter()
-                .map(|sstable| sstable.path.clone())
-                .collect::<HashSet<_>>()
-        })
-        .unwrap_or_default();
-    if let Some(target) = active_target {
-        live_dirs.insert(target.generation_dir.clone());
-    }
-
-    let shard_path = shard_base_path(base_path, &shard_id);
-    for child in object_store.read_dir(shard_path.clone()).await? {
-        if !is_generation_dir_name(&child) || live_dirs.contains(&child) {
-            continue;
-        }
-        let generation_path = shard_path.clone().join(child.as_str());
-        let is_abandoned = object_store
-            .read_dir(generation_path.clone())
-            .await?
-            .iter()
-            .filter_map(|name| name.strip_prefix(BLOB_PREWRITE_MARKER_PREFIX))
-            .filter_map(|marker_epoch| marker_epoch.parse::<u64>().ok())
-            .any(|marker_epoch| marker_epoch < epoch);
-        if is_abandoned {
-            object_store.remove_dir_all(generation_path).await?;
-        }
-    }
-    Ok(())
 }
 
 /// Flush a sealed replay memtable to a Lance generation, choosing the indexed
@@ -1920,7 +1852,6 @@ struct SharedWriterState {
     input_schema: Arc<ArrowSchema>,
     schema: Arc<ArrowSchema>,
     preassign_data_target: bool,
-    blob_target_markers: StdRwLock<HashSet<String>>,
     pk_field_ids: Vec<i32>,
     /// Primary-key column names, used to (re)enable the PK-position index on
     /// each fresh active memtable created at freeze.
@@ -1966,37 +1897,12 @@ impl SharedWriterState {
             input_schema,
             schema,
             preassign_data_target,
-            blob_target_markers: StdRwLock::new(HashSet::new()),
             pk_field_ids,
             pk_columns,
             max_memtable_batches,
             max_memtable_rows,
             index_configs,
         }
-    }
-
-    async fn ensure_blob_target_marker(&self, target: &MemTableDataTarget) -> Result<()> {
-        {
-            let mut marked_targets = self.blob_target_markers.write().unwrap();
-            if !marked_targets.insert(target.generation_dir.clone()) {
-                return Ok(());
-            }
-        }
-
-        let marker_path = target.prewrite_marker_path(&self.base_path, &self.shard_id);
-        if let Err(error) = self
-            .object_store
-            .inner
-            .put(&marker_path, Bytes::new().into())
-            .await
-        {
-            self.blob_target_markers
-                .write()
-                .unwrap()
-                .remove(&target.generation_dir);
-            return Err(error.into());
-        }
-        Ok(())
     }
 
     async fn prepare_batches(
@@ -2035,7 +1941,6 @@ impl SharedWriterState {
         for batch in &batches {
             preprocessor.validate_batch(batch).await?;
         }
-        self.ensure_blob_target_marker(target).await?;
         let prepared = async {
             let mut prepared = Vec::with_capacity(batches.len());
             for batch in batches {
@@ -2046,7 +1951,7 @@ impl SharedWriterState {
         }
         .await;
         if prepared.is_err() {
-            preprocessor.abort().await;
+            preprocessor.abort();
         }
         prepared.map(|batches| (batches, Some(preprocessor)))
     }
@@ -2850,22 +2755,6 @@ impl ShardWriter {
             .seed_next_position(next_wal_position)
             .await;
 
-        if let Err(error) = cleanup_abandoned_blob_targets(
-            object_store.as_ref(),
-            &base_path,
-            shard_id,
-            epoch,
-            manifest_store.as_ref(),
-            memtable.target(),
-        )
-        .await
-        {
-            warn!(
-                "failed to clean abandoned MemWAL Blob targets for shard {}: {}",
-                shard_id, error
-            );
-        }
-
         // Seed the writer's covered-WAL cursor from the post-replay tip:
         // `next_wal_position` is one past the highest WAL entry we just
         // replayed into the active memtable, so everything strictly below
@@ -3392,7 +3281,7 @@ impl ShardWriter {
                 Ok(results) => results,
                 Err(error) => {
                     if let Some(preprocessor) = blob_preprocessor.as_mut() {
-                        preprocessor.abort().await;
+                        preprocessor.abort();
                     }
                     return Err(error);
                 }
@@ -5120,7 +5009,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_blob_v2_is_prepared_before_wal_and_reused_by_replay_flush() {
+    async fn test_blob_v2_target_is_reused_across_replay_and_flush() {
         let (store, base_path, base_uri, _temp_dir) = create_local_store().await;
         let external_dir = tempfile::tempdir().unwrap();
         let external_path = external_dir.path().join("external.bin");
@@ -5253,21 +5142,13 @@ mod tests {
             let data_dir = target.generation_path(&base_path, &shard_id).join(DATA_DIR);
             let sidecars = blob_sidecars(store.as_ref(), &data_dir).await;
             assert_eq!(sidecars.len(), 3, "two packed puts plus one dedicated blob");
-            store
-                .inner
-                .put(
-                    &data_dir.join(target.data_file_key()).join("orphan.blob"),
-                    bytes::Bytes::from_static(b"orphan").into(),
-                )
-                .await
-                .unwrap();
             (target, sidecars)
         };
 
-        // Reopening claims a new epoch. Replay must flush the predecessor's
-        // partial target as-is instead of rewriting its payloads or appending
-        // into its Blob ID namespace. The lower batch limit also verifies that
-        // both the batch store and HNSW storage retain the target's capacity.
+        // Reopening claims a new epoch. Replay reserves the predecessor's Blob
+        // IDs so this writer can safely continue the same target without an
+        // eager flush. The lower batch limit also verifies that both the batch
+        // store and HNSW storage retain the target's persisted capacity.
         let replay_config = ShardWriterConfig {
             max_memtable_batches: 1,
             ..config
@@ -5282,8 +5163,41 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(writer.memtable_stats().await.unwrap().row_count, 0);
+        assert_eq!(writer.memtable_stats().await.unwrap().row_count, 9);
+        let replayed_target = match &writer.mode {
+            WriterMode::MemTable { state, .. } => {
+                state.read().await.memtable.target().unwrap().clone()
+            }
+            WriterMode::WalOnly { .. } => unreachable!(),
+        };
+        assert_eq!(replayed_target, target);
         let manifest = writer.manifest().await.unwrap().unwrap();
+        assert!(manifest.sstables.is_empty());
+
+        writer
+            .put(vec![create_blob_v2_batch(
+                9,
+                &[BlobTestValue::Bytes(b"successor".to_vec())],
+            )])
+            .await
+            .unwrap();
+        assert_eq!(writer.memtable_stats().await.unwrap().row_count, 10);
+        let data_dir = target.generation_path(&base_path, &shard_id).join(DATA_DIR);
+        let sidecars_after_successor = blob_sidecars(store.as_ref(), &data_dir).await;
+        assert_eq!(sidecars_after_successor.len(), sidecars_before.len() + 1);
+        assert!(
+            sidecars_before
+                .iter()
+                .all(|path| sidecars_after_successor.contains(path)),
+            "successor must preserve every predecessor sidecar"
+        );
+
+        writer.close().await.unwrap();
+        let manifest = ShardManifestStore::new(store.clone(), &base_path, shard_id, 10)
+            .latest()
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(manifest.sstables.len(), 1);
         assert_eq!(manifest.sstables[0].path, target.generation_dir);
 
@@ -5294,18 +5208,16 @@ mod tests {
             target.generation_dir
         );
         let dataset = Dataset::open(&generation_uri).await.unwrap();
-        assert_eq!(dataset.count_rows(None).await.unwrap(), 9);
+        assert_eq!(dataset.count_rows(None).await.unwrap(), 10);
         let fragment = dataset.get_fragments().pop().unwrap();
         assert_eq!(fragment.metadata().files.len(), 1);
         assert_eq!(fragment.metadata().files[0].path, target.data_file_name);
 
-        let data_dir = target.generation_path(&base_path, &shard_id).join(DATA_DIR);
         assert_eq!(
             blob_sidecars(store.as_ref(), &data_dir).await,
-            sidecars_before,
-            "replay flush must reuse referenced sidecars and prune unreferenced ones"
+            sidecars_after_successor,
+            "flush must reuse every sidecar written before and after replay"
         );
-        writer.close().await.unwrap();
     }
 
     #[tokio::test]
@@ -5443,49 +5355,6 @@ mod tests {
             .nearest("vector", &Float32Array::from(vec![0.0, 1.0]), 1)
             .unwrap();
         assert_eq!(vector.try_into_batch().await.unwrap().num_rows(), 1);
-        writer.close().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_open_removes_orphaned_blob_generation() {
-        let (store, base_path, base_uri, _temp_dir) = create_local_store().await;
-        let shard_id = Uuid::new_v4();
-        let orphan = MemTableDataTarget::new(0, 0, 1);
-        let orphan_path = orphan
-            .generation_path(&base_path, &shard_id)
-            .join(DATA_DIR)
-            .join(orphan.data_file_key())
-            .join("orphan.blob");
-        store
-            .inner
-            .put(&orphan_path, bytes::Bytes::from_static(b"orphan").into())
-            .await
-            .unwrap();
-        store
-            .inner
-            .put(
-                &orphan.prewrite_marker_path(&base_path, &shard_id),
-                bytes::Bytes::new().into(),
-            )
-            .await
-            .unwrap();
-
-        let batch = create_blob_v2_batch(0, &[BlobTestValue::Bytes(vec![1])]);
-        let writer = ShardWriter::open(
-            store.clone(),
-            base_path,
-            base_uri,
-            ShardWriterConfig {
-                shard_id,
-                durable_write: false,
-                ..Default::default()
-            },
-            batch.schema(),
-            vec![],
-        )
-        .await
-        .unwrap();
-        assert!(store.inner.head(&orphan_path).await.is_err());
         writer.close().await.unwrap();
     }
 

@@ -406,7 +406,6 @@ struct RollingPackedBlobWriter {
     current: Option<PackedBlobWriter>,
     current_size: usize,
     current_max_pack_size: Option<usize>,
-    started_blob_ids: Vec<u32>,
 }
 
 impl RollingPackedBlobWriter {
@@ -415,7 +414,6 @@ impl RollingPackedBlobWriter {
             current: None,
             current_size: 0,
             current_max_pack_size: None,
-            started_blob_ids: Vec::new(),
         }
     }
 
@@ -429,7 +427,6 @@ impl RollingPackedBlobWriter {
     ) -> Result<()> {
         self.finish().await?;
         let blob_id = blob_id_allocator.next()?;
-        self.started_blob_ids.push(blob_id);
         let data_file_path = data_dir.join(format!("{data_file_key}.lance"));
         self.current =
             Some(PackedBlobWriter::try_new(object_store, data_file_path, blob_id).await?);
@@ -493,10 +490,6 @@ impl RollingPackedBlobWriter {
         self.current_size = 0;
         self.current_max_pack_size = None;
     }
-
-    fn take_started_blob_ids(&mut self) -> Vec<u32> {
-        std::mem::take(&mut self.started_blob_ids)
-    }
 }
 
 /// Preprocesses blob v2 columns on the write path so the encoder sees bounded inline values and
@@ -512,7 +505,6 @@ pub struct BlobPreprocessor {
     blob_id_allocator: BlobIdAllocator,
     part_blob_ids: Option<Range<u32>>,
     pack_writer: RollingPackedBlobWriter,
-    dedicated_blob_ids: Vec<u32>,
     /// Write-param override for the pack-file roll size. When set, it takes
     /// precedence over each field's `blob-pack-file-size-threshold` metadata for
     /// this write job only; it is not persisted into the dataset schema.
@@ -725,7 +717,6 @@ impl BlobPreprocessor {
             blob_id_allocator: BlobIdAllocator::new(1),
             part_blob_ids: None,
             pack_writer,
-            dedicated_blob_ids: Vec::new(),
             pack_file_size_override,
             field_processors,
             external_base_resolver,
@@ -760,7 +751,6 @@ impl BlobPreprocessor {
 
     async fn write_dedicated(&mut self, source: BlobWriteSource<'_>) -> Result<BlobDescriptor> {
         let blob_id = self.blob_id_allocator.next()?;
-        self.dedicated_blob_ids.push(blob_id);
         let data_file_path = self
             .data_dir
             .clone()
@@ -1418,24 +1408,8 @@ impl BlobPreprocessor {
         self.pack_writer.finish().await
     }
 
-    pub(super) async fn abort(&mut self) {
+    pub(super) fn abort(&mut self) {
         self.pack_writer.abort();
-        let blob_ids = self
-            .pack_writer
-            .take_started_blob_ids()
-            .into_iter()
-            .chain(self.dedicated_blob_ids.drain(..))
-            .collect::<Vec<_>>();
-        for blob_id in blob_ids {
-            let path = blob_path(&self.data_dir, &self.data_file_key, blob_id);
-            if let Err(error) = self.object_store.delete(&path).await {
-                log::warn!(
-                    "failed to remove abandoned Blob sidecar '{}': {}",
-                    path,
-                    error
-                );
-            }
-        }
     }
 }
 

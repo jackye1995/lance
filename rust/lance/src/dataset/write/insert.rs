@@ -54,7 +54,7 @@ pub struct InsertBuilder<'a> {
     // TODO: make these parameters a part of the builder, and add specific methods.
     params: Option<&'a WriteParams>,
     write_progress: Option<WriteProgressFn>,
-    data_file_name: Option<Arc<String>>,
+    preassigned_data_file_name: Option<Arc<String>>,
 }
 
 impl<'a> InsertBuilder<'a> {
@@ -63,7 +63,7 @@ impl<'a> InsertBuilder<'a> {
             dest: dest.into(),
             params: None,
             write_progress: None,
-            data_file_name: None,
+            preassigned_data_file_name: None,
         }
     }
 
@@ -72,8 +72,11 @@ impl<'a> InsertBuilder<'a> {
         self
     }
 
-    pub(crate) fn with_data_file_name(mut self, data_file_name: impl Into<String>) -> Self {
-        self.data_file_name = Some(Arc::new(data_file_name.into()));
+    pub(crate) fn with_preassigned_data_file_name(
+        mut self,
+        preassigned_data_file_name: impl Into<String>,
+    ) -> Self {
+        self.preassigned_data_file_name = Some(Arc::new(preassigned_data_file_name.into()));
         self
     }
 
@@ -222,37 +225,37 @@ impl<'a> InsertBuilder<'a> {
         )
         .await?;
 
-        let (written_fragments, written_schema) = if let Some(data_file_name) = &self.data_file_name
-        {
-            if target_base_info.is_some() {
-                return Err(Error::invalid_input(
-                    "a fixed data file name cannot be combined with target bases",
-                ));
-            }
-            Box::pin(write_fragments_internal_to_file(
-                context.storage_version,
-                context.dest.dataset(),
-                context.object_store.clone(),
-                &context.base_path,
-                schema.clone(),
-                stream,
-                context.params.clone(),
-                data_file_name.clone(),
-            ))
-            .await?
-        } else {
-            Box::pin(write_fragments_internal(
-                context.storage_version,
-                context.dest.dataset(),
-                context.object_store.clone(),
-                &context.base_path,
-                schema.clone(),
-                stream,
-                context.params.clone(),
-                target_base_info,
-            ))
-            .await?
-        };
+        let (written_fragments, written_schema) =
+            if let Some(preassigned_data_file_name) = &self.preassigned_data_file_name {
+                if target_base_info.is_some() {
+                    return Err(Error::invalid_input(
+                        "a fixed data file name cannot be combined with target bases",
+                    ));
+                }
+                Box::pin(write_fragments_internal_to_file(
+                    context.storage_version,
+                    context.dest.dataset(),
+                    context.object_store.clone(),
+                    &context.base_path,
+                    schema.clone(),
+                    stream,
+                    context.params.clone(),
+                    preassigned_data_file_name.clone(),
+                ))
+                .await?
+            } else {
+                Box::pin(write_fragments_internal(
+                    context.storage_version,
+                    context.dest.dataset(),
+                    context.object_store.clone(),
+                    &context.base_path,
+                    schema.clone(),
+                    stream,
+                    context.params.clone(),
+                    target_base_info,
+                ))
+                .await?
+            };
 
         let transaction = Self::build_transaction(written_schema, written_fragments, &context)?;
 

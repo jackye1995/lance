@@ -62,7 +62,12 @@ impl Default for CacheConfig {
 pub struct MemTable {
     /// Schema for this MemTable.
     schema: Arc<ArrowSchema>,
-    /// Caller-visible scan schema. Prepared Blob fields become descriptors.
+    /// Caller-visible scan schema.
+    ///
+    /// `schema` describes the prepared arrays stored in the MemTable, including
+    /// bounded inline bytes. Query planning must instead see the public Blob
+    /// descriptor fields (`size`, `position`, and so on), so the scanner keeps
+    /// this derived schema alongside the physical one.
     scan_schema: Arc<ArrowSchema>,
     /// Lance schema (for index operations).
     lance_schema: Schema,

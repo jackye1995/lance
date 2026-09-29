@@ -3,14 +3,12 @@
 
 //! MemTable flush to persistent storage.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use bytes::Bytes;
-use futures::TryStreamExt;
 use lance_core::cache::LanceCache;
-use lance_core::utils::blob::blob_path;
 use lance_core::utils::deletion::DeletionVector;
 use lance_core::{Error, Result};
 use lance_index::IndexType;
@@ -27,12 +25,9 @@ use roaring::RoaringBitmap;
 use tracing::instrument;
 use uuid::Uuid;
 
-use super::super::MemTableDataTarget;
 use super::super::index::MemIndexConfig;
 use super::super::memtable::MemTable;
 use crate::Dataset;
-use crate::dataset::DATA_DIR;
-use crate::dataset::blob::prepared_blob_ids;
 use crate::dataset::builder::DatasetBuilder;
 use crate::dataset::mem_wal::manifest::ShardManifestStore;
 use crate::dataset::mem_wal::scanner::SsTableWarmer;
@@ -248,53 +243,15 @@ impl MemTableFlusher {
             ));
         }
 
+        // Blob-free memtables do not reserve a storage identity during puts.
+        // Preserve the existing flush-time random generation and file naming
+        // for that path.
         let random_hash = generate_random_hash();
         Ok((
             format!("{}_gen_{}", random_hash, generation),
             sstable_path(&self.base_path, &self.shard_id, &random_hash, generation),
             None,
         ))
-    }
-
-    async fn prune_unreferenced_blob_sidecars(
-        &self,
-        generation_path: &Path,
-        target: &MemTableDataTarget,
-        batches: &[RecordBatch],
-    ) -> Result<()> {
-        let mut referenced_ids = HashSet::new();
-        for batch in batches {
-            referenced_ids.extend(prepared_blob_ids(batch)?);
-        }
-        let data_dir = generation_path.clone().join(DATA_DIR);
-        let live_paths = referenced_ids
-            .into_iter()
-            .map(|blob_id| blob_path(&data_dir, target.data_file_key(), blob_id))
-            .collect::<HashSet<_>>();
-        let sidecar_prefix = data_dir.join(target.data_file_key());
-        let objects = self
-            .object_store
-            .list(Some(sidecar_prefix))
-            .try_collect::<Vec<_>>()
-            .await?;
-        for object in objects {
-            if object.location.as_ref().ends_with(".blob") && !live_paths.contains(&object.location)
-            {
-                self.object_store.delete(&object.location).await?;
-            }
-        }
-        Ok(())
-    }
-
-    async fn retire_blob_target_marker(&self, memtable: &MemTable) -> Result<()> {
-        let Some(target) = memtable.target() else {
-            return Ok(());
-        };
-        let marker_path = target.prewrite_marker_path(&self.base_path, &self.shard_id);
-        match self.object_store.inner.delete(&marker_path).await {
-            Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
-            Err(error) => Err(error.into()),
-        }
     }
 
     /// Storage file version of the shard's base dataset. SSTables
@@ -342,7 +299,8 @@ impl MemTableFlusher {
 
         let generation = memtable.generation();
         let size = FlushedSize::of(memtable);
-        let (gen_folder_name, gen_path, data_file_name) = self.generation_target(memtable)?;
+        let (gen_folder_name, gen_path, preassigned_data_file_name) =
+            self.generation_target(memtable)?;
 
         info!(
             "Flushing MemTable generation {} to {} ({} rows, {} batches)",
@@ -353,7 +311,7 @@ impl MemTableFlusher {
         );
 
         let (rows_flushed, deleted) = self
-            .write_data_file(&gen_path, memtable, data_file_name.as_deref())
+            .write_data_file(&gen_path, memtable, preassigned_data_file_name.as_deref())
             .await?;
 
         // Persist the within-generation deletion vector so the
@@ -377,12 +335,6 @@ impl MemTableFlusher {
         // Warm before commit (zero cold window); no-op without a warmer.
         let warm_uri = self.path_to_uri(&gen_path);
         self.warm_generation(&warm_uri).await;
-
-        // Once the marker is gone, writer-open reclamation can no longer treat
-        // this generation as an abandoned prewrite target. Retire it before the
-        // shard manifest publishes the SSTable so retained snapshots are never
-        // exposed to the prewrite cleanup path.
-        self.retire_blob_target_marker(memtable).await?;
 
         let new_manifest = self
             .update_manifest(
@@ -418,7 +370,7 @@ impl MemTableFlusher {
         &self,
         path: &Path,
         memtable: &MemTable,
-        data_file_name: Option<&str>,
+        preassigned_data_file_name: Option<&str>,
     ) -> Result<(usize, RoaringBitmap)> {
         use arrow_array::RecordBatchIterator;
 
@@ -431,10 +383,6 @@ impl MemTableFlusher {
         let batches = memtable.scan_batches().await?;
         if batches.is_empty() {
             return Ok((0, RoaringBitmap::new()));
-        }
-        if let Some(target) = memtable.target() {
-            self.prune_unreferenced_blob_sidecars(path, target, &batches)
-                .await?;
         }
         let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
 
@@ -468,7 +416,7 @@ impl MemTableFlusher {
         };
 
         let uri = self.path_to_uri(path);
-        if let Some(data_file_name) = data_file_name {
+        if let Some(preassigned_data_file_name) = preassigned_data_file_name {
             match self.open_generation(&uri).await {
                 Ok(dataset) => {
                     let fragments = dataset.get_fragments();
@@ -478,13 +426,13 @@ impl MemTableFlusher {
                             .metadata()
                             .files
                             .iter()
-                            .any(|file| file.path == data_file_name);
+                            .any(|file| file.path == preassigned_data_file_name);
                     if is_expected {
                         return Ok((total_rows, deleted));
                     }
                     return Err(Error::io(format!(
                         "generation {} already exists but does not describe the expected file {} and {} rows",
-                        path, data_file_name, total_rows
+                        path, preassigned_data_file_name, total_rows
                     )));
                 }
                 Err(Error::DatasetNotFound { .. }) => {}
@@ -511,8 +459,8 @@ impl MemTableFlusher {
             ..Default::default()
         };
         let mut builder = InsertBuilder::new(uri.as_str()).with_params(&write_params);
-        if let Some(data_file_name) = data_file_name {
-            builder = builder.with_data_file_name(data_file_name);
+        if let Some(preassigned_data_file_name) = preassigned_data_file_name {
+            builder = builder.with_preassigned_data_file_name(preassigned_data_file_name);
         }
         builder.execute_stream(reader).await?;
 
@@ -613,7 +561,8 @@ impl MemTableFlusher {
 
         let generation = memtable.generation();
         let size = FlushedSize::of(memtable);
-        let (gen_folder_name, gen_path, data_file_name) = self.generation_target(memtable)?;
+        let (gen_folder_name, gen_path, preassigned_data_file_name) =
+            self.generation_target(memtable)?;
 
         info!(
             "Flushing MemTable generation {} with indexes to {} ({} rows, {} batches)",
@@ -624,7 +573,7 @@ impl MemTableFlusher {
         );
 
         let (total_rows, deleted) = self
-            .write_data_file(&gen_path, memtable, data_file_name.as_deref())
+            .write_data_file(&gen_path, memtable, preassigned_data_file_name.as_deref())
             .await?;
 
         // Open the dataset once for all index building. Dataset::write already
@@ -719,8 +668,6 @@ impl MemTableFlusher {
         // Warm before commit (zero cold window); no-op without a warmer.
         let warm_uri = self.path_to_uri(&gen_path);
         self.warm_generation(&warm_uri).await;
-
-        self.retire_blob_target_marker(memtable).await?;
 
         let new_manifest = self
             .update_manifest(

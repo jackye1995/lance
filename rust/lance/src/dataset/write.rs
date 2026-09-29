@@ -929,7 +929,7 @@ pub(super) async fn do_write_fragments_impl<OpenWriter, OpenWriterFuture>(
     target_bases_info: Option<Vec<TargetBaseInfo>>,
     mut seed_writers: Vec<Box<dyn lance_index::scalar::seed::IndexSeedWriter>>,
     file_row_counts: Option<Vec<usize>>,
-    data_file_name: Option<Arc<String>>,
+    preassigned_data_file_name: Option<Arc<String>>,
 ) -> Result<Vec<Fragment>>
 where
     OpenWriter: Fn(Arc<ObjectStore>, Schema, Path, WriterOptions) -> OpenWriterFuture + Send + Sync,
@@ -956,7 +956,7 @@ where
         source_store_params,
         params.blob_pack_file_size_threshold,
         file_writer_options,
-        data_file_name,
+        preassigned_data_file_name,
     );
     let mut writer: Option<Box<dyn GenericWriter>> = None;
     let mut num_rows_in_current_file = 0;
@@ -1782,7 +1782,7 @@ pub(crate) async fn write_fragments_internal_to_file(
     schema: Schema,
     data: SendableRecordBatchStream,
     params: WriteParams,
-    data_file_name: Arc<String>,
+    preassigned_data_file_name: Arc<String>,
 ) -> Result<(Vec<Fragment>, Schema)> {
     write_fragments_internal_impl(
         storage_version,
@@ -1794,7 +1794,7 @@ pub(crate) async fn write_fragments_internal_to_file(
         params,
         None,
         None,
-        Some(data_file_name),
+        Some(preassigned_data_file_name),
     )
     .await
 }
@@ -1810,7 +1810,7 @@ async fn write_fragments_internal_impl(
     params: WriteParams,
     target_bases_info: Option<Vec<TargetBaseInfo>>,
     file_row_counts: Option<Vec<usize>>,
-    data_file_name: Option<Arc<String>>,
+    preassigned_data_file_name: Option<Arc<String>>,
 ) -> Result<(Vec<Fragment>, Schema)> {
     let mut params = params;
 
@@ -1829,7 +1829,7 @@ async fn write_fragments_internal_impl(
         params,
         target_bases_info,
         file_row_counts,
-        data_file_name,
+        preassigned_data_file_name,
     )
     .await
 }
@@ -2197,7 +2197,7 @@ impl V2WriterAdapter {
     pub(in crate::dataset) async fn abort(&mut self) {
         self.writer.abort().await;
         if let Some(pre) = self.preprocessor.as_mut() {
-            pre.abort().await;
+            pre.abort();
         }
         if let Some(promotion) = &self.promotion {
             promotion.abort().await;
@@ -2270,7 +2270,7 @@ impl GenericWriter for V2WriterAdapter {
 pub(crate) struct WriterOptions {
     add_data_dir: bool,
     base_id: Option<u32>,
-    data_file_name: Option<Arc<String>>,
+    preassigned_data_file_name: Option<Arc<String>>,
     external_base_resolver: Option<Arc<ExternalBaseResolver>>,
     allow_external_blob_outside_bases: bool,
     external_blob_mode: ExternalBlobMode,
@@ -2305,13 +2305,13 @@ pub(crate) async fn open_v1_writer(
     let WriterOptions {
         add_data_dir,
         base_id,
-        data_file_name,
+        preassigned_data_file_name,
         ..
     } = options;
     let (_data_file_key, filename, _data_dir, full_path) = prepare_data_file_path(
         base_dir,
         add_data_dir,
-        data_file_name.as_deref().map(String::as_str),
+        preassigned_data_file_name.as_deref().map(String::as_str),
     );
     Ok(Box::new(V1WriterAdapter {
         writer: V1FileWriter::<ManifestDescribing>::try_new(
@@ -2345,17 +2345,17 @@ where
     let WriterOptions {
         add_data_dir,
         base_id,
-        data_file_name,
+        preassigned_data_file_name,
         file_writer_options,
         ..
     } = options;
     let (_data_file_key, filename, data_dir, final_path) = prepare_data_file_path(
         base_dir,
         add_data_dir,
-        data_file_name.as_deref().map(String::as_str),
+        preassigned_data_file_name.as_deref().map(String::as_str),
     );
     let (writer_path, promotion_target) =
-        staged_writer_path(data_dir, final_path, data_file_name.is_some());
+        staged_writer_path(data_dir, final_path, preassigned_data_file_name.is_some());
     let writer = object_store.create(&writer_path).await?;
     let promotion = promotion_target.map(|final_path| FilePromotion {
         object_store: object_store.clone(),
@@ -2396,7 +2396,7 @@ where
     let WriterOptions {
         add_data_dir,
         base_id,
-        data_file_name,
+        preassigned_data_file_name,
         external_base_resolver,
         allow_external_blob_outside_bases,
         external_blob_mode,
@@ -2408,10 +2408,13 @@ where
     let (data_file_key, filename, data_dir, final_path) = prepare_data_file_path(
         base_dir,
         add_data_dir,
-        data_file_name.as_deref().map(String::as_str),
+        preassigned_data_file_name.as_deref().map(String::as_str),
     );
-    let (writer_path, promotion_target) =
-        staged_writer_path(data_dir.clone(), final_path, data_file_name.is_some());
+    let (writer_path, promotion_target) = staged_writer_path(
+        data_dir.clone(),
+        final_path,
+        preassigned_data_file_name.is_some(),
+    );
     let writer = object_store.create(&writer_path).await?;
     let promotion = promotion_target.map(|final_path| FilePromotion {
         object_store: object_store.clone(),
@@ -2448,9 +2451,9 @@ where
 fn prepare_data_file_path(
     base_dir: &Path,
     add_data_dir: bool,
-    data_file_name: Option<&str>,
+    preassigned_data_file_name: Option<&str>,
 ) -> (String, String, Path, Path) {
-    let filename = data_file_name
+    let filename = preassigned_data_file_name
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| format!("{}.lance", generate_random_filename()));
     let data_file_key = filename
@@ -2512,7 +2515,7 @@ struct WriterGenerator<OpenWriter> {
     source_store_params: ObjectStoreParams,
     blob_pack_file_size_threshold: Option<usize>,
     file_writer_options: FileWriterOptions,
-    data_file_name: Option<Arc<String>>,
+    preassigned_data_file_name: Option<Arc<String>>,
     writers_created: AtomicUsize,
     /// Counter for round-robin selection
     next_base_index: AtomicUsize,
@@ -2537,7 +2540,7 @@ where
         source_store_params: ObjectStoreParams,
         blob_pack_file_size_threshold: Option<usize>,
         file_writer_options: FileWriterOptions,
-        data_file_name: Option<Arc<String>>,
+        preassigned_data_file_name: Option<Arc<String>>,
     ) -> Self {
         Self {
             object_store,
@@ -2552,7 +2555,7 @@ where
             source_store_params,
             blob_pack_file_size_threshold,
             file_writer_options,
-            data_file_name,
+            preassigned_data_file_name,
             writers_created: AtomicUsize::new(0),
             next_base_index: AtomicUsize::new(0),
         }
@@ -2573,7 +2576,7 @@ where
         let writer_index = self
             .writers_created
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if writer_index > 0 && self.data_file_name.is_some() {
+        if writer_index > 0 && self.preassigned_data_file_name.is_some() {
             return Err(Error::internal(
                 "a fixed data file name requires the write to produce exactly one fragment",
             ));
@@ -2591,7 +2594,7 @@ where
                     // Primary-storage slots stamp no base id, like a write
                     // without target bases.
                     base_id: (base_info.base_id != PRIMARY_BASE_ID).then_some(base_info.base_id),
-                    data_file_name: self.data_file_name.clone(),
+                    preassigned_data_file_name: self.preassigned_data_file_name.clone(),
                     external_base_resolver: self.external_base_resolver.clone(),
                     allow_external_blob_outside_bases: self.allow_external_blob_outside_bases,
                     external_blob_mode: self.external_blob_mode,
@@ -2610,7 +2613,7 @@ where
                 WriterOptions {
                     add_data_dir: true,
                     base_id: None,
-                    data_file_name: self.data_file_name.clone(),
+                    preassigned_data_file_name: self.preassigned_data_file_name.clone(),
                     external_base_resolver: self.external_base_resolver.clone(),
                     allow_external_blob_outside_bases: self.allow_external_blob_outside_bases,
                     external_blob_mode: self.external_blob_mode,

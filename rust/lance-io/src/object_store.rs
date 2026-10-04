@@ -1336,11 +1336,17 @@ impl ObjectStore {
             let metrics = destination_store.io_tracker.begin_io("copy");
             let result = match mode {
                 StreamCopyMode::Overwrite => super::local::copy_file(source_path, destination_path),
-                StreamCopyMode::Create => destination_store
+                StreamCopyMode::Create => match destination_store
                     .inner
                     .copy_if_not_exists(source_path, destination_path)
                     .await
-                    .map_err(Error::from),
+                {
+                    Ok(()) => Ok(()),
+                    Err(copy_error) => match destination_store.size(destination_path).await {
+                        Ok(destination_size) if destination_size == source_size as u64 => Ok(()),
+                        _ => Err(Error::from(copy_error)),
+                    },
+                },
             };
             metrics.record(&result, source_size as u64);
             result.map_err(|source| {
@@ -3190,6 +3196,29 @@ mod tests {
 
         let source = Path::from("source.bin");
         let destination = Path::from("destination.bin");
+        store.put(&source, b"new").await.unwrap();
+        store.put(&destination, b"old").await.unwrap();
+
+        let result = store
+            .copy_if_not_exists_via_stream(&source, &store, &destination)
+            .await
+            .unwrap();
+
+        assert_eq!(result.size, 3);
+        assert_eq!(
+            store.read_one_all(&destination).await.unwrap().as_ref(),
+            b"old"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_copy_if_not_exists_via_stream_accepts_equal_size_local_retry() {
+        let directory = TempStdDir::default();
+        let (store, base_path) = ObjectStore::from_uri(directory.to_str().unwrap())
+            .await
+            .unwrap();
+        let source = base_path.clone().join("source.bin");
+        let destination = base_path.join("destination.bin");
         store.put(&source, b"new").await.unwrap();
         store.put(&destination, b"old").await.unwrap();
 

@@ -258,6 +258,7 @@ impl ObjectStoreProvider for AwsStoreProvider {
             block_size,
             max_iop_size: *DEFAULT_MAX_IOP_SIZE,
             use_constant_size_upload_parts,
+            supports_conditional_multipart_put: !use_opendal,
             list_is_lexically_ordered: !is_s3_express,
             io_parallelism: DEFAULT_CLOUD_IO_PARALLELISM,
             download_retry_count,
@@ -1073,6 +1074,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(store.scheme, "s3");
+        assert!(!store.supports_conditional_multipart_put);
     }
 
     /// S3 Express ignores `start-after` and does not list in key order, but it does hand back
@@ -1103,6 +1105,10 @@ mod tests {
 
         assert!(!store.list_is_lexically_ordered);
         assert_eq!(store.paginated_lister.is_some(), paginated);
+        assert_eq!(
+            store.supports_conditional_multipart_put,
+            use_opendal == "false"
+        );
     }
 
     #[derive(Debug)]

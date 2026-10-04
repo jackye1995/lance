@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::FutureExt;
 use futures::future::BoxFuture;
-use object_store::{MultipartUpload, ObjectStoreExt, PutMode, PutMultipartOptions, PutOptions};
+use object_store::{MultipartUpload, PutMode, PutMultipartOptions, PutOptions};
 use object_store::{ObjectStore, path::Path};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::task::JoinSet;
@@ -277,17 +277,28 @@ impl UploadState {
                 tracing::Span::current().record("part_count", part_idx as u64);
                 let started_at = Instant::now();
                 let fut = async move {
-                    let res = upload.complete().await.map_err(|source| {
-                        UploadFailure::new(
-                            format!(
-                                "completing multipart upload of {path} failed after {:?} \
+                    let res = match upload.complete().await {
+                        Ok(result) => result,
+                        Err(source) => {
+                            let elapsed = started_at.elapsed();
+                            if let Err(error) = upload.abort().await {
+                                tracing::warn!(
+                                    path = %path,
+                                    error = %error,
+                                    "Failed to abort multipart upload after completion error"
+                                );
+                            }
+                            return Err(UploadFailure::new(
+                                format!(
+                                    "completing multipart upload of {path} failed after {:?} \
                                  ({part_idx} parts, {bytes_written} bytes, {})",
-                                started_at.elapsed(),
-                                upload_settings()
-                            ),
-                            source,
-                        )
-                    })?;
+                                    elapsed,
+                                    upload_settings()
+                                ),
+                                source,
+                            ));
+                        }
+                    };
                     Ok(WriteResult {
                         size: 0, // This will be set properly later.
                         e_tag: res.e_tag,

@@ -1488,9 +1488,8 @@ impl ObjectStore {
                 if !matches!(mode, StreamCopyMode::Create) {
                     return Err(completion_error);
                 }
-                let destination_size = match destination_store.size(destination_path).await {
-                    Ok(destination_size) => destination_size,
-                    Err(_) => return Err(completion_error),
+                let Ok(destination_size) = destination_store.size(destination_path).await else {
+                    return Err(completion_error);
                 };
                 Span::current().record("destination_size", destination_size);
                 if destination_size != source_size as u64 {

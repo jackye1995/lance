@@ -863,6 +863,7 @@ impl ObjectStore {
     /// [`Self::read_dir_page`] falls back through the (already-wrapped) `inner`.
     pub fn apply_wrapper(&mut self, wrapper: &dyn WrappingObjectStore) {
         self.inner = wrapper.wrap(&self.store_prefix, self.inner.clone());
+        self.supports_conditional_multipart_put = false;
         self.paginated_lister = self
             .paginated_lister
             .take()

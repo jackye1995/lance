@@ -3587,6 +3587,11 @@ mod tests {
             "conditional stream copy should use multipart upload for a large destination"
         );
         assert_eq!(
+            observations.abort_count.load(Ordering::SeqCst),
+            1,
+            "conditional completion failure should abort the multipart upload"
+        );
+        assert_eq!(
             destination_store
                 .read_one_all(&destination)
                 .await

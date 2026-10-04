@@ -217,6 +217,8 @@ pub struct ObjectStore {
     /// Whether to use constant size upload parts for multipart uploads. This
     /// is only necessary for Cloudflare R2.
     pub use_constant_size_upload_parts: bool,
+    /// Whether multipart uploads honor [`PutMode::Create`] at completion.
+    supports_conditional_multipart_put: bool,
     /// Whether we can assume that the list of files is lexically ordered. This
     /// is true for object stores, but not for local filesystems.
     pub list_is_lexically_ordered: bool,
@@ -245,6 +247,10 @@ impl std::fmt::Debug for ObjectStore {
             .field(
                 "use_constant_size_upload_parts",
                 &self.use_constant_size_upload_parts,
+            )
+            .field(
+                "supports_conditional_multipart_put",
+                &self.supports_conditional_multipart_put,
             )
             .field("list_is_lexically_ordered", &self.list_is_lexically_ordered)
             .field("io_parallelism", &self.io_parallelism)
@@ -694,6 +700,7 @@ impl ObjectStore {
                 block_size: params.resolved_block_size()?.unwrap_or(64 * 1024),
                 max_iop_size: *DEFAULT_MAX_IOP_SIZE,
                 use_constant_size_upload_parts: params.use_constant_size_upload_parts,
+                supports_conditional_multipart_put: false,
                 list_is_lexically_ordered: params.list_is_lexically_ordered.unwrap_or_default(),
                 io_parallelism: DEFAULT_CLOUD_IO_PARALLELISM,
                 download_retry_count: DEFAULT_DOWNLOAD_RETRY_COUNT,
@@ -1263,13 +1270,53 @@ impl ObjectStore {
         .await
     }
 
-    /// Copy an object by streaming its bytes into a create-if-absent destination.
+    /// Copy within this store without replacing an existing destination.
     ///
-    /// This has the same transfer and validation behavior as [`Self::copy_via_stream`],
-    /// but atomically refuses to replace an existing destination. Cloud stores use
-    /// conditional single-part or multipart uploads instead of provider-native copy. An
-    /// existing destination with the same size is treated as an idempotent success, but is
-    /// never overwritten.
+    /// Backends with verified conditional multipart completion stream through
+    /// the client. Other backends retain their native conditional-copy path.
+    pub async fn copy_if_not_exists(
+        &self,
+        source_path: &Path,
+        destination_path: &Path,
+    ) -> Result<WriteResult> {
+        if self.supports_conditional_multipart_put {
+            return self
+                .copy_if_not_exists_via_stream(source_path, self, destination_path)
+                .await;
+        }
+
+        let source_size = self.size(source_path).await?;
+        match self
+            .inner
+            .copy_if_not_exists(source_path, destination_path)
+            .await
+        {
+            Ok(()) => {}
+            Err(
+                object_store::Error::AlreadyExists { .. }
+                | object_store::Error::Precondition { .. },
+            ) => {
+                let destination_size = self.size(destination_path).await?;
+                if source_size != destination_size {
+                    return Err(Error::io(format!(
+                        "destination {destination_path} already exists with size \
+                         {destination_size}, but source {source_path} has size {source_size}"
+                    )));
+                }
+            }
+            Err(error) => return Err(Error::io(error.to_string())),
+        }
+
+        Ok(WriteResult {
+            size: usize::try_from(source_size).map_err(|_| {
+                Error::io(format!(
+                    "source {source_path} size {source_size} does not fit in usize"
+                ))
+            })?,
+            e_tag: None,
+        })
+    }
+
     #[instrument(
         name = "multipart_stream_copy_if_not_exists",
         level = "info",
@@ -1289,7 +1336,7 @@ impl ObjectStore {
         ),
         err
     )]
-    pub async fn copy_if_not_exists_via_stream(
+    async fn copy_if_not_exists_via_stream(
         &self,
         source_path: &Path,
         destination_store: &Self,
@@ -1967,6 +2014,7 @@ impl ObjectStore {
             block_size,
             max_iop_size: *DEFAULT_MAX_IOP_SIZE,
             use_constant_size_upload_parts,
+            supports_conditional_multipart_put: false,
             list_is_lexically_ordered,
             io_parallelism,
             download_retry_count,
@@ -3211,7 +3259,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_copy_if_not_exists_via_stream_accepts_equal_size_local_retry() {
+    async fn test_copy_if_not_exists_accepts_equal_size_local_retry() {
         let directory = TempStdDir::default();
         let (store, base_path) = ObjectStore::from_uri(directory.to_str().unwrap())
             .await
@@ -3222,7 +3270,7 @@ mod tests {
         store.put(&destination, b"old").await.unwrap();
 
         let result = store
-            .copy_if_not_exists_via_stream(&source, &store, &destination)
+            .copy_if_not_exists(&source, &destination)
             .await
             .unwrap();
 
@@ -3230,6 +3278,38 @@ mod tests {
         assert_eq!(
             store.read_one_all(&destination).await.unwrap().as_ref(),
             b"old"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_copy_if_not_exists_uses_native_copy_without_conditional_multipart() {
+        let observations = Arc::new(MultipartObservations::default());
+        let mut store = ObjectStore::memory();
+        store.supports_conditional_multipart_put = false;
+        store.inner = Arc::new(ObservedMultipartStore {
+            inner: InMemory::new(),
+            observations: observations.clone(),
+            fail_parts: false,
+            destination_size_adjustment: 0,
+        });
+
+        let source = Path::from("source.bin");
+        let destination = Path::from("destination.bin");
+        let contents = vec![42; crate::object_writer::initial_upload_size() + 1];
+        store.put(&source, &contents).await.unwrap();
+        observations.part_count.store(0, Ordering::SeqCst);
+
+        let result = store
+            .copy_if_not_exists(&source, &destination)
+            .await
+            .unwrap();
+
+        assert_eq!(result.size, contents.len());
+        assert_eq!(observations.native_copy_count.load(Ordering::SeqCst), 1);
+        assert_eq!(observations.part_count.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            store.read_one_all(&destination).await.unwrap().as_ref(),
+            contents.as_slice()
         );
     }
 

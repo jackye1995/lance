@@ -2110,7 +2110,7 @@ pub(in crate::dataset) struct FilePromotion {
 impl FilePromotion {
     async fn promote(&self) -> Result<()> {
         self.object_store
-            .copy_if_not_exists_via_stream(&self.staging_path, &self.object_store, &self.final_path)
+            .copy_if_not_exists(&self.staging_path, &self.final_path)
             .await?;
         self.object_store
             .inner

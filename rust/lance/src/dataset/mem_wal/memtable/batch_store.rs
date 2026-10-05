@@ -50,7 +50,9 @@ use arrow::array::ArrayData;
 use arrow_array::RecordBatch;
 use arrow_buffer::Buffer;
 use arrow_schema::DataType;
+use tokio::sync::Mutex as AsyncMutex;
 
+use crate::dataset::blob::BlobPreprocessor;
 use crate::dataset::mem_wal::MemTableDataTarget;
 
 /// A batch stored in the lock-free store.
@@ -231,6 +233,10 @@ pub struct BatchStore {
     /// entry so replay keeps the writer's generation boundaries, even if the
     /// shard is reopened with a different size limit.
     generation: u64,
+
+    /// Generation-scoped Blob v2 writer. Durable puts reuse its current pack;
+    /// the WAL path seals it before persisting any descriptors that reference it.
+    blob_preprocessor: AsyncMutex<Option<BlobPreprocessor>>,
 }
 
 // SAFETY: Safe to share across threads because:
@@ -238,6 +244,7 @@ pub struct BatchStore {
 // - Readers only access committed slots (index < committed_len)
 // - Atomic operations provide proper synchronization
 // - Slots are never modified after being written
+// - Blob preprocessing is serialized by its async mutex
 unsafe impl Sync for BatchStore {}
 unsafe impl Send for BatchStore {}
 
@@ -299,6 +306,7 @@ impl BatchStore {
             global_offset,
             target,
             generation,
+            blob_preprocessor: AsyncMutex::new(None),
         }
     }
 
@@ -600,6 +608,20 @@ impl BatchStore {
 
     pub(crate) fn target(&self) -> Option<&MemTableDataTarget> {
         self.target.as_ref()
+    }
+
+    pub(crate) fn blob_preprocessor(&self) -> &AsyncMutex<Option<BlobPreprocessor>> {
+        &self.blob_preprocessor
+    }
+
+    /// Seal the generation's current packed sidecar before its descriptors are
+    /// made durable in the WAL. The preprocessor remains reusable so later puts
+    /// can start a new pack under the same generation target.
+    pub(crate) async fn finish_blob_pack(&self) -> crate::Result<()> {
+        if let Some(preprocessor) = self.blob_preprocessor.lock().await.as_mut() {
+            preprocessor.finish().await?;
+        }
+        Ok(())
     }
 
     /// The local exclusive end of this store covered by a writer-global cursor.

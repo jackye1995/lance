@@ -2183,9 +2183,9 @@ impl SharedWriterState {
         memtable: &MemTable,
         schema: &WriterSchema,
         batches: Vec<RecordBatch>,
-    ) -> Result<(Vec<RecordBatch>, Option<BlobPreprocessor>)> {
+    ) -> Result<(Vec<RecordBatch>, Option<BlobPreprocessor>, bool)> {
         let Some(target) = memtable.target() else {
-            return Ok((batches, None));
+            return Ok((batches, None, false));
         };
         let logical_schema = Schema::try_from(schema.storage.as_ref())?;
         let data_dir = target
@@ -2198,19 +2198,55 @@ impl SharedWriterState {
             .map(|session| session.store_registry())
             .unwrap_or_default();
         let source_store_params = self.config.store_params.clone().unwrap_or_default();
-        let mut preprocessor = BlobPreprocessor::new(
-            self.object_store.as_ref().clone(),
-            data_dir,
-            target.data_file_key().to_string(),
-            &logical_schema,
-            None,
-            true,
-            ExternalBlobMode::Reference,
-            source_store_registry,
-            source_store_params,
-            None,
-        )?
-        .for_mem_wal(memtable.blob_id_allocator());
+        let new_preprocessor = || {
+            BlobPreprocessor::new(
+                self.object_store.as_ref().clone(),
+                data_dir.clone(),
+                target.data_file_key().to_string(),
+                &logical_schema,
+                None,
+                true,
+                ExternalBlobMode::Reference,
+                source_store_registry,
+                source_store_params,
+                None,
+            )
+            .map(|preprocessor| preprocessor.for_mem_wal(memtable.blob_id_allocator()))
+        };
+
+        // A non-durable put becomes visible when its in-memory index apply
+        // finishes, so its sidecar must already be readable at that point.
+        // Preserve the original per-put finalization for that mode.
+        if !self.config.durable_write {
+            let mut preprocessor = new_preprocessor()?;
+
+            for batch in &batches {
+                preprocessor.validate_batch(batch).await?;
+            }
+            let prepared = async {
+                let mut prepared = Vec::with_capacity(batches.len());
+                for batch in batches {
+                    prepared.push(preprocessor.preprocess_batch(&batch).await?);
+                }
+                preprocessor.finish().await?;
+                Ok(prepared)
+            }
+            .await;
+            if prepared.is_err() {
+                preprocessor.abort();
+            }
+            return prepared.map(|batches| (batches, Some(preprocessor), false));
+        }
+
+        // Durable puts share one preprocessor per MemTable generation. Keeping
+        // its partial pack open lets sequential put_no_wait calls use one object;
+        // WalFlusher seals it before appending the corresponding descriptors.
+        let batch_store = memtable.batch_store();
+        let mut guard = batch_store.blob_preprocessor().lock().await;
+        if guard.is_none() {
+            *guard = Some(new_preprocessor()?);
+        }
+        let preprocessor = guard.as_mut().expect("Blob preprocessor initialized");
 
         for batch in &batches {
             preprocessor.validate_batch(batch).await?;
@@ -2220,14 +2256,17 @@ impl SharedWriterState {
             for batch in batches {
                 prepared.push(preprocessor.preprocess_batch(&batch).await?);
             }
-            preprocessor.finish().await?;
             Ok(prepared)
         }
         .await;
-        if prepared.is_err() {
+        if let Err(error) = &prepared {
             preprocessor.abort();
+            // The open pack may contain payloads from earlier unacknowledged
+            // puts. Once it is abandoned, none of those puts may be reported
+            // durable; fail the whole group and require replay/reopen.
+            self.wal_flusher.poison(error);
         }
-        prepared.map(|batches| (batches, Some(preprocessor)))
+        prepared.map(|batches| (batches, None, true))
     }
 
     /// Ask the index-apply task to cover `[indexed, end_batch_position)` of this
@@ -3422,7 +3461,8 @@ impl ShardWriter {
             //    payloads into the active target, then keep only prepared
             //    descriptors in the memtable and WAL.
             let batches = incoming.shape(&state.schema)?;
-            let (batches, mut blob_preprocessor) = writer_state
+            let batch_store = state.memtable.batch_store();
+            let (batches, mut blob_preprocessor, shared_blob_preprocessor) = writer_state
                 .prepare_batches(&state.memtable, &state.schema, batches)
                 .await?;
 
@@ -3432,6 +3472,16 @@ impl ShardWriter {
                 Err(error) => {
                     if let Some(preprocessor) = blob_preprocessor.as_mut() {
                         preprocessor.abort();
+                    } else if shared_blob_preprocessor {
+                        // Shared preparation may include payloads from earlier
+                        // unacknowledged puts, so abandoning it is a terminal
+                        // group-commit failure rather than a per-put rollback.
+                        if let Some(preprocessor) =
+                            batch_store.blob_preprocessor().lock().await.as_mut()
+                        {
+                            preprocessor.abort();
+                        }
+                        writer_state.wal_flusher.poison(&error);
                     }
                     return Err(error);
                 }
@@ -3442,7 +3492,6 @@ impl ShardWriter {
             //    afterwards hands the flush trigger the **new** store paired with
             //    the **old** store's end position, so the new store's watermark
             //    jumps past batches that were never appended.
-            let batch_store = state.memtable.batch_store();
             let indexes = state.memtable.indexes_arc();
 
             let start_pos = results.first().map(|(pos, _, _)| *pos).unwrap_or(0);
@@ -5321,6 +5370,61 @@ mod tests {
             .collect::<Vec<_>>();
         paths.sort();
         paths
+    }
+
+    #[tokio::test]
+    async fn test_durable_blob_puts_share_pack_until_wal_flush() {
+        let (store, base_path, base_uri, _temp_dir) = create_local_store().await;
+        let shard_id = Uuid::new_v4();
+        let first = create_blob_v2_batch(0, &[BlobTestValue::Bytes(b"first".to_vec())]);
+        let second = create_blob_v2_batch(1, &[BlobTestValue::Bytes(b"later".to_vec())]);
+        let writer = ShardWriter::open(
+            store.clone(),
+            base_path.clone(),
+            base_uri,
+            ShardWriterConfig {
+                shard_id,
+                durable_write: true,
+                max_wal_buffer_size: usize::MAX,
+                max_wal_flush_interval: Some(Duration::from_secs(60)),
+                ..Default::default()
+            },
+            first.schema(),
+            vec![],
+        )
+        .await
+        .unwrap();
+
+        let (_, first_watcher) = writer.put_no_wait(vec![first]).await.unwrap();
+        let (_, second_watcher) = writer.put_no_wait(vec![second]).await.unwrap();
+        let fence = writer.force_seal_active().await.unwrap();
+
+        let mut first_watcher = first_watcher.unwrap();
+        let mut second_watcher = second_watcher.unwrap();
+        first_watcher.wait().await.unwrap();
+        second_watcher.wait().await.unwrap();
+        fence.wait().await.unwrap();
+
+        let tailer = WalTailer::new(store.clone(), base_path.clone(), shard_id);
+        let entry = tailer.read_entry(1).await.unwrap().unwrap();
+        assert_eq!(entry.batches.len(), 2);
+        assert!(tailer.read_entry(2).await.unwrap().is_none());
+
+        let target = entry.target.unwrap();
+        let data_dir = target.generation_path(&base_path, &shard_id).join(DATA_DIR);
+        let sidecars = blob_sidecars(store.as_ref(), &data_dir).await;
+        assert_eq!(sidecars.len(), 1, "both puts must share one packed object");
+        let payload = store
+            .inner
+            .get(&sidecars[0])
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert_eq!(payload.as_ref(), b"firstlater");
+
+        writer.close().await.unwrap();
     }
 
     #[tokio::test]

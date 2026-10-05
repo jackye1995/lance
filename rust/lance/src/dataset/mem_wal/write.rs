@@ -2243,10 +2243,7 @@ impl SharedWriterState {
         // WalFlusher seals it before appending the corresponding descriptors.
         let batch_store = memtable.batch_store();
         let mut guard = batch_store.blob_preprocessor().lock().await;
-        if guard.is_none() {
-            *guard = Some(new_preprocessor()?);
-        }
-        let preprocessor = guard.as_mut().expect("Blob preprocessor initialized");
+        let preprocessor = guard.get_or_insert_with(new_preprocessor)?;
 
         for batch in &batches {
             preprocessor.validate_batch(batch).await?;
@@ -2260,10 +2257,11 @@ impl SharedWriterState {
         }
         .await;
         if let Err(error) = &prepared {
-            preprocessor.abort();
             // The open pack may contain payloads from earlier unacknowledged
-            // puts. Once it is abandoned, none of those puts may be reported
-            // durable; fail the whole group and require replay/reopen.
+            // puts. Latch a terminal pack failure so even a flush that was
+            // already queued cannot append their descriptors after the upload
+            // is abandoned.
+            guard.fail(error);
             self.wal_flusher.poison(error);
         }
         prepared.map(|batches| (batches, None, true))
@@ -3476,11 +3474,7 @@ impl ShardWriter {
                         // Shared preparation may include payloads from earlier
                         // unacknowledged puts, so abandoning it is a terminal
                         // group-commit failure rather than a per-put rollback.
-                        if let Some(preprocessor) =
-                            batch_store.blob_preprocessor().lock().await.as_mut()
-                        {
-                            preprocessor.abort();
-                        }
+                        batch_store.fail_blob_pack(&error).await;
                         writer_state.wal_flusher.poison(&error);
                     }
                     return Err(error);
@@ -5425,6 +5419,50 @@ mod tests {
         assert_eq!(payload.as_ref(), b"firstlater");
 
         writer.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_failed_shared_blob_pack_cannot_enter_wal() {
+        let (store, base_path, base_uri, _temp_dir) = create_local_store().await;
+        let shard_id = Uuid::new_v4();
+        let batch = create_blob_v2_batch(0, &[BlobTestValue::Bytes(b"first".to_vec())]);
+        let writer = ShardWriter::open(
+            store.clone(),
+            base_path.clone(),
+            base_uri,
+            ShardWriterConfig {
+                shard_id,
+                durable_write: true,
+                max_wal_buffer_size: usize::MAX,
+                max_wal_flush_interval: Some(Duration::from_secs(60)),
+                ..Default::default()
+            },
+            batch.schema(),
+            vec![],
+        )
+        .await
+        .unwrap();
+
+        let (_, watcher) = writer.put_no_wait(vec![batch]).await.unwrap();
+        let batch_store = match &writer.mode {
+            WriterMode::MemTable { state, .. } => state.read().await.memtable.batch_store(),
+            WriterMode::WalOnly { .. } => unreachable!(),
+        };
+        batch_store
+            .fail_blob_pack(&Error::io("injected shared-pack failure"))
+            .await;
+
+        let error = writer
+            .wal_flusher
+            .flush(&WalFlushSource::BatchStore { batch_store }, 1)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("terminally failed Blob v2 pack"));
+
+        let mut watcher = watcher.unwrap();
+        assert!(watcher.wait().await.is_err());
+        let tailer = WalTailer::new(store, base_path, shard_id);
+        assert!(tailer.read_entry(1).await.unwrap().is_none());
     }
 
     #[tokio::test]

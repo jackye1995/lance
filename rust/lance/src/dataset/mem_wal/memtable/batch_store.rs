@@ -55,6 +55,39 @@ use tokio::sync::Mutex as AsyncMutex;
 use crate::dataset::blob::BlobPreprocessor;
 use crate::dataset::mem_wal::MemTableDataTarget;
 
+#[derive(Default)]
+pub(crate) struct BlobPreprocessorState {
+    preprocessor: Option<BlobPreprocessor>,
+    failure: Option<String>,
+}
+
+impl BlobPreprocessorState {
+    pub(crate) fn get_or_insert_with(
+        &mut self,
+        create: impl FnOnce() -> crate::Result<BlobPreprocessor>,
+    ) -> crate::Result<&mut BlobPreprocessor> {
+        if let Some(failure) = &self.failure {
+            return Err(crate::Error::writer_poisoned(format!(
+                "Blob v2 pack is terminally failed: {failure}"
+            )));
+        }
+        if self.preprocessor.is_none() {
+            self.preprocessor = Some(create()?);
+        }
+        Ok(self
+            .preprocessor
+            .as_mut()
+            .expect("Blob preprocessor initialized"))
+    }
+
+    pub(crate) fn fail(&mut self, error: &crate::Error) {
+        if let Some(preprocessor) = self.preprocessor.as_mut() {
+            preprocessor.abort();
+        }
+        self.failure = Some(error.to_string());
+    }
+}
+
 /// A batch stored in the lock-free store.
 #[derive(Clone)]
 pub struct StoredBatch {
@@ -236,7 +269,7 @@ pub struct BatchStore {
 
     /// Generation-scoped Blob v2 writer. Durable puts reuse its current pack;
     /// the WAL path seals it before persisting any descriptors that reference it.
-    blob_preprocessor: AsyncMutex<Option<BlobPreprocessor>>,
+    blob_preprocessor: AsyncMutex<BlobPreprocessorState>,
 }
 
 // SAFETY: Safe to share across threads because:
@@ -306,7 +339,7 @@ impl BatchStore {
             global_offset,
             target,
             generation,
-            blob_preprocessor: AsyncMutex::new(None),
+            blob_preprocessor: AsyncMutex::new(BlobPreprocessorState::default()),
         }
     }
 
@@ -610,16 +643,32 @@ impl BatchStore {
         self.target.as_ref()
     }
 
-    pub(crate) fn blob_preprocessor(&self) -> &AsyncMutex<Option<BlobPreprocessor>> {
+    pub(crate) fn blob_preprocessor(&self) -> &AsyncMutex<BlobPreprocessorState> {
         &self.blob_preprocessor
+    }
+
+    pub(crate) async fn fail_blob_pack(&self, error: &crate::Error) {
+        self.blob_preprocessor.lock().await.fail(error);
     }
 
     /// Seal the generation's current packed sidecar before its descriptors are
     /// made durable in the WAL. The preprocessor remains reusable so later puts
     /// can start a new pack under the same generation target.
     pub(crate) async fn finish_blob_pack(&self) -> crate::Result<()> {
-        if let Some(preprocessor) = self.blob_preprocessor.lock().await.as_mut() {
-            preprocessor.finish().await?;
+        let mut state = self.blob_preprocessor.lock().await;
+        if let Some(failure) = &state.failure {
+            return Err(crate::Error::writer_poisoned(format!(
+                "cannot finalize terminally failed Blob v2 pack: {failure}"
+            )));
+        }
+        if let Some(preprocessor) = state.preprocessor.as_mut()
+            && let Err(error) = preprocessor.finish().await
+        {
+            preprocessor.abort();
+            state.failure = Some(error.to_string());
+            return Err(crate::Error::writer_poisoned(format!(
+                "failed to finalize Blob v2 pack: {error}"
+            )));
         }
         Ok(())
     }

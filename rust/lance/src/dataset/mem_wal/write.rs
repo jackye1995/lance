@@ -1350,10 +1350,8 @@ struct WriterState {
     frozen_memtables: VecDeque<FrozenMemTable>,
     /// Flag to prevent duplicate memtable flush requests.
     flush_requested: bool,
-    /// Counter for WAL flush threshold crossings.
+    /// Current memtable's claimed WAL-size threshold crossings.
     wal_flush_trigger_count: usize,
-    /// Last time a WAL flush was triggered (for time-based flush).
-    last_wal_flush_trigger_time: u64,
 }
 
 /// Capture a point-in-time handle to one in-memory memtable (active or frozen
@@ -2327,6 +2325,7 @@ impl SharedWriterState {
         )?;
 
         let mut old_memtable = std::mem::replace(&mut state.memtable, new_memtable);
+        state.wal_flush_trigger_count = 0;
         // The outgoing memtable flushes with the indexes it was built with.
         let old_schema = std::mem::replace(&mut state.schema, next_schema);
         old_memtable.freeze(last_wal_entry_position);
@@ -2516,77 +2515,72 @@ impl SharedWriterState {
         )
     }
 
-    /// Check if WAL flush is needed and trigger if so.
+    /// Check whether the current memtable crossed a WAL size threshold.
+    ///
+    /// Time-based flushing is owned by [`WalFlushHandler::tickers`]. Keeping a
+    /// second clock here queues a fixed batch boundary after every slow remote
+    /// put, which defeats group commit. Size triggers are best-effort too: the
+    /// handler resolves the latest pending suffix when it drains the message.
+    /// Freeze and close use their own exact, completion-bearing triggers.
     ///
     /// Takes `&mut WriterState` directly since caller already holds the lock.
     fn maybe_trigger_wal_flush(&self, state: &mut WriterState) {
-        let threshold = self.config.max_wal_buffer_size;
-
-        let batch_count = state.memtable.batch_count();
         let total_bytes = state.memtable.batch_store().row_bytes();
-        let batch_store = state.memtable.batch_store();
-
-        // Check if there are any unflushed batches
-        let has_pending = batch_store.pending_wal_flush_count(self.wal_flusher.durable()) > 0;
-
-        // Check time-based trigger first
-        let time_trigger = if let Some(interval) = self.config.max_wal_flush_interval {
-            let interval_millis = interval.as_millis() as u64;
-            let last_trigger = state.last_wal_flush_trigger_time;
-            let now = now_millis();
-
-            // If last_trigger is 0, this is the first write - start the timer but don't flush
-            if last_trigger == 0 {
-                state.last_wal_flush_trigger_time = now;
-                None
-            } else {
-                let elapsed = now.saturating_sub(last_trigger);
-
-                if elapsed >= interval_millis && has_pending {
-                    state.last_wal_flush_trigger_time = now;
-                    Some(now)
-                } else {
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        // If time trigger fired, send a flush message
-        if time_trigger.is_some() {
-            let _ = self.wal_flush_tx.send(TriggerWalFlush {
-                source: WalFlushSource::BatchStore { batch_store },
-                end_batch_position: batch_count,
-                done: None,
-            });
+        if !claim_wal_size_trigger(
+            &mut state.wal_flush_trigger_count,
+            total_bytes,
+            self.config.max_wal_buffer_size,
+        ) {
             return;
         }
 
-        // Check size-based trigger
-        if threshold == 0 {
-            return;
-        }
-
-        // Calculate how many thresholds have been crossed (1 at 10MB, 2 at 20MB, etc.)
-        let thresholds_crossed = total_bytes / threshold;
-
-        // Trigger flush for each unclaimed threshold crossing
-        while state.wal_flush_trigger_count < thresholds_crossed {
-            state.wal_flush_trigger_count += 1;
-            // Update last trigger time so time-based trigger doesn't fire immediately after
-            state.last_wal_flush_trigger_time = now_millis();
-
-            // Trigger WAL flush with captured batch range
-            let _ = self.wal_flush_tx.send(TriggerWalFlush {
-                source: WalFlushSource::BatchStore {
-                    batch_store: batch_store.clone(),
-                },
-                end_batch_position: batch_count,
-                done: None,
-            });
-        }
+        let _ = self.wal_flush_tx.send(TriggerWalFlush {
+            source: WalFlushSource::NextPending,
+            end_batch_position: 0,
+            done: None,
+        });
     }
+}
+
+/// Claim all WAL-size thresholds crossed by the current put as one trigger.
+///
+/// A single append covers the whole pending suffix, so queueing one message per
+/// crossed threshold only creates stale boundaries under load. The counter is
+/// generation-local and is reset when the active memtable rotates.
+fn claim_wal_size_trigger(
+    claimed_thresholds: &mut usize,
+    total_bytes: usize,
+    threshold: usize,
+) -> bool {
+    if threshold == 0 {
+        return false;
+    }
+    let crossed = total_bytes / threshold;
+    if crossed <= *claimed_thresholds {
+        return false;
+    }
+    *claimed_thresholds = crossed;
+    true
+}
+
+/// Claim WAL-size thresholds for a queue whose byte count shrinks on drain.
+fn claim_pending_wal_size_trigger(
+    claimed_bytes: &mut usize,
+    pending_bytes: usize,
+    threshold: usize,
+) -> bool {
+    if threshold == 0 {
+        return false;
+    }
+    if pending_bytes < *claimed_bytes {
+        *claimed_bytes = 0;
+    }
+    let crossed = (pending_bytes - *claimed_bytes) / threshold;
+    if crossed == 0 {
+        return false;
+    }
+    *claimed_bytes += crossed * threshold;
+    true
 }
 
 /// Trigger-tracking state for WAL-only mode (no MemTable).
@@ -2607,8 +2601,6 @@ struct WalOnlyTriggerState {
     /// fired. Resets to 0 when `pending_bytes` drops below it (drain
     /// happened since the last trigger).
     last_trigger_pending_bytes: usize,
-    /// Last time a WAL flush was triggered (for time-based trigger).
-    last_wal_flush_trigger_time: u64,
 }
 
 /// Per-mode state for `ShardWriter`.
@@ -3025,7 +3017,6 @@ impl ShardWriter {
             frozen_memtables: VecDeque::new(),
             flush_requested: false,
             wal_flush_trigger_count: 0,
-            last_wal_flush_trigger_time: 0,
         };
         // Seed before the first freeze: replay above may already have filled the
         // memtable, and nothing else publishes until it seals.
@@ -3598,18 +3589,9 @@ impl ShardWriter {
             .durable_write
             .then(|| self.wal_flusher.track_batch(None, 0, batch_positions.end));
 
-        // Time- and size-based triggers on the write path, for durable and
-        // non-durable puts alike — mirroring MemTable mode's
-        // `maybe_trigger_wal_flush`. The background ticker drives the append
-        // too; whichever fires first wins, and a redundant trigger is a cheap
-        // no-op because the flush snapshot/commit is idempotent.
-        self.maybe_trigger_wal_flush_wal_only(
-            state,
-            wal_flush_tx,
-            trigger,
-            batch_positions.end,
-            state.queue_bytes(),
-        );
+        // Size-based triggers run on the write path for durable and non-durable
+        // puts alike. The background ticker is the sole interval trigger.
+        self.maybe_trigger_wal_flush_wal_only(wal_flush_tx, trigger, state.queue_bytes());
 
         self.stats.record_put(start.elapsed());
 
@@ -3627,63 +3609,28 @@ impl ShardWriter {
         Ok(WriteResult { batch_positions })
     }
 
-    /// WAL-only-mode size+time trigger. Mirrors `SharedWriterState::maybe_trigger_wal_flush`
-    /// but reads its inputs from `WalOnlyState` (pending queue) instead of
-    /// the active MemTable.
+    /// WAL-only-mode size trigger. Time-based flushing is owned by the handler
+    /// ticker, as in MemTable mode.
     fn maybe_trigger_wal_flush_wal_only(
         &self,
-        state: &Arc<WalOnlyState>,
         wal_flush_tx: &mpsc::UnboundedSender<TriggerWalFlush>,
         trigger: &StdRwLock<WalOnlyTriggerState>,
-        end_batch_position: usize,
         pending_bytes: usize,
     ) {
-        let threshold = self.config.max_wal_buffer_size;
-        let has_pending = state.batch_count() > 0;
-
         let mut t = trigger.write().unwrap();
 
-        // Time-based trigger.
-        if let Some(interval) = self.config.max_wal_flush_interval {
-            let interval_millis = interval.as_millis() as u64;
-            let now = now_millis();
-            if t.last_wal_flush_trigger_time == 0 {
-                t.last_wal_flush_trigger_time = now;
-            } else {
-                let elapsed = now.saturating_sub(t.last_wal_flush_trigger_time);
-                if elapsed >= interval_millis && has_pending {
-                    t.last_wal_flush_trigger_time = now;
-                    let _ = wal_flush_tx.send(TriggerWalFlush {
-                        source: WalFlushSource::WalOnly {
-                            state: state.clone(),
-                        },
-                        end_batch_position,
-                        done: None,
-                    });
-                    return;
-                }
-            }
-        }
-
-        if threshold == 0 {
-            return;
-        }
-
-        // Size-based trigger: fire one trigger per `max_wal_buffer_size`
-        // crossed since the last time we triggered. If the pending queue
-        // shrank below the recorded baseline (a drain happened), reset the
-        // baseline first so the next crossing fires correctly.
-        if pending_bytes < t.last_trigger_pending_bytes {
-            t.last_trigger_pending_bytes = 0;
-        }
-        while pending_bytes >= t.last_trigger_pending_bytes + threshold {
-            t.last_trigger_pending_bytes += threshold;
-            t.last_wal_flush_trigger_time = now_millis();
+        // Claim every newly crossed `max_wal_buffer_size` boundary with one
+        // dynamically resolved trigger. If the pending queue shrank below the
+        // recorded baseline (a drain happened), reset the baseline first so the
+        // next crossing fires correctly.
+        if claim_pending_wal_size_trigger(
+            &mut t.last_trigger_pending_bytes,
+            pending_bytes,
+            self.config.max_wal_buffer_size,
+        ) {
             let _ = wal_flush_tx.send(TriggerWalFlush {
-                source: WalFlushSource::WalOnly {
-                    state: state.clone(),
-                },
-                end_batch_position,
+                source: WalFlushSource::NextPending,
+                end_batch_position: 0,
                 done: None,
             });
         }
@@ -9812,6 +9759,64 @@ mod tests {
 
         // Everything durable: nothing to do.
         assert!(next_pending_store(frozen_list(), Arc::clone(&active), 3).is_none());
+    }
+
+    #[test]
+    fn test_wal_size_trigger_coalesces_crossings() {
+        let threshold = 64;
+        let mut claimed = 0;
+
+        assert!(!claim_wal_size_trigger(&mut claimed, 63, threshold));
+        assert!(claim_wal_size_trigger(
+            &mut claimed,
+            3 * threshold + 1,
+            threshold
+        ));
+        assert_eq!(claimed, 3);
+
+        assert!(!claim_wal_size_trigger(
+            &mut claimed,
+            3 * threshold + 63,
+            threshold
+        ));
+        assert!(claim_wal_size_trigger(
+            &mut claimed,
+            4 * threshold,
+            threshold
+        ));
+        assert_eq!(claimed, 4);
+        assert!(!claim_wal_size_trigger(&mut claimed, usize::MAX, 0));
+    }
+
+    #[test]
+    fn test_pending_wal_size_trigger_coalesces_and_resets_after_drain() {
+        let threshold = 64;
+        let mut claimed_bytes = 0;
+
+        assert!(claim_pending_wal_size_trigger(
+            &mut claimed_bytes,
+            3 * threshold + 1,
+            threshold
+        ));
+        assert_eq!(claimed_bytes, 3 * threshold);
+        assert!(!claim_pending_wal_size_trigger(
+            &mut claimed_bytes,
+            3 * threshold + 63,
+            threshold
+        ));
+
+        assert!(!claim_pending_wal_size_trigger(
+            &mut claimed_bytes,
+            threshold - 1,
+            threshold
+        ));
+        assert_eq!(claimed_bytes, 0);
+        assert!(claim_pending_wal_size_trigger(
+            &mut claimed_bytes,
+            threshold,
+            threshold
+        ));
+        assert_eq!(claimed_bytes, threshold);
     }
 
     /// A durable writer with no flush ticker cannot make progress in either

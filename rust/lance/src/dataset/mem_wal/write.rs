@@ -1352,6 +1352,9 @@ struct WriterState {
     flush_requested: bool,
     /// Current memtable's claimed WAL-size threshold crossings.
     wal_flush_trigger_count: usize,
+    /// Last write-path interval trigger. Its boundary is resolved when handled,
+    /// so this recovers sequential-write latency without defeating group commit.
+    last_wal_flush_trigger_time: u64,
 }
 
 /// Capture a point-in-time handle to one in-memory memtable (active or frozen
@@ -2523,23 +2526,33 @@ impl SharedWriterState {
         )
     }
 
-    /// Check whether the current memtable crossed a WAL size threshold.
+    /// Check whether the current memtable crossed a WAL size or time threshold.
     ///
-    /// Time-based flushing is owned by [`WalFlushHandler::tickers`]. Keeping a
-    /// second clock here queues a fixed batch boundary after every slow remote
-    /// put, which defeats group commit. Size triggers are best-effort too: the
-    /// handler resolves the latest pending suffix when it drains the message.
-    /// Freeze and close use their own exact, completion-bearing triggers.
+    /// Both signals are best-effort and resolve the latest pending suffix when
+    /// the handler drains the message. This preserves group commit while the
+    /// write-path clock prevents a sequential durable client from waiting for a
+    /// fresh ticker period after every completed append. Freeze and close use
+    /// their own exact, completion-bearing triggers.
     ///
     /// Takes `&mut WriterState` directly since caller already holds the lock.
     fn maybe_trigger_wal_flush(&self, state: &mut WriterState) {
+        let now = now_millis();
+        let time_trigger = claim_wal_time_trigger(
+            &mut state.last_wal_flush_trigger_time,
+            now,
+            self.config.max_wal_flush_interval,
+        );
         let total_bytes = state.memtable.batch_store().row_bytes();
-        if !claim_wal_size_trigger(
+        let size_trigger = claim_wal_size_trigger(
             &mut state.wal_flush_trigger_count,
             total_bytes,
             self.config.max_wal_buffer_size,
-        ) {
+        );
+        if !time_trigger && !size_trigger {
             return;
+        }
+        if size_trigger {
+            state.last_wal_flush_trigger_time = now;
         }
 
         let _ = self.wal_flush_tx.send(TriggerWalFlush {
@@ -2548,6 +2561,29 @@ impl SharedWriterState {
             done: None,
         });
     }
+}
+
+/// Claim one write-path interval trigger without fixing its flush boundary.
+fn claim_wal_time_trigger(
+    last_trigger_ms: &mut u64,
+    now_ms: u64,
+    interval: Option<Duration>,
+) -> bool {
+    let Some(interval_ms) = interval
+        .filter(|interval| !interval.is_zero())
+        .and_then(|interval| u64::try_from(interval.as_millis()).ok())
+    else {
+        return false;
+    };
+    if *last_trigger_ms == 0 {
+        *last_trigger_ms = now_ms;
+        return false;
+    }
+    if now_ms.saturating_sub(*last_trigger_ms) < interval_ms {
+        return false;
+    }
+    *last_trigger_ms = now_ms;
+    true
 }
 
 /// Claim all WAL-size thresholds crossed by the current put as one trigger.
@@ -2609,6 +2645,8 @@ struct WalOnlyTriggerState {
     /// fired. Resets to 0 when `pending_bytes` drops below it (drain
     /// happened since the last trigger).
     last_trigger_pending_bytes: usize,
+    /// Last write-path interval trigger. See [`claim_wal_time_trigger`].
+    last_wal_flush_trigger_time: u64,
 }
 
 /// Per-mode state for `ShardWriter`.
@@ -3025,6 +3063,7 @@ impl ShardWriter {
             frozen_memtables: VecDeque::new(),
             flush_requested: false,
             wal_flush_trigger_count: 0,
+            last_wal_flush_trigger_time: 0,
         };
         // Seed before the first freeze: replay above may already have filled the
         // memtable, and nothing else publishes until it seals.
@@ -3533,18 +3572,11 @@ impl ShardWriter {
             writer_state.trigger_index_apply(batch_store, indexes, batch_positions.end)?;
         }
 
-        // The WAL append is *not* triggered here. It happens on the background
-        // ticker (and on the size trigger, and at freeze/close), which is the only
-        // way the flush interval can mean anything: while every durable put
-        // triggered its own append, the interval could add a redundant trigger but
-        // never delay or batch one.
-        //
-        // The cost is real and accepted: a single client's sequential *durable*
-        // throughput drops from ~10 writes/sec (one PUT round-trip) to roughly one
-        // per tick. That is a policy choice — the interval should mean what it
-        // says, and S3 API cost should be bounded. Latency-sensitive callers want
-        // `durable_write: false`, which now costs them durability only, not
-        // visibility.
+        // The write-path size and interval signals above name no fixed boundary:
+        // the handler resolves the pending suffix when it receives them. That
+        // lets concurrent puts group while a sequential durable client can
+        // submit promptly once an interval has elapsed. The background ticker
+        // remains the backstop when no later put arrives to emit a signal.
 
         // The watcher is returned in both modes now. A non-durable put still
         // waits — for its index apply (~ms), not for an S3 PUT (~100ms).
@@ -3597,8 +3629,9 @@ impl ShardWriter {
             .durable_write
             .then(|| self.wal_flusher.track_batch(None, 0, batch_positions.end));
 
-        // Size-based triggers run on the write path for durable and non-durable
-        // puts alike. The background ticker is the sole interval trigger.
+        // Best-effort size and interval triggers run on the write path for
+        // durable and non-durable puts alike. The background ticker remains the
+        // idle-write backstop.
         self.maybe_trigger_wal_flush_wal_only(wal_flush_tx, trigger, state.queue_bytes());
 
         self.stats.record_put(start.elapsed());
@@ -3617,8 +3650,7 @@ impl ShardWriter {
         Ok(WriteResult { batch_positions })
     }
 
-    /// WAL-only-mode size trigger. Time-based flushing is owned by the handler
-    /// ticker, as in MemTable mode.
+    /// WAL-only-mode best-effort size and interval triggers.
     fn maybe_trigger_wal_flush_wal_only(
         &self,
         wal_flush_tx: &mpsc::UnboundedSender<TriggerWalFlush>,
@@ -3626,16 +3658,26 @@ impl ShardWriter {
         pending_bytes: usize,
     ) {
         let mut t = trigger.write().unwrap();
+        let now = now_millis();
+        let time_trigger = claim_wal_time_trigger(
+            &mut t.last_wal_flush_trigger_time,
+            now,
+            self.config.max_wal_flush_interval,
+        );
 
         // Claim every newly crossed `max_wal_buffer_size` boundary with one
         // dynamically resolved trigger. If the pending queue shrank below the
         // recorded baseline (a drain happened), reset the baseline first so the
         // next crossing fires correctly.
-        if claim_pending_wal_size_trigger(
+        let size_trigger = claim_pending_wal_size_trigger(
             &mut t.last_trigger_pending_bytes,
             pending_bytes,
             self.config.max_wal_buffer_size,
-        ) {
+        );
+        if time_trigger || size_trigger {
+            if size_trigger {
+                t.last_wal_flush_trigger_time = now;
+            }
             let _ = wal_flush_tx.send(TriggerWalFlush {
                 source: WalFlushSource::NextPending,
                 end_batch_position: 0,
@@ -9942,6 +9984,26 @@ mod tests {
     }
 
     #[test]
+    fn test_wal_time_trigger_preserves_interval_without_fixed_boundary() {
+        let interval = Some(Duration::from_millis(100));
+        let mut last = 0;
+
+        assert!(!claim_wal_time_trigger(&mut last, 1_000, interval));
+        assert_eq!(last, 1_000);
+        assert!(!claim_wal_time_trigger(&mut last, 1_099, interval));
+        assert!(claim_wal_time_trigger(&mut last, 1_100, interval));
+        assert_eq!(last, 1_100);
+        assert!(!claim_wal_time_trigger(&mut last, 1_199, interval));
+        assert!(claim_wal_time_trigger(&mut last, 1_200, interval));
+        assert!(!claim_wal_time_trigger(&mut last, 1_300, None));
+        assert!(!claim_wal_time_trigger(
+            &mut last,
+            1_300,
+            Some(Duration::ZERO)
+        ));
+    }
+
+    #[test]
     fn test_pending_wal_size_trigger_coalesces_and_resets_after_drain() {
         let threshold = 64;
         let mut claimed_bytes = 0;
@@ -9972,9 +10034,9 @@ mod tests {
         assert_eq!(claimed_bytes, threshold);
     }
 
-    /// A durable writer with no flush ticker cannot make progress in either
-    /// mode — the ticker is the only thing that drives the WAL append the put
-    /// waits on — so `open()` rejects it rather than letting a put block forever.
+    /// A durable writer with no flush interval cannot guarantee progress in
+    /// either mode: a small put may not cross the size threshold, and without an
+    /// interval neither the write path nor ticker drives its WAL append.
     #[rstest]
     #[case::memtable(true)]
     #[case::wal_only(false)]

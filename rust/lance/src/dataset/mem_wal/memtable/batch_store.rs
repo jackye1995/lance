@@ -62,6 +62,9 @@ pub(crate) struct BlobPreprocessorState {
 }
 
 impl BlobPreprocessorState {
+    const CANCELLED_OPERATION: &'static str =
+        "shared Blob v2 pack operation was cancelled before completion";
+
     pub(crate) fn get_or_insert_with(
         &mut self,
         create: impl FnOnce() -> crate::Result<BlobPreprocessor>,
@@ -85,6 +88,29 @@ impl BlobPreprocessorState {
             preprocessor.abort();
         }
         self.failure = Some(error.to_string());
+    }
+
+    /// Mark a shared-pack mutation as incomplete until its future returns.
+    ///
+    /// The marker deliberately precedes the first await. If the caller drops
+    /// the future, the mutex guard is released while this terminal state stays
+    /// behind, so a later WAL flush cannot mistake the abandoned pack for a
+    /// successfully finalized one.
+    pub(crate) fn begin_operation(&mut self) -> crate::Result<&mut BlobPreprocessor> {
+        if let Some(failure) = &self.failure {
+            return Err(crate::Error::writer_poisoned(format!(
+                "Blob v2 pack is terminally failed: {failure}"
+            )));
+        }
+        self.failure = Some(Self::CANCELLED_OPERATION.to_string());
+        Ok(self
+            .preprocessor
+            .as_mut()
+            .expect("Blob preprocessor initialized before shared operation"))
+    }
+
+    pub(crate) fn complete_operation(&mut self) {
+        self.failure = None;
     }
 }
 
@@ -661,14 +687,18 @@ impl BatchStore {
                 "cannot finalize terminally failed Blob v2 pack: {failure}"
             )));
         }
-        if let Some(preprocessor) = state.preprocessor.as_mut()
-            && let Err(error) = preprocessor.finish().await
-        {
-            preprocessor.abort();
-            state.failure = Some(error.to_string());
-            return Err(crate::Error::writer_poisoned(format!(
-                "failed to finalize Blob v2 pack: {error}"
-            )));
+        if state.preprocessor.is_none() {
+            return Ok(());
+        }
+        let result = state.begin_operation()?.finish().await;
+        match result {
+            Ok(()) => state.complete_operation(),
+            Err(error) => {
+                state.fail(&error);
+                return Err(crate::Error::writer_poisoned(format!(
+                    "failed to finalize Blob v2 pack: {error}"
+                )));
+            }
         }
         Ok(())
     }

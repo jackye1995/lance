@@ -2241,11 +2241,13 @@ impl SharedWriterState {
         // WalFlusher seals it before appending the corresponding descriptors.
         let batch_store = memtable.batch_store();
         let mut guard = batch_store.blob_preprocessor().lock().await;
-        let preprocessor = guard.get_or_insert_with(new_preprocessor)?;
-
-        for batch in &batches {
-            preprocessor.validate_batch(batch).await?;
+        {
+            let preprocessor = guard.get_or_insert_with(new_preprocessor)?;
+            for batch in &batches {
+                preprocessor.validate_batch(batch).await?;
+            }
         }
+        let preprocessor = guard.begin_operation()?;
         let prepared = async {
             let mut prepared = Vec::with_capacity(batches.len());
             for batch in batches {
@@ -2254,15 +2256,21 @@ impl SharedWriterState {
             Ok(prepared)
         }
         .await;
-        if let Err(error) = &prepared {
-            // The open pack may contain payloads from earlier unacknowledged
-            // puts. Latch a terminal pack failure so even a flush that was
-            // already queued cannot append their descriptors after the upload
-            // is abandoned.
-            guard.fail(error);
-            self.wal_flusher.poison(error);
+        match prepared {
+            Ok(batches) => {
+                guard.complete_operation();
+                Ok((batches, None, true))
+            }
+            Err(error) => {
+                // The open pack may contain payloads from earlier
+                // unacknowledged puts. Latch a terminal pack failure so even a
+                // flush that was already queued cannot append their descriptors
+                // after the upload is abandoned.
+                guard.fail(&error);
+                self.wal_flusher.poison(&error);
+                Err(error)
+            }
         }
-        prepared.map(|batches| (batches, None, true))
     }
 
     /// Ask the index-apply task to cover `[indexed, end_batch_position)` of this
@@ -5410,6 +5418,151 @@ mod tests {
         assert!(watcher.wait().await.is_err());
         let tailer = WalTailer::new(store, base_path, shard_id);
         assert!(tailer.read_entry(1).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn gate_repro_failed_pack_must_not_enter_wal_on_retry() {
+        let (store, base_path, controls) = failing_memory_store().await;
+        let shard_id = Uuid::new_v4();
+        let batch = create_blob_v2_batch(0, &[BlobTestValue::Bytes(b"first".to_vec())]);
+        let writer = ShardWriter::open(
+            store.clone(),
+            base_path.clone(),
+            "memory://".to_string(),
+            ShardWriterConfig {
+                shard_id,
+                durable_write: true,
+                max_wal_buffer_size: usize::MAX,
+                max_wal_flush_interval: Some(Duration::from_secs(60)),
+                ..Default::default()
+            },
+            batch.schema(),
+            vec![],
+        )
+        .await
+        .unwrap();
+
+        let (_, watcher) = writer.put_no_wait(vec![batch]).await.unwrap();
+        let batch_store = match &writer.mode {
+            WriterMode::MemTable { state, .. } => state.read().await.memtable.batch_store(),
+            WriterMode::WalOnly { .. } => unreachable!(),
+        };
+        let source = WalFlushSource::BatchStore {
+            batch_store: batch_store.clone(),
+        };
+        controls.fail_blob_puts(1);
+        let first_error = writer.wal_flusher.flush(&source, 1).await.unwrap_err();
+        assert!(
+            first_error
+                .to_string()
+                .contains("failed to finalize Blob v2 pack")
+        );
+        assert!(writer.wal_flusher.check_poisoned().is_err());
+        assert!(watcher.unwrap().wait().await.is_err());
+
+        assert!(writer.wal_flusher.flush(&source, 1).await.is_err());
+        assert!(
+            WalTailer::new(store.clone(), base_path.clone(), shard_id)
+                .read_entry(1)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let data_dir = batch_store
+            .target()
+            .unwrap()
+            .generation_path(&base_path, &shard_id)
+            .join(DATA_DIR);
+        assert!(blob_sidecars(store.as_ref(), &data_dir).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn gate_repro_cancelled_rollover_must_not_ack_missing_pack() {
+        let (store, base_path, controls) = failing_memory_store().await;
+        let shard_id = Uuid::new_v4();
+        let with_small_pack = |batch: RecordBatch| {
+            let schema = batch.schema();
+            let fields = schema
+                .fields()
+                .iter()
+                .map(|field| {
+                    let mut field = field.as_ref().clone();
+                    if field.name() == "blob" {
+                        let mut metadata = field.metadata().clone();
+                        metadata.insert(
+                            lance_arrow::BLOB_PACK_FILE_SIZE_THRESHOLD_META_KEY.to_string(),
+                            "8".to_string(),
+                        );
+                        field = field.with_metadata(metadata);
+                    }
+                    field
+                })
+                .collect::<Vec<_>>();
+            RecordBatch::try_new(Arc::new(ArrowSchema::new(fields)), batch.columns().to_vec())
+                .unwrap()
+        };
+        let first = with_small_pack(create_blob_v2_batch(
+            0,
+            &[BlobTestValue::Bytes(b"first".to_vec())],
+        ));
+        let second = with_small_pack(create_blob_v2_batch(
+            1,
+            &[BlobTestValue::Bytes(b"later".to_vec())],
+        ));
+        let writer = ShardWriter::open(
+            store.clone(),
+            base_path.clone(),
+            "memory://".to_string(),
+            ShardWriterConfig {
+                shard_id,
+                durable_write: true,
+                max_wal_buffer_size: usize::MAX,
+                max_wal_flush_interval: Some(Duration::from_secs(60)),
+                ..Default::default()
+            },
+            first.schema(),
+            vec![],
+        )
+        .await
+        .unwrap();
+
+        let (_, first_watcher) = writer.put_no_wait(vec![first]).await.unwrap();
+        controls.set_block_blob_puts(true);
+        let cancelled =
+            tokio::time::timeout(Duration::from_millis(50), writer.put_no_wait(vec![second])).await;
+        assert!(cancelled.is_err());
+        assert_eq!(controls.blob_attempts(), 1);
+        controls.set_block_blob_puts(false);
+
+        let batch_store = match &writer.mode {
+            WriterMode::MemTable { state, .. } => state.read().await.memtable.batch_store(),
+            WriterMode::WalOnly { .. } => unreachable!(),
+        };
+        let error = writer
+            .wal_flusher
+            .flush(
+                &WalFlushSource::BatchStore {
+                    batch_store: batch_store.clone(),
+                },
+                1,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("terminally failed Blob v2 pack"));
+        assert!(first_watcher.unwrap().wait().await.is_err());
+        assert!(
+            WalTailer::new(store.clone(), base_path.clone(), shard_id)
+                .read_entry(1)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let data_dir = batch_store
+            .target()
+            .unwrap()
+            .generation_path(&base_path, &shard_id)
+            .join(DATA_DIR);
+        assert!(blob_sidecars(store.as_ref(), &data_dir).await.is_empty());
     }
 
     #[tokio::test]

@@ -5463,7 +5463,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gate_repro_failed_pack_must_not_enter_wal_on_retry() {
+    async fn test_failed_shared_blob_pack_retry_cannot_enter_wal() {
         let (store, base_path, controls) = failing_memory_store().await;
         let shard_id = Uuid::new_v4();
         let batch = create_blob_v2_batch(0, &[BlobTestValue::Bytes(b"first".to_vec())]);
@@ -5519,7 +5519,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gate_repro_cancelled_rollover_must_not_ack_missing_pack() {
+    async fn test_cancelled_shared_blob_pack_rollover_cannot_ack_missing_payload() {
         let (store, base_path, controls) = failing_memory_store().await;
         let shard_id = Uuid::new_v4();
         let with_small_pack = |batch: RecordBatch| {

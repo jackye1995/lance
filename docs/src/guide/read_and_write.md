@@ -612,7 +612,9 @@ For automatic cleanup, use the same rules with duration strings:
 import json
 
 dataset.update_config({
-    "lance.auto_cleanup.interval": "100",
+    "lance.auto_cleanup.interval": None,
+    "lance.auto_cleanup.older_than": None,
+    "lance.auto_cleanup.policy_interval": "100",
     "lance.auto_cleanup.policy": json.dumps({"rules": [
         {"type": "keep_one", "per_interval": "1h", "older_than": "2days"},
         {"type": "keep_one", "per_interval": "1day", "older_than": "7days"},
@@ -621,7 +623,11 @@ dataset.update_config({
 })
 ```
 
-Do not combine this policy setting with `lance.auto_cleanup.older_than` or the
+The policy interval is a version count. Older clients ignore this activation key
+and leave automatic retention cleanup disabled. The legacy interval must be
+removed atomically when activating either policy form; unsafe combinations are
+rejected before publication. Do not combine this policy with
+`lance.auto_cleanup.older_than` or the
 single-window `lance.auto_cleanup.keep_one.*` settings.
 
 Thinning also supports local filesystems and S3 Express. The hint-relative

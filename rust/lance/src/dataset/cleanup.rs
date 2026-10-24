@@ -59,7 +59,9 @@ use lance_core::{
 };
 use lance_io::object_store::ObjectStore;
 use lance_table::{
-    feature_flags::{ensure_can_read_manifest, ensure_can_write_manifest},
+    feature_flags::{
+        ensure_can_read_manifest, ensure_can_write_manifest, validate_auto_cleanup_config,
+    },
     format::{IndexMetadata, Manifest},
     io::{
         commit::{ManifestLocation, ManifestNamingScheme, read_version_hint},
@@ -2621,10 +2623,10 @@ pub async fn cleanup_old_versions(
 
 /// If the dataset config has `lance.auto_cleanup` parameters set,
 /// this function automatically calls `dataset.cleanup_old_versions`
-/// every `lance.auto_cleanup.interval` versions. This function calls
-/// `dataset.cleanup_old_versions` with `lance.auto_cleanup.older_than`
-/// for `older_than` and `Some(false)` for both `delete_unverified` and
-/// `error_if_tagged_old_versions`.
+/// every `lance.auto_cleanup.interval` versions for legacy filters, or every
+/// `lance.auto_cleanup.policy_interval` versions for retention rules. Retention
+/// activation requires removing the legacy interval so older writers skip cleanup.
+/// Unverified deletion and errors on tagged old versions are disabled.
 pub async fn auto_cleanup_hook(
     dataset: &Dataset,
     manifest: &Manifest,
@@ -2709,13 +2711,22 @@ async fn build_cleanup_operation<'a>(
     manifest: &Manifest,
     cascade: bool,
 ) -> Result<Option<CleanupOperation<'a>>> {
-    if let Some(interval) = manifest.config.get("lance.auto_cleanup.interval") {
+    validate_auto_cleanup_config(manifest)?;
+    let interval_key = if manifest
+        .config
+        .contains_key("lance.auto_cleanup.policy_interval")
+    {
+        "lance.auto_cleanup.policy_interval"
+    } else {
+        "lance.auto_cleanup.interval"
+    };
+    if let Some(interval) = manifest.config.get(interval_key) {
         let interval: u64 = match interval.parse() {
             Ok(i) => i,
             Err(e) => {
                 return Err(Error::Cleanup {
                     message: format!(
-                        "Error encountered while parsing lance.auto_cleanup.interval as u64: {}",
+                        "Error encountered while parsing {interval_key} as u64: {}",
                         e
                     ),
                 });
@@ -3007,7 +3018,7 @@ mod tests {
         let mut operation = if auto_config {
             let mut manifest = dataset.manifest.as_ref().clone();
             manifest.config.extend([
-                ("lance.auto_cleanup.interval".into(), "1".into()),
+                ("lance.auto_cleanup.policy_interval".into(), "1".into()),
                 (
                     "lance.auto_cleanup.policy".into(),
                     r#"{"rules":[
@@ -3185,7 +3196,7 @@ mod tests {
         let operation = if auto_config {
             let mut manifest = dataset.manifest.as_ref().clone();
             manifest.config.extend([
-                ("lance.auto_cleanup.interval".into(), "1".into()),
+                ("lance.auto_cleanup.policy_interval".into(), "1".into()),
                 (
                     "lance.auto_cleanup.keep_one.per_interval".into(),
                     format!("{period_hours}h"),
@@ -3260,7 +3271,7 @@ mod tests {
         let mut operation = if auto_config {
             let mut manifest = dataset.manifest.as_ref().clone();
             manifest.config.extend([
-                ("lance.auto_cleanup.interval".into(), "1".into()),
+                ("lance.auto_cleanup.policy_interval".into(), "1".into()),
                 ("lance.auto_cleanup.older_than".into(), "7days".into()),
                 (
                     "lance.auto_cleanup.keep_one.per_interval".into(),
@@ -3395,7 +3406,7 @@ mod tests {
         let mut manifest = dataset.manifest.as_ref().clone();
         manifest
             .config
-            .insert("lance.auto_cleanup.interval".into(), "1".into());
+            .insert("lance.auto_cleanup.policy_interval".into(), "1".into());
         manifest.config.insert(
             "lance.auto_cleanup.keep_one.per_interval".into(),
             "1day".into(),
@@ -3473,7 +3484,7 @@ mod tests {
         let operation = if auto_config {
             let mut manifest = dataset.manifest.as_ref().clone();
             manifest.config.extend([
-                ("lance.auto_cleanup.interval".into(), "1".into()),
+                ("lance.auto_cleanup.policy_interval".into(), "1".into()),
                 (
                     "lance.auto_cleanup.keep_one.per_interval".into(),
                     "1day".into(),
@@ -3561,7 +3572,7 @@ mod tests {
         assert!(operation.execute().await.is_err());
         let mut manifest = dataset.manifest.as_ref().clone();
         manifest.config.extend([
-            ("lance.auto_cleanup.interval".into(), "1".into()),
+            ("lance.auto_cleanup.policy_interval".into(), "1".into()),
             (
                 "lance.auto_cleanup.keep_one.per_interval".into(),
                 "1s".into(),
@@ -3698,6 +3709,10 @@ mod tests {
             ("lance.auto_cleanup.older_than".into(), "2days".into()),
         ]);
         if thinning {
+            manifest.config.remove("lance.auto_cleanup.interval");
+            manifest
+                .config
+                .insert("lance.auto_cleanup.policy_interval".into(), "1".into());
             manifest.config.insert(
                 "lance.auto_cleanup.keep_one.per_interval".into(),
                 "1day".into(),

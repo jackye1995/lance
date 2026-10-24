@@ -4,6 +4,7 @@
 import base64
 import contextlib
 import importlib
+import json
 import os
 import pickle
 import platform
@@ -1819,6 +1820,46 @@ def test_cleanup_with_retain_versions(tmp_path: Path):
     assert stats.deletion_files_removed == 0
     assert len(ds.versions()) == 3
     assert ds.count_rows() == len(ds.to_table())
+
+
+@pytest.mark.parametrize("shorthand", [False, True])
+def test_cleanup_retention_activation_is_atomic(tmp_path: Path, shorthand):
+    table = pa.table({"value": [1, 2, 3, 4]})
+    ds = lance.write_dataset(table, tmp_path, max_rows_per_file=2)
+    for _ in range(2):
+        ds = lance.write_dataset(table, tmp_path, mode="overwrite", max_rows_per_file=2)
+    ds.update_config(
+        {"lance.auto_cleanup.interval": "1", "lance.auto_cleanup.older_than": "7days"}
+    )
+    before = ds.version
+    config = {"lance.auto_cleanup.policy_interval": "1"}
+    if shorthand:
+        config["lance.auto_cleanup.keep_one.per_interval"] = "1day"
+    else:
+        config["lance.auto_cleanup.policy"] = json.dumps(
+            {
+                "rules": [
+                    {"type": "keep_one", "per_interval": "1day", "older_than": "2days"},
+                    {"type": "remove_all", "older_than": "30days"},
+                ]
+            }
+        )
+    with pytest.raises(OSError, match="remove lance.auto_cleanup.interval"):
+        ds.update_config(config)
+    assert lance.dataset(tmp_path).version == before
+    assert [version["version"] for version in ds.versions()] == list(
+        range(1, before + 1)
+    )
+    config["lance.auto_cleanup.interval"] = None
+    config["lance.auto_cleanup.older_than"] = None
+    applied = ds.update_config(config)
+    assert "lance.auto_cleanup.interval" not in applied
+    assert applied["lance.auto_cleanup.policy_interval"] == "1"
+    assert [version["version"] for version in ds.versions()] == list(
+        range(1, before + 2)
+    )
+    for version in range(1, 4):
+        assert lance.dataset(tmp_path, version=version).to_table() == table
 
 
 def test_cleanup_retention_policy(tmp_path: Path):

@@ -691,11 +691,9 @@ impl<'a> CleanupTask<'a> {
                 } else {
                     None
                 };
-                let floor = hinted_version
-                    .unwrap_or(self.read_version)
-                    .min(self.read_version);
-                self.thinning_version_floor = Some(floor);
-                if floor == self.read_version {
+                let anchor_version = hinted_version.unwrap_or(self.read_version);
+                self.thinning_version_floor = Some(anchor_version.min(self.read_version));
+                if anchor_version == self.read_version {
                     self.dataset.manifest.timestamp()
                 } else {
                     let location = self
@@ -703,7 +701,7 @@ impl<'a> CleanupTask<'a> {
                         .commit_handler
                         .resolve_version_location(
                             &self.dataset.base,
-                            floor,
+                            anchor_version,
                             self.dataset.object_store.inner.as_ref(),
                         )
                         .await?;
@@ -3007,9 +3005,10 @@ mod tests {
         #[case] age: Option<Duration>,
         #[case] expected_removed: u64,
         #[values(false, true)] auto_config: bool,
+        #[values(false, true)] pinned_snapshot: bool,
     ) {
         let fixture = MockDatasetFixture::try_new().unwrap();
-        for (index, hour) in [0, 1, 24, 25, 48, 49, 72, 1, 120].into_iter().enumerate() {
+        for (index, hour) in [0, 1, 24, 25, 48, 1000, 72, 1, 120].into_iter().enumerate() {
             MockClock::set_system_time(Duration::from_secs(hour * 3600));
             if index == 0 {
                 fixture.create_some_data().await.unwrap();
@@ -3020,6 +3019,11 @@ mod tests {
         let dataset = fixture.open().await.unwrap();
         assert!(!dataset.object_store.list_is_lexically_ordered);
         write_version_hint(&dataset.object_store, &dataset.base, 7).await;
+        let dataset = if pinned_snapshot {
+            Box::new(dataset.checkout_version(6).await.unwrap())
+        } else {
+            dataset
+        };
         MockClock::set_system_time(Duration::from_secs(30 * 86_400));
         let operation = if auto_config {
             let mut manifest = dataset.manifest.as_ref().clone();

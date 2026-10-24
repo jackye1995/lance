@@ -864,7 +864,7 @@ class CleanupRule(ABC):
 class KeepOne(CleanupRule):
     """Thin history older than a full-history window, keeping one commit per interval.
 
-    Use in ``cleanup_old_versions(policy=CleanupPolicy([KeepOne(...), RemoveAll(...)]))``.
+    Use in ``cleanup_old_versions(policy=CleanupPolicy(rules=[...]))``.
     ``per_interval`` must be positive. ``older_than`` defaults to two days and
     must be at least two days, measured from the hinted commit timestamp (or
     the dataset snapshot without a hint). Validation occurs during cleanup.
@@ -885,7 +885,7 @@ class KeepOne(CleanupRule):
 class RemoveAll(CleanupRule):
     """Expire all versions older than a wall-clock age, including sampled commits.
 
-    Use as the final rule in ``cleanup_old_versions(policy=CleanupPolicy([...]))``. For example,
+    Use as the final rule in a ``CleanupPolicy``. For example,
     ``RemoveAll(older_than=timedelta(days=30))`` expires thirty-day-old history.
     Current versions, tags and branch dependencies remain protected.
     """

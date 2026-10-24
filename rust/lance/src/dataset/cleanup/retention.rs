@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The Lance Authors
 
+//! Ordered cleanup rules, policy defaults and validation.
+
 use std::time::Duration;
 
 use chrono::TimeDelta;

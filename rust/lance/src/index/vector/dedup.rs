@@ -23,6 +23,10 @@ use lance_select::RowAddrMask;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
 
+mod blocks;
+
+pub use blocks::pairwise_block_count;
+
 use crate::Dataset;
 use crate::index::{
     DatasetIndexExt, DatasetIndexInternalExt, prefilter::DatasetPreFilter,
@@ -70,14 +74,14 @@ const MIN_LIVE_SPILLED_BATCHES: usize = 3;
 pub struct DuplicatePairsOptions {
     memory_limit: usize,
     max_concurrency: usize,
-    sharding: Option<Sharding>,
+    blocking: Option<Blocking>,
 }
 
 #[derive(Clone, Copy, Debug)]
-struct Sharding {
+struct Blocking {
     rows: usize,
-    index: usize,
-    count: usize,
+    worker_index: usize,
+    worker_count: usize,
 }
 
 impl Default for DuplicatePairsOptions {
@@ -85,7 +89,7 @@ impl Default for DuplicatePairsOptions {
         Self {
             memory_limit: PAIRWISE_MEMORY_LIMIT,
             max_concurrency: get_num_compute_intensive_cpus(),
-            sharding: None,
+            blocking: None,
         }
     }
 }
@@ -106,20 +110,23 @@ impl DuplicatePairsOptions {
         self
     }
 
-    /// Split each partition into blocks of at most `rows` storage rows and
-    /// enumerate the upper-triangular block pairs owned by this worker.
-    /// Anchor blocks `index, index + count, ...` belong to this invocation;
-    /// each is compared with itself and every later block. Running all indices
-    /// in `0..count` produces each original pair exactly once. Only the active
-    /// anchor and candidate blocks are staged. Spill and scoring budgets remain
-    /// per invocation. All workers must use the same snapshot, rows and count.
+    /// Divide each partition's upper-triangular comparison space into blocks.
+    /// Each block compares two ranges of at most `rows` storage rows. Diagonal
+    /// blocks emit only unique pairs. Worker `worker_index` owns comparison
+    /// blocks at ordinals `worker_index, worker_index + worker_count, ...`.
+    /// Internal I/O and scoring batches remain independent of this block size.
+    /// All workers must use the same snapshot, rows and worker count.
     ///
     /// ```
     /// use lance::index::vector::dedup::DuplicatePairsOptions;
-    /// let options = DuplicatePairsOptions::default().with_sharding(8192, 0, 4);
+    /// let options = DuplicatePairsOptions::default().with_blocking(100_000, 0, 4);
     /// ```
-    pub fn with_sharding(mut self, rows: usize, index: usize, count: usize) -> Self {
-        self.sharding = Some(Sharding { rows, index, count });
+    pub fn with_blocking(mut self, rows: usize, worker_index: usize, worker_count: usize) -> Self {
+        self.blocking = Some(Blocking {
+            rows,
+            worker_index,
+            worker_count,
+        });
         self
     }
 }
@@ -286,11 +293,13 @@ async fn plan(
     threshold: f32,
     options: DuplicatePairsOptions,
 ) -> Result<SendableRecordBatchStream> {
-    if let Some(sharding) = options.sharding
-        && (sharding.rows == 0 || sharding.count == 0 || sharding.index >= sharding.count)
+    if let Some(blocking) = options.blocking
+        && (blocking.rows == 0
+            || blocking.worker_count == 0
+            || blocking.worker_index >= blocking.worker_count)
     {
         return Err(Error::invalid_input(
-            "shard rows and count must be positive and index must be less than count",
+            "block rows and worker count must be positive and worker index must be less than count",
         ));
     }
     if options.max_concurrency == 0 {
@@ -428,8 +437,8 @@ async fn partition_stream(
             stream::empty(),
         )));
     }
-    if let Some(sharding) = options.sharding {
-        return sharded_partition_stream(partition, session, threshold, options, sharding);
+    if let Some(blocking) = options.blocking {
+        return blocked_partition_stream(partition, session, threshold, options, blocking);
     }
     let prepared = partition
         .index
@@ -450,61 +459,97 @@ async fn partition_stream(
     )
 }
 
-fn sharded_partition_stream(
+fn blocked_partition_stream(
     partition: Partition,
     session: Arc<crate::session::Session>,
     threshold: f32,
     options: DuplicatePairsOptions,
-    sharding: Sharding,
+    blocking: Blocking,
 ) -> Result<SendableRecordBatchStream> {
     let rows = partition.index.partition_size(partition.id);
-    let blocks = rows.div_ceil(sharding.rows);
-    let stream = stream::iter((sharding.index..blocks).step_by(sharding.count))
-        .then(move |anchor_block| {
+    let assignments = blocks::assigned_blocks(
+        rows,
+        blocking.rows,
+        blocking.worker_index,
+        blocking.worker_count,
+    )?;
+    let stream = stream::iter(assignments)
+        .then(move |(anchor_range, candidate_range)| {
             let index = partition.index.clone();
             let mask = partition.mask.clone();
             let session = session.clone();
             async move {
-                let start = anchor_block * sharding.rows;
-                let anchor = Arc::new(
-                    index
-                        .prepare_pairwise_partition_range(
-                            partition.id,
-                            start..start.saturating_add(sharding.rows).min(rows),
-                            MAX_VECTOR_BATCH_SIZE,
-                            options.memory_limit / 2,
-                            session.spill_store(),
-                        )
-                        .await?,
-                );
-                let stream = stream::iter(anchor_block..blocks)
-                    .then(move |candidate_block| {
-                        let index = index.clone();
-                        let mask = mask.clone();
-                        let session = session.clone();
-                        let anchor = anchor.clone();
-                        async move {
-                            let candidates = if candidate_block == anchor_block {
-                                anchor.clone()
-                            } else {
-                                let start = candidate_block * sharding.rows;
-                                Arc::new(
-                                    index
-                                        .prepare_pairwise_partition_range(
-                                            partition.id,
-                                            start..start.saturating_add(sharding.rows).min(rows),
-                                            MAX_VECTOR_BATCH_SIZE,
-                                            options.memory_limit / 2,
-                                            session.spill_store(),
-                                        )
-                                        .await?,
+                let diagonal = anchor_range == candidate_range;
+                let stream = stream::iter(
+                    (anchor_range.start..anchor_range.end).step_by(MAX_VECTOR_BATCH_SIZE),
+                )
+                .then(move |anchor_start| {
+                    let index = index.clone();
+                    let mask = mask.clone();
+                    let session = session.clone();
+                    let anchor_range = anchor_range.clone();
+                    let candidate_range = candidate_range.clone();
+                    async move {
+                        let anchor = Arc::new(
+                            index
+                                .prepare_pairwise_partition_range(
+                                    partition.id,
+                                    anchor_start
+                                        ..anchor_start
+                                            .saturating_add(MAX_VECTOR_BATCH_SIZE)
+                                            .min(anchor_range.end),
+                                    MAX_VECTOR_BATCH_SIZE,
+                                    options.memory_limit / 2,
+                                    session.spill_store(),
                                 )
-                            };
-                            score_prepared(anchor, candidates, mask, threshold, options)
-                        }
-                    })
-                    .map_err(datafusion::error::DataFusionError::from)
-                    .try_flatten();
+                                .await?,
+                        );
+                        let candidate_start = if diagonal {
+                            anchor_start
+                        } else {
+                            candidate_range.start
+                        };
+                        let stream = stream::iter(
+                            (candidate_start..candidate_range.end).step_by(MAX_VECTOR_BATCH_SIZE),
+                        )
+                        .then(move |candidate_start| {
+                            let index = index.clone();
+                            let mask = mask.clone();
+                            let session = session.clone();
+                            let anchor = anchor.clone();
+                            let candidate_range = candidate_range.clone();
+                            async move {
+                                let candidates = if diagonal && candidate_start == anchor_start {
+                                    anchor.clone()
+                                } else {
+                                    Arc::new(
+                                        index
+                                            .prepare_pairwise_partition_range(
+                                                partition.id,
+                                                candidate_start
+                                                    ..candidate_start
+                                                        .saturating_add(MAX_VECTOR_BATCH_SIZE)
+                                                        .min(candidate_range.end),
+                                                MAX_VECTOR_BATCH_SIZE,
+                                                options.memory_limit / 2,
+                                                session.spill_store(),
+                                            )
+                                            .await?,
+                                    )
+                                };
+                                score_prepared(anchor, candidates, mask, threshold, options)
+                            }
+                        })
+                        .map_err(datafusion::error::DataFusionError::from)
+                        .try_flatten();
+                        Ok::<_, Error>(Box::pin(RecordBatchStreamAdapter::new(
+                            pair_schema(),
+                            stream,
+                        )) as SendableRecordBatchStream)
+                    }
+                })
+                .map_err(datafusion::error::DataFusionError::from)
+                .try_flatten();
                 Ok::<_, Error>(
                     Box::pin(RecordBatchStreamAdapter::new(pair_schema(), stream))
                         as SendableRecordBatchStream,

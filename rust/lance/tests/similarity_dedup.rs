@@ -11,10 +11,10 @@ use arrow_array::{
 use futures::TryStreamExt;
 use lance::Dataset;
 use lance::index::vector::similarity_dedup::{
-    SimilaritySearchOptions, find_similar_pairs_in_partition,
+    SimilaritySearchBlocking, find_similar_pairs_in_partition_with_blocking,
 };
 use lance::index::vector::similarity_dedup::{
-    SimilaritySearchSharding, find_similar_pairs_in_partition_with_sharding,
+    SimilaritySearchOptions, find_similar_pairs_in_partition,
 };
 use lance::index::{DatasetIndexExt, DatasetIndexInternalExt, vector::VectorIndexParams};
 use lance_arrow::FixedSizeListArrayExt;
@@ -136,7 +136,7 @@ async fn radius_has_no_top_k_truncation() {
 }
 
 #[tokio::test]
-async fn source_and_target_shards_preserve_all_cross_block_edges() {
+async fn source_and_target_blocks_preserve_all_cross_block_edges() {
     for quantization in ["flat", "rq", "pq"] {
         let vectors =
             FixedSizeListArray::from_iter_primitive::<arrow_array::types::Float32Type, _, _>(
@@ -271,17 +271,17 @@ async fn source_and_target_shards_preserve_all_cross_block_edges() {
         for rows in [1, 3, 8] {
             let mut actual = Vec::new();
             for worker in 0..4 {
-                let mut stream = find_similar_pairs_in_partition_with_sharding(
+                let mut stream = find_similar_pairs_in_partition_with_blocking(
                     ds.clone(),
                     "vector",
                     segment,
                     0,
                     1000.0,
                     SimilaritySearchOptions::default(),
-                    SimilaritySearchSharding {
-                        rows,
-                        index: worker,
-                        count: 4,
+                    SimilaritySearchBlocking {
+                        rows_per_block: rows,
+                        worker_index: worker,
+                        worker_count: 4,
                     },
                 )
                 .await
@@ -304,19 +304,19 @@ async fn source_and_target_shards_preserve_all_cross_block_edges() {
             assert_eq!(actual, expected, "quantization={quantization},rows={rows}");
         }
         assert!(
-            SimilaritySearchSharding {
-                rows: 0,
-                index: 0,
-                count: 1
+            SimilaritySearchBlocking {
+                rows_per_block: 0,
+                worker_index: 0,
+                worker_count: 1
             }
             .validate()
             .is_err()
         );
         assert!(
-            SimilaritySearchSharding {
-                rows: 8,
-                index: 4,
-                count: 4
+            SimilaritySearchBlocking {
+                rows_per_block: 8,
+                worker_index: 4,
+                worker_count: 4
             }
             .validate()
             .is_err()

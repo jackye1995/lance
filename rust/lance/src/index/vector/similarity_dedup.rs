@@ -139,7 +139,7 @@ pub async fn find_similar_pairs_in_partition_with_blocking(
         _ => return Err(Error::invalid_input("expected fixed-size vector column")),
     };
     blocking.rows_per_block = blocking
-        .rows
+        .rows_per_block
         .min((16 * 1024 * 1024 / dimension.saturating_mul(8)).max(1));
     if !threshold.is_finite() {
         return Err(Error::invalid_input("distance_threshold must be finite"));

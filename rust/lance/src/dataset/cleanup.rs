@@ -2953,7 +2953,6 @@ mod tests {
             }
         }
         let dataset = fixture.open().await.unwrap();
-        let expected_data = dataset.scan().try_into_batch().await.unwrap();
         if let Some(version) = hinted_version {
             write_version_hint(&dataset.object_store, &dataset.base, version).await;
         }
@@ -2990,6 +2989,20 @@ mod tests {
             expected_versions.extend([1, 6]);
             expected_versions.sort_unstable();
         }
+        let mut expected_data = HashMap::new();
+        for version in &expected_versions {
+            expected_data.insert(
+                *version,
+                dataset
+                    .checkout_version(*version)
+                    .await
+                    .unwrap()
+                    .scan()
+                    .try_into_batch()
+                    .await
+                    .unwrap(),
+            );
+        }
         let before = fixture.count_files().await.unwrap();
         let explanation = operation.explain().await.unwrap();
         assert_eq!(before, fixture.count_files().await.unwrap());
@@ -3016,7 +3029,7 @@ mod tests {
                     .try_into_batch()
                     .await
                     .unwrap(),
-                expected_data
+                expected_data[&version]
             );
         }
         assert_eq!(operation.execute().await.unwrap().old_versions, 0);

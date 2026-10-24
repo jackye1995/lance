@@ -170,7 +170,7 @@ pub const ENABLE_UNSTABLE_DATA_OVERLAY_FILES_ENV: &str = "LANCE_ENABLE_UNSTABLE_
 /// # }
 /// ```
 pub fn validate_auto_cleanup_config(manifest: &Manifest) -> Result<()> {
-    let has_rules = manifest.config.contains_key("lance.auto_cleanup.policy")
+    let has_retention_config = manifest.config.contains_key("lance.auto_cleanup.policy")
         || manifest
             .config
             .keys()
@@ -178,13 +178,27 @@ pub fn validate_auto_cleanup_config(manifest: &Manifest) -> Result<()> {
     let has_policy_interval = manifest
         .config
         .contains_key("lance.auto_cleanup.policy_interval");
-    if (has_rules || has_policy_interval)
+    if (has_retention_config || has_policy_interval)
         && manifest.config.contains_key("lance.auto_cleanup.interval")
     {
         return Err(Error::invalid_input(
             "retention rules require lance.auto_cleanup.policy_interval; remove lance.auto_cleanup.interval before activating retention cleanup",
         ));
     }
+    for key in manifest.config.keys() {
+        if key.starts_with("lance.auto_cleanup.keep_one.")
+            && key != "lance.auto_cleanup.keep_one.per_interval"
+            && key != "lance.auto_cleanup.keep_one.older_than"
+        {
+            return Err(Error::invalid_input(format!(
+                "Unknown retention configuration key: {key}"
+            )));
+        }
+    }
+    let has_rules = manifest.config.contains_key("lance.auto_cleanup.policy")
+        || manifest
+            .config
+            .contains_key("lance.auto_cleanup.keep_one.per_interval");
     if has_policy_interval && !has_rules {
         return Err(Error::invalid_input(
             "lance.auto_cleanup.policy_interval requires a cleanup policy or keep_one rules",
@@ -507,6 +521,32 @@ fn validated_sticky_paired_flags(manifest: &Manifest) -> Result<u64> {
 mod tests {
     use super::*;
     use crate::format::BasePath;
+
+    #[rstest::rstest]
+    #[case::missing(None, "requires a cleanup policy")]
+    #[case::age_only(
+        Some("lance.auto_cleanup.keep_one.older_than"),
+        "requires a cleanup policy"
+    )]
+    #[case::typo(
+        Some("lance.auto_cleanup.keep_one.per_intervl"),
+        "Unknown retention configuration key"
+    )]
+    fn retention_activation_requires_valid_rule_keys(
+        #[case] key: Option<&str>,
+        #[case] message: &str,
+    ) {
+        let mut manifest = empty_manifest();
+        manifest
+            .config
+            .insert("lance.auto_cleanup.policy_interval".into(), "1".into());
+        if let Some(key) = key {
+            manifest.config.insert(key.into(), "2days".into());
+        }
+        let error = apply_feature_flags(&mut manifest, false, false).unwrap_err();
+        assert!(matches!(error, Error::InvalidInput { .. }));
+        assert!(error.to_string().contains(message));
+    }
 
     #[rstest::rstest]
     #[case::policy(

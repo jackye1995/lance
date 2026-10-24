@@ -1822,6 +1822,29 @@ def test_cleanup_with_retain_versions(tmp_path: Path):
     assert ds.count_rows() == len(ds.to_table())
 
 
+@pytest.mark.parametrize(
+    "invalid_rules,message",
+    [
+        ({}, "requires a cleanup policy"),
+        (
+            {"lance.auto_cleanup.keep_one.older_than": "2days"},
+            "requires a cleanup policy",
+        ),
+        (
+            {"lance.auto_cleanup.keep_one.per_intervl": "1day"},
+            "Unknown retention configuration key",
+        ),
+    ],
+)
+def test_cleanup_retention_rejects_incomplete_activation(
+    tmp_path: Path, invalid_rules, message
+):
+    ds = lance.write_dataset(pa.table({"value": [1, 2]}), tmp_path)
+    with pytest.raises(OSError, match=message):
+        ds.update_config({"lance.auto_cleanup.policy_interval": "1", **invalid_rules})
+    assert lance.dataset(tmp_path).version == 1
+
+
 @pytest.mark.parametrize("shorthand", [False, True])
 def test_cleanup_retention_activation_is_atomic(tmp_path: Path, shorthand):
     table = pa.table({"value": [1, 2, 3, 4]})

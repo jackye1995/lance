@@ -2950,6 +2950,23 @@ mod tests {
         assert_eq!(operation.execute().await.unwrap().old_versions, 0);
     }
 
+    #[test]
+    fn cleanup_policy_preserves_large_duration_precision() {
+        let policy = parse_cleanup_policy(
+            r#"{"rules":[
+            {"type":"keep_one","per_interval":"315360000000s 1us","older_than":"2days"}
+        ]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            policy.rules(),
+            &[CleanupRule::KeepOne {
+                per_interval: Duration::new(315_360_000_000, 1_000),
+                older_than: MIN_THINNING_AGE,
+            }]
+        );
+    }
+
     #[rstest]
     #[tokio::test]
     async fn cleanup_retention_policy_ladder(

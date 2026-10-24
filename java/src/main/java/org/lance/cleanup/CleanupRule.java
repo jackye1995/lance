@@ -65,14 +65,18 @@ public final class CleanupRule {
   /** Internal configuration form shared with automatic cleanup. */
   public Map<String, Object> toConfig() {
     if (perInterval == null) {
-      return Map.of("type", "remove_all", "older_than", olderThan.toMillis() + "ms");
+      return Map.of("type", "remove_all", "older_than", durationString(olderThan));
     }
     return Map.of(
         "type",
         "keep_one",
         "per_interval",
-        perInterval.toMillis() + "ms",
+        durationString(perInterval),
         "older_than",
-        olderThan.toMillis() + "ms");
+        durationString(olderThan));
+  }
+
+  private static String durationString(Duration duration) {
+    return duration.getSeconds() + "s " + duration.getNano() + "ns";
   }
 }

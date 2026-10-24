@@ -1841,6 +1841,13 @@ def test_cleanup_retention_policy(tmp_path: Path):
     assert ds.explain_cleanup_old_versions(policy=policy).stats.old_versions == 0
     assert ds.cleanup_old_versions(policy=policy).old_versions == 0
     assert len(ds.versions()) == 4
+    large_interval = lance.CleanupPolicy(
+        [lance.KeepOne(timedelta(days=365 * 10_000, microseconds=1))]
+    )
+    assert (
+        ds.explain_cleanup_old_versions(policy=large_interval).stats.old_versions == 0
+    )
+    assert ds.cleanup_old_versions(policy=large_interval).old_versions == 0
     expiration = lance.CleanupPolicy([lance.RemoveAll(older_than=timedelta(0))])
     explanation = ds.explain_cleanup_old_versions(policy=expiration)
     assert len(ds.versions()) == 4

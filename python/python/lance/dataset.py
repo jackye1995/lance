@@ -910,6 +910,11 @@ class CleanupPolicy:
     rules: Sequence[CleanupRule] = (RemoveAll(timedelta(days=14)),)
 
 
+def _cleanup_duration_string(value: timedelta) -> str:
+    seconds = value.days * 86_400 + value.seconds
+    return f"{seconds}s {value.microseconds}us"
+
+
 def _cleanup_policy_to_json(policy: CleanupPolicy) -> str:
     if not isinstance(policy, CleanupPolicy):
         raise TypeError(f"policy must be a CleanupPolicy, got {type(policy)}")
@@ -919,15 +924,15 @@ def _cleanup_policy_to_json(policy: CleanupPolicy) -> str:
             rules.append(
                 {
                     "type": "keep_one",
-                    "per_interval": f"{td_to_micros(rule.per_interval)}us",
-                    "older_than": f"{td_to_micros(rule.older_than)}us",
+                    "per_interval": _cleanup_duration_string(rule.per_interval),
+                    "older_than": _cleanup_duration_string(rule.older_than),
                 }
             )
         elif isinstance(rule, RemoveAll):
             rules.append(
                 {
                     "type": "remove_all",
-                    "older_than": f"{td_to_micros(rule.older_than)}us",
+                    "older_than": _cleanup_duration_string(rule.older_than),
                 }
             )
         else:

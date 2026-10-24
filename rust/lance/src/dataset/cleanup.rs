@@ -57,7 +57,7 @@ use lance_table::{
     feature_flags::{ensure_can_read_manifest, ensure_can_write_manifest},
     format::{IndexMetadata, Manifest},
     io::{
-        commit::{ManifestLocation, ManifestNamingScheme, read_version_hint, uses_version_hint},
+        commit::{ManifestLocation, ManifestNamingScheme, read_version_hint},
         deletion::deletion_file_path,
         manifest::{read_manifest, read_manifest_indexes},
     },
@@ -685,7 +685,8 @@ impl<'a> CleanupTask<'a> {
                 Error::invalid_input(format!("older_than is out of range: {age:?}"))
             })?;
             let anchor = if self.keep_one_per.is_some() {
-                let hinted_version = if uses_version_hint(&self.dataset.object_store) {
+                // Other readers can use a durable hint even when this process disables it.
+                let hinted_version = if !self.dataset.object_store.list_is_lexically_ordered {
                     read_version_hint(&self.dataset.object_store, &self.dataset.base).await?
                 } else {
                     None
@@ -2758,6 +2759,8 @@ fn tagged_old_versions_cleanup_error(
 mod tests {
     use std::{
         collections::HashMap,
+        env,
+        process::Command,
         sync::{
             Arc, Mutex,
             atomic::{AtomicUsize, Ordering},
@@ -2788,7 +2791,7 @@ mod tests {
         ObjectStore, ObjectStoreParams, ObjectStoreRegistry, WrappingObjectStore,
     };
     use lance_linalg::distance::MetricType;
-    use lance_table::io::commit::{RenameCommitHandler, write_version_hint};
+    use lance_table::io::commit::{RenameCommitHandler, uses_version_hint, write_version_hint};
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32, RandomVector, some_batch};
     use mock_instant::thread_local::MockClock;
     use object_store::ObjectStoreExt;
@@ -3238,6 +3241,87 @@ mod tests {
         MockClock::set_system_time(Duration::from_secs(3 * 86_400));
         assert_eq!(operation.explain().await.unwrap().stats.old_versions, 1);
         assert_eq!(operation.execute().await.unwrap().old_versions, 1);
+    }
+
+    #[tokio::test]
+    async fn cleanup_thinning_honors_hints_with_updates_disabled() {
+        let role = env::var("LANCE_THINNING_TEST_ROLE").ok();
+        if role.as_deref() == Some("reader") {
+            let dataset = Dataset::open(&env::var("LANCE_THINNING_TEST_URI").unwrap())
+                .await
+                .unwrap();
+            assert_eq!(dataset.latest_version_id().await.unwrap(), 9);
+            return;
+        }
+        let test_name =
+            "dataset::cleanup::tests::cleanup_thinning_honors_hints_with_updates_disabled";
+        if role.as_deref() != Some("cleaner") {
+            let output = Command::new(env::current_exe().unwrap())
+                .args([test_name, "--exact", "--nocapture"])
+                .env("LANCE_USE_VERSION_HINT", "0")
+                .env("LANCE_THINNING_TEST_ROLE", "cleaner")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let fixture = MockDatasetFixture::try_new().unwrap();
+        for (index, hour) in [0, 1, 24, 25, 48, 49, 72, 96, 120].into_iter().enumerate() {
+            MockClock::set_system_time(Duration::from_secs(hour * 3600));
+            if index == 0 {
+                fixture.create_some_data().await.unwrap();
+            } else {
+                fixture.overwrite_some_data().await.unwrap();
+            }
+        }
+        let dataset = fixture.open().await.unwrap();
+        assert!(!uses_version_hint(&dataset.object_store));
+        dataset
+            .object_store
+            .put(
+                &dataset
+                    .base
+                    .clone()
+                    .join("_versions")
+                    .join("latest_version_hint.json"),
+                br#"{"version":2}"#,
+            )
+            .await
+            .unwrap();
+        let operation = dataset
+            .cleanup(CleanupPolicy::default())
+            .with_keep_one_per(Duration::from_secs(86_400))
+            .unwrap();
+        assert_eq!(operation.explain().await.unwrap().stats.old_versions, 0);
+        assert_eq!(operation.execute().await.unwrap().old_versions, 0);
+        assert_eq!(
+            dataset
+                .version_refs()
+                .await
+                .unwrap()
+                .iter()
+                .map(|v| v.version)
+                .collect::<Vec<_>>(),
+            (1..=9).collect::<Vec<_>>()
+        );
+        let output = Command::new(env::current_exe().unwrap())
+            .args([test_name, "--exact", "--nocapture"])
+            .env("LANCE_USE_VERSION_HINT", "1")
+            .env("LANCE_THINNING_TEST_ROLE", "reader")
+            .env("LANCE_THINNING_TEST_URI", &fixture.dataset_path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[rstest]

@@ -569,7 +569,8 @@ Both durations are configurable. With `keep_one_per` set, `older_than` defaults
 to, and must be at least, two days. The cutoff is the hinted commit's timestamp
 minus `older_than`, falling back to this dataset's commit when no hint exists.
 The hinted version and every later version are retained even if their clocks
-went backwards. Each bucket is aligned to the UTC Unix epoch and keeps the newest
+went backwards. Cleanup honors existing durable hints even when the cleaner
+sets `LANCE_USE_VERSION_HINT=0`. Each bucket is aligned to the UTC Unix epoch and keeps the newest
 eligible logical commit timestamp, breaking ties by version number. Tags, the
 current version and branch dependencies remain protected, so a bucket can have
 additional protected versions. Other filters, such as `retain_versions` and

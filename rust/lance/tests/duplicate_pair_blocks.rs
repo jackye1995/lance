@@ -40,7 +40,7 @@ async fn pairs(mut stream: SendableRecordBatchStream) -> Vec<(u64, u64, u32)> {
 #[case::rq_l2(true, DistanceType::L2)]
 #[case::rq_cosine(true, DistanceType::Cosine)]
 #[tokio::test]
-async fn shards_preserve_cross_block_pairs_and_deletions(
+async fn blocks_preserve_cross_block_pairs_and_deletions(
     #[case] quantized: bool,
     #[case] metric: DistanceType,
 ) {
@@ -95,7 +95,7 @@ async fn shards_preserve_cross_block_pairs_and_deletions(
     for memory in [0, 1024 * 1024] {
         for rows in [3, 8, 16] {
             let mut actual = Vec::new();
-            for shard in 0..4 {
+            for worker in 0..4 {
                 actual.extend(
                     pairs(
                         find_duplicate_pairs_with_options(
@@ -105,7 +105,7 @@ async fn shards_preserve_cross_block_pairs_and_deletions(
                             DuplicatePairsOptions::default()
                                 .with_memory_limit(memory)
                                 .with_max_concurrency(2)
-                                .with_sharding(rows, shard, 4),
+                                .with_blocking(rows, worker, 4),
                         )
                         .await
                         .unwrap(),
@@ -122,12 +122,85 @@ async fn shards_preserve_cross_block_pairs_and_deletions(
             dataset.clone(),
             "vector",
             0.0,
-            DuplicatePairsOptions::default().with_sharding(rows, index, count),
+            DuplicatePairsOptions::default().with_blocking(rows, index, count),
         )
         .await
         .err()
         .unwrap();
         assert!(matches!(error, lance_core::Error::InvalidInput { .. }));
-        assert!(error.to_string().contains("shard"));
+        assert!(error.to_string().contains("block"));
+    }
+}
+
+#[tokio::test]
+async fn large_comparison_blocks_cross_internal_batch_boundaries() {
+    let ids = record_batch!(("id", Int32, (0..8195).collect::<Vec<_>>())).unwrap();
+    let vectors = arrow_array::FixedSizeListArray::from_iter_primitive::<
+        arrow_array::types::Float32Type,
+        _,
+        _,
+    >((0..8195).map(|_| Some(vec![Some(1.0); 8])), 8);
+    let batch = RecordBatch::try_from_iter([
+        ("id", ids.column(0).clone()),
+        ("vector", Arc::new(vectors) as arrow_array::ArrayRef),
+    ])
+    .unwrap();
+    let mut dataset = Dataset::write(
+        RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema()),
+        "memory://",
+        None,
+    )
+    .await
+    .unwrap();
+    dataset
+        .create_index(
+            &["vector"],
+            IndexType::Vector,
+            None,
+            &VectorIndexParams::ivf_flat(1, DistanceType::L2),
+            false,
+        )
+        .await
+        .unwrap();
+    dataset
+        .delete("id NOT IN (0, 8191, 8192, 8194)")
+        .await
+        .unwrap();
+    let dataset = Arc::new(dataset);
+    let expected = pairs(
+        find_duplicate_pairs_with_options(
+            dataset.clone(),
+            "vector",
+            0.0,
+            DuplicatePairsOptions::default(),
+        )
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(expected.len(), 6);
+    for rows in [8193, 100_000] {
+        for memory in [0, 1024 * 1024] {
+            let mut actual = Vec::new();
+            for worker in 0..3 {
+                actual.extend(
+                    pairs(
+                        find_duplicate_pairs_with_options(
+                            dataset.clone(),
+                            "vector",
+                            0.0,
+                            DuplicatePairsOptions::default()
+                                .with_memory_limit(memory)
+                                .with_blocking(rows, worker, 3),
+                        )
+                        .await
+                        .unwrap(),
+                    )
+                    .await,
+                );
+            }
+            actual.sort_unstable();
+            assert_eq!(actual, expected);
+        }
     }
 }

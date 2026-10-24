@@ -15,14 +15,15 @@ package org.lance;
 
 import org.lance.cleanup.CleanupExplanation;
 import org.lance.cleanup.CleanupPolicy;
+import org.lance.cleanup.CleanupRule;
 import org.lance.cleanup.RemovalStats;
-import org.lance.cleanup.RetentionRule;
 import org.lance.util.JsonUtils;
 
 import org.apache.arrow.util.Preconditions;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
@@ -43,6 +44,7 @@ public class CleanupOperation {
   CleanupOperation(Dataset dataset, CleanupPolicy policy) {
     this.dataset = Preconditions.checkNotNull(dataset, "dataset cannot be null");
     this.policy = Preconditions.checkNotNull(policy, "policy cannot be null");
+    this.retentionPolicyJson = policy.getRules().map(CleanupOperation::serializeRules);
   }
 
   /**
@@ -62,33 +64,18 @@ public class CleanupOperation {
    * @return this operation for chaining
    */
   public CleanupOperation withKeepOne(Duration perInterval, Duration olderThan) {
-    return withRetentionPolicy(List.of(RetentionRule.keepOne(perInterval, olderThan)));
+    this.retentionPolicyJson =
+        Optional.of(serializeRules(List.of(CleanupRule.keepOne(perInterval, olderThan))));
+    return this;
   }
 
-  /**
-   * Set retention age bands, with strictly increasing ages and an optional final RemoveAll rule.
-   * Version filters constrain every rule. Omitting RemoveAll retains sampled history indefinitely
-   * unless the legacy policy expires it.
-   *
-   * <p>Example: {@code dataset.cleanup(policy).withRetentionPolicy(List.of(
-   * RetentionRule.keepOne(Duration.ofHours(1), Duration.ofDays(2)),
-   * RetentionRule.keepOne(Duration.ofDays(1), Duration.ofDays(7)),
-   * RetentionRule.removeAll(Duration.ofDays(30)))).execute()}.
-   *
-   * @param rules ordered retention rules, validated on explain and execute
-   * @return this operation for chaining, replacing any previous retention rules
-   */
-  public CleanupOperation withRetentionPolicy(List<RetentionRule> rules) {
-    Preconditions.checkNotNull(rules, "rules cannot be null");
-    this.retentionPolicyJson =
-        Optional.of(
+  private static String serializeRules(List<CleanupRule> rules) {
+    return JsonUtils.toJson(
+        Map.of(
+            "rules",
             rules.stream()
-                .map(
-                    rule ->
-                        JsonUtils.toJson(
-                            Preconditions.checkNotNull(rule, "rule cannot be null").toConfig()))
-                .collect(Collectors.joining(",", "[", "]")));
-    return this;
+                .map(rule -> Preconditions.checkNotNull(rule, "rule cannot be null").toConfig())
+                .collect(Collectors.toList())));
   }
 
   /**

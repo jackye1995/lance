@@ -19,11 +19,11 @@ import java.time.Duration;
 import java.util.Map;
 
 /** An immutable age-band rule for cleanup, ordered by increasing olderThan age. */
-public final class RetentionRule {
+public final class CleanupRule {
   private final Duration perInterval;
   private final Duration olderThan;
 
-  private RetentionRule(Duration perInterval, Duration olderThan) {
+  private CleanupRule(Duration perInterval, Duration olderThan) {
     this.perInterval = perInterval;
     this.olderThan = Preconditions.checkNotNull(olderThan, "olderThan cannot be null");
     Preconditions.checkArgument(
@@ -42,13 +42,13 @@ public final class RetentionRule {
    * @param olderThan thinning age with millisecond precision, at least two days
    * @return immutable sampling rule; policy validation occurs on explain/execute
    */
-  public static RetentionRule keepOne(Duration perInterval, Duration olderThan) {
+  public static CleanupRule keepOne(Duration perInterval, Duration olderThan) {
     Preconditions.checkNotNull(perInterval, "perInterval cannot be null");
     Preconditions.checkArgument(
         perInterval.toMillis() > 0 && perInterval.equals(Duration.ofMillis(perInterval.toMillis())),
         "keep_one.per_interval must be positive with millisecond precision, got %s",
         perInterval);
-    return new RetentionRule(perInterval, olderThan);
+    return new CleanupRule(perInterval, olderThan);
   }
 
   /**
@@ -58,8 +58,8 @@ public final class RetentionRule {
    * @param olderThan non-negative expiration age with millisecond precision
    * @return immutable expiration rule
    */
-  public static RetentionRule removeAll(Duration olderThan) {
-    return new RetentionRule(null, olderThan);
+  public static CleanupRule removeAll(Duration olderThan) {
+    return new CleanupRule(null, olderThan);
   }
 
   /** Internal configuration form shared with automatic cleanup. */

@@ -556,22 +556,25 @@ from datetime import timedelta
 dataset.cleanup_old_versions(older_than=timedelta(days=1))
 ```
 
-For multiple retention windows, pass an ordered `policy` list. This example keeps
+For multiple retention windows, pass a `CleanupPolicy` containing ordered `CleanupRule` entries. This example keeps
 full recent history, hourly samples between two and seven days, daily samples
 between seven and thirty days, and expires everything older than thirty days:
 
 ```python
-from lance import KeepOne, RemoveAll
+from lance import CleanupPolicy, KeepOne, RemoveAll
 
 dataset.cleanup_old_versions(
-    policy=[
+    policy=CleanupPolicy(rules=[
         KeepOne(per_interval=timedelta(hours=1), older_than=timedelta(days=2)),
         KeepOne(per_interval=timedelta(days=1), older_than=timedelta(days=7)),
         RemoveAll(older_than=timedelta(days=30)),
-    ]
+    ])
 )
 ```
 
+`KeepOne` and `RemoveAll` implement `CleanupRule`. A `CleanupPolicy` contains
+the ordered rules; `CleanupPolicy()` defaults to a single
+`RemoveAll(older_than=timedelta(days=14))`, matching existing cleanup behavior.
 Ages must strictly increase. Each version uses the oldest matching `KeepOne`
 rule, with separate buckets for each band. `RemoveAll` is optional and must be
 last; without it, sampled history has no expiration limit. Empty policies,
@@ -596,10 +599,12 @@ Existing cleanup calls and defaults continue to work. The single-window shorthan
 `older_than=timedelta(days=7), keep_one=KeepOne(timedelta(days=1), timedelta(days=2))`
 is also supported. Do not combine `policy` with `older_than` or `keep_one`.
 
-Rust accepts a `Vec<RetentionRule>` through `.with_retention_policy(...)`; Java
-accepts a `List<RetentionRule>` through `.withRetentionPolicy(...)`, using
-`RetentionRule.keepOne(perInterval, olderThan)` and
-`RetentionRule.removeAll(olderThan)`. Existing native policy filters still apply.
+Rust uses `cleanup::retention::CleanupPolicy::new(Vec<CleanupRule>)` through
+`.with_retention_policy(...)`; the legacy `cleanup::CleanupPolicy` remains
+available for version and file-cleanup filters. Java accepts
+`dataset.cleanup(new CleanupPolicy(rules))`, using
+`CleanupRule.keepOne(perInterval, olderThan)` and
+`CleanupRule.removeAll(olderThan)`. Existing native policy filters still apply.
 
 For automatic cleanup, use the same rules with duration strings:
 
@@ -608,11 +613,11 @@ import json
 
 dataset.update_config({
     "lance.auto_cleanup.interval": "100",
-    "lance.auto_cleanup.policy": json.dumps([
+    "lance.auto_cleanup.policy": json.dumps({"rules": [
         {"type": "keep_one", "per_interval": "1h", "older_than": "2days"},
         {"type": "keep_one", "per_interval": "1day", "older_than": "7days"},
         {"type": "remove_all", "older_than": "30days"},
-    ]),
+    ]}),
 })
 ```
 
@@ -622,7 +627,10 @@ single-window `lance.auto_cleanup.keep_one.*` settings.
 Thinning also supports local filesystems and S3 Express. The hint-relative
 two-day minimum provides a retention buffer for delayed hint writes; it does not
 make hint updates monotonic. On stores using hints, unreadable or malformed hints
-fail cleanup instead of using the wall clock. If explicit expiration has removed\nan older hinted manifest, cleanup falls back to the dataset snapshot, as latest\nversion discovery does when a hint target is missing. A missing current manifest\nstill fails cleanup.
+fail cleanup instead of using the wall clock. If explicit expiration has removed
+an older hinted manifest, cleanup falls back to the dataset snapshot, as latest
+version discovery does when a hint target is missing. A missing current manifest
+still fails cleanup.
 
 !!! note
 

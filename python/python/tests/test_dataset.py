@@ -1822,19 +1822,26 @@ def test_cleanup_with_retain_versions(tmp_path: Path):
 
 
 def test_cleanup_retention_policy(tmp_path: Path):
+    assert list(lance.CleanupPolicy().rules) == [lance.RemoveAll(timedelta(days=14))]
+    assert isinstance(lance.KeepOne(timedelta(hours=1)), lance.CleanupRule)
+    assert isinstance(lance.RemoveAll(timedelta(days=30)), lance.CleanupRule)
     table = pa.table({"a": [1, 2, 3, 4]})
     ds = lance.write_dataset(table, tmp_path, max_rows_per_file=2)
     for _ in range(3):
         ds = lance.write_dataset(table, tmp_path, mode="overwrite", max_rows_per_file=2)
-    policy = [
-        lance.KeepOne(per_interval=timedelta(hours=1), older_than=timedelta(days=2)),
-        lance.KeepOne(per_interval=timedelta(days=1), older_than=timedelta(days=7)),
-        lance.RemoveAll(older_than=timedelta(days=30)),
-    ]
+    policy = lance.CleanupPolicy(
+        rules=[
+            lance.KeepOne(
+                per_interval=timedelta(hours=1), older_than=timedelta(days=2)
+            ),
+            lance.KeepOne(per_interval=timedelta(days=1), older_than=timedelta(days=7)),
+            lance.RemoveAll(older_than=timedelta(days=30)),
+        ]
+    )
     assert ds.explain_cleanup_old_versions(policy=policy).stats.old_versions == 0
     assert ds.cleanup_old_versions(policy=policy).old_versions == 0
     assert len(ds.versions()) == 4
-    expiration = [lance.RemoveAll(older_than=timedelta(0))]
+    expiration = lance.CleanupPolicy([lance.RemoveAll(older_than=timedelta(0))])
     explanation = ds.explain_cleanup_old_versions(policy=expiration)
     assert len(ds.versions()) == 4
     assert explanation.stats.old_versions == 3
@@ -1861,6 +1868,7 @@ def test_cleanup_retention_policy(tmp_path: Path):
     ],
 )
 def test_cleanup_rejects_invalid_retention_policy(tmp_path: Path, policy, message):
+    policy = lance.CleanupPolicy(rules=policy)
     ds = lance.write_dataset(pa.table({"a": [1, 2]}), tmp_path)
     with pytest.raises(OSError, match=message):
         ds.explain_cleanup_old_versions(policy=policy)
@@ -1875,7 +1883,7 @@ def test_cleanup_rejects_invalid_retention_policy(tmp_path: Path, policy, messag
 )
 def test_cleanup_rejects_conflicting_retention_policy(tmp_path: Path, conflict):
     ds = lance.write_dataset(pa.table({"a": [1, 2]}), tmp_path)
-    policy = [lance.RemoveAll(timedelta(days=30))]
+    policy = lance.CleanupPolicy([lance.RemoveAll(timedelta(days=30))])
     with pytest.raises(ValueError, match="policy cannot be combined"):
         ds.explain_cleanup_old_versions(policy=policy, **conflict)
     with pytest.raises(ValueError, match="policy cannot be combined"):

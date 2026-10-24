@@ -15,8 +15,8 @@ package org.lance;
 
 import org.lance.cleanup.CleanupExplanation;
 import org.lance.cleanup.CleanupPolicy;
+import org.lance.cleanup.CleanupRule;
 import org.lance.cleanup.RemovalStats;
-import org.lance.cleanup.RetentionRule;
 
 import org.apache.arrow.memory.RootAllocator;
 import org.junit.jupiter.api.Assertions;
@@ -47,36 +47,34 @@ public class CleanupTest {
       fixture.write(1, 10).close();
       fixture.write(2, 10).close();
       try (Dataset dataset = fixture.write(3, 10)) {
+        assertEquals(
+            0L, dataset.cleanup(new CleanupPolicy()).explain().getStats().getOldVersions());
         CleanupOperation cleanup =
-            dataset
-                .cleanup(CleanupPolicy.builder().build())
-                .withRetentionPolicy(
+            dataset.cleanup(
+                new CleanupPolicy(
                     List.of(
-                        RetentionRule.keepOne(Duration.ofHours(1), Duration.ofDays(2)),
-                        RetentionRule.keepOne(Duration.ofDays(1), Duration.ofDays(7)),
-                        RetentionRule.removeAll(Duration.ofDays(30))));
+                        CleanupRule.keepOne(Duration.ofHours(1), Duration.ofDays(2)),
+                        CleanupRule.keepOne(Duration.ofDays(1), Duration.ofDays(7)),
+                        CleanupRule.removeAll(Duration.ofDays(30)))));
         assertEquals(0L, cleanup.explain().getStats().getOldVersions());
         assertEquals(0L, cleanup.execute().getOldVersions());
         CleanupOperation expire =
-            dataset
-                .cleanup(CleanupPolicy.builder().build())
-                .withRetentionPolicy(List.of(RetentionRule.removeAll(Duration.ZERO)));
+            dataset.cleanup(new CleanupPolicy(List.of(CleanupRule.removeAll(Duration.ZERO))));
         assertEquals(3L, expire.explain().getStats().getOldVersions());
         assertEquals(4, dataset.listVersions().size());
         assertEquals(3L, expire.execute().getOldVersions());
         assertEquals(1, dataset.listVersions().size());
         assertEquals(0L, expire.execute().getOldVersions());
-        for (List<RetentionRule> invalid :
+        for (List<CleanupRule> invalid :
             List.of(
-                List.<RetentionRule>of(),
+                List.<CleanupRule>of(),
                 List.of(
-                    RetentionRule.keepOne(Duration.ofHours(1), Duration.ofDays(2)),
-                    RetentionRule.keepOne(Duration.ofDays(1), Duration.ofDays(2))),
+                    CleanupRule.keepOne(Duration.ofHours(1), Duration.ofDays(2)),
+                    CleanupRule.keepOne(Duration.ofDays(1), Duration.ofDays(2))),
                 List.of(
-                    RetentionRule.removeAll(Duration.ofDays(30)),
-                    RetentionRule.keepOne(Duration.ofHours(1), Duration.ofDays(2))))) {
-          CleanupOperation bad =
-              dataset.cleanup(CleanupPolicy.builder().build()).withRetentionPolicy(invalid);
+                    CleanupRule.removeAll(Duration.ofDays(30)),
+                    CleanupRule.keepOne(Duration.ofHours(1), Duration.ofDays(2))))) {
+          CleanupOperation bad = dataset.cleanup(new CleanupPolicy(invalid));
           Assertions.assertThrows(RuntimeException.class, bad::explain);
           Assertions.assertThrows(RuntimeException.class, bad::execute);
         }

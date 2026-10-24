@@ -17,7 +17,7 @@ pub(super) const MIN_THINNING_AGE: Duration = Duration::from_secs(2 * 86_400);
 /// branch dependencies retain their usual protection.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum RetentionRule {
+pub enum CleanupRule {
     /// Keep the newest eligible commit per UTC epoch-aligned interval.
     KeepOne {
         /// Positive bucket width; each age band has independent buckets.
@@ -43,32 +43,70 @@ fn deserialize_retention_duration<'de, D: Deserializer<'de>>(
     parse_duration(&value).map_err(serde::de::Error::custom)
 }
 
-/// Parse a retention policy with duration strings such as `"1h"` and `"2days"`.
+/// Ordered retention rules. By default, expire versions older than two weeks.
 ///
+/// Use with [`super::CleanupOperation::with_retention_policy`]. The legacy
+/// [`super::CleanupPolicy`] remains available for version and file-cleanup filters.
 /// ```
-/// # use lance::dataset::cleanup::parse_retention_policy;
-/// let rules = parse_retention_policy(r#"[
-///   {"type":"keep_one","per_interval":"1h","older_than":"2days"},
-///   {"type":"remove_all","older_than":"30days"}
-/// ]"#)?;
-/// # Ok::<_, lance::Error>(())
+/// # use lance::dataset::cleanup::retention::{CleanupPolicy, CleanupRule};
+/// # use std::time::Duration;
+/// let policy = CleanupPolicy::new(vec![
+///     CleanupRule::KeepOne { per_interval: Duration::from_secs(3600), older_than: Duration::from_secs(2 * 86_400) },
+///     CleanupRule::RemoveAll { older_than: Duration::from_secs(30 * 86_400) },
+/// ]);
 /// ```
-pub fn parse_retention_policy(value: &str) -> Result<Vec<RetentionRule>> {
-    let rules: Vec<RetentionRule> = serde_json::from_str(value).map_err(|error| {
-        Error::invalid_input(format!("Invalid cleanup retention policy: {error}"))
-    })?;
-    validate_retention_policy(&rules)?;
-    Ok(rules)
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CleanupPolicy {
+    pub(super) rules: Vec<CleanupRule>,
 }
 
-pub(super) fn validate_retention_policy(rules: &[RetentionRule]) -> Result<()> {
+impl CleanupPolicy {
+    /// Create a policy from ordered rules, validated when applied to cleanup.
+    pub fn new(rules: Vec<CleanupRule>) -> Self {
+        Self { rules }
+    }
+
+    /// The ordered rules; the oldest matching sampling rule applies.
+    pub fn rules(&self) -> &[CleanupRule] {
+        &self.rules
+    }
+}
+
+impl Default for CleanupPolicy {
+    fn default() -> Self {
+        Self::new(vec![CleanupRule::RemoveAll {
+            older_than: Duration::from_secs(14 * 86_400),
+        }])
+    }
+}
+
+/// Parse a cleanup policy containing ordered rules with duration strings.
+///
+/// ```
+/// # use lance::dataset::cleanup::parse_cleanup_policy;
+/// let policy = parse_cleanup_policy(r#"{"rules":[
+///   {"type":"keep_one","per_interval":"1h","older_than":"2days"},
+///   {"type":"remove_all","older_than":"30days"}
+/// ]}"#)?;
+/// # Ok::<_, lance::Error>(())
+/// ```
+pub fn parse_cleanup_policy(value: &str) -> Result<CleanupPolicy> {
+    let policy: CleanupPolicy = serde_json::from_str(value).map_err(|error| {
+        Error::invalid_input(format!("Invalid cleanup retention policy: {error}"))
+    })?;
+    validate_retention_policy(&policy.rules)?;
+    Ok(policy)
+}
+
+pub(super) fn validate_retention_policy(rules: &[CleanupRule]) -> Result<()> {
     if rules.is_empty() {
         return Err(Error::invalid_input("retention policy must not be empty"));
     }
     let mut previous_age = None;
     for (index, rule) in rules.iter().enumerate() {
         let age = match *rule {
-            RetentionRule::KeepOne {
+            CleanupRule::KeepOne {
                 per_interval,
                 older_than,
             } => {
@@ -80,7 +118,7 @@ pub(super) fn validate_retention_policy(rules: &[RetentionRule]) -> Result<()> {
                 validate_thinning_age(older_than)?;
                 older_than
             }
-            RetentionRule::RemoveAll { older_than } => {
+            CleanupRule::RemoveAll { older_than } => {
                 if index + 1 != rules.len() {
                     return Err(Error::invalid_input(format!(
                         "remove_all must be the final retention rule, got policy[{index}]"

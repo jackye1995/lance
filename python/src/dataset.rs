@@ -36,7 +36,7 @@ use pyo3::{
 use uuid::Uuid;
 
 use lance::dataset::AutoCleanupParams;
-use lance::dataset::cleanup::{CleanupFileKind, CleanupPolicyBuilder, parse_retention_policy};
+use lance::dataset::cleanup::{CleanupFileKind, CleanupPolicyBuilder, parse_cleanup_policy};
 use lance::dataset::refs::{Ref, TagContents};
 use lance::dataset::scanner::{
     AggregateExpr, ColumnOrdering, DatasetRecordBatchStream, ExecutionStatsCallback, ExprFilter,
@@ -882,7 +882,7 @@ impl Dataset {
                     "policy cannot be combined with older_than or keep_one",
                 ));
             }
-            operation = operation.with_retention_policy(parse_retention_policy(&value)?)?;
+            operation = operation.with_retention_policy(parse_cleanup_policy(&value)?)?;
         }
         Ok(operation)
     }

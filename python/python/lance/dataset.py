@@ -856,11 +856,15 @@ class MergeInsertBuilder(_MergeInsertBuilder):
         return self
 
 
+class CleanupRule(ABC):
+    """A cleanup retention rule: KeepOne samples a band; RemoveAll expires it."""
+
+
 @dataclass(frozen=True)
-class KeepOne:
+class KeepOne(CleanupRule):
     """Thin history older than a full-history window, keeping one commit per interval.
 
-    Use in ``cleanup_old_versions(policy=[KeepOne(...), RemoveAll(...)])``.
+    Use in ``cleanup_old_versions(policy=CleanupPolicy([KeepOne(...), RemoveAll(...)]))``.
     ``per_interval`` must be positive. ``older_than`` defaults to two days and
     must be at least two days, measured from the hinted commit timestamp (or
     the dataset snapshot without a hint). Validation occurs during cleanup.
@@ -878,10 +882,10 @@ class KeepOne:
 
 
 @dataclass(frozen=True)
-class RemoveAll:
+class RemoveAll(CleanupRule):
     """Expire all versions older than a wall-clock age, including sampled commits.
 
-    Use as the final rule in ``cleanup_old_versions(policy=[...])``. For example,
+    Use as the final rule in ``cleanup_old_versions(policy=CleanupPolicy([...]))``. For example,
     ``RemoveAll(older_than=timedelta(days=30))`` expires thirty-day-old history.
     Current versions, tags and branch dependencies remain protected.
     """
@@ -889,9 +893,28 @@ class RemoveAll:
     older_than: timedelta
 
 
-def _cleanup_policy_to_json(policy: Sequence[Union[KeepOne, RemoveAll]]) -> str:
+@dataclass(frozen=True)
+class CleanupPolicy:
+    """Ordered CleanupRule entries, with an optional final RemoveAll rule.
+
+    By default, contains only ``RemoveAll(timedelta(days=14))``, preserving
+    the existing two-week expiration behavior. For example::
+
+        dataset.cleanup_old_versions(policy=CleanupPolicy(rules=[
+            KeepOne(timedelta(hours=1), timedelta(days=2)),
+            KeepOne(timedelta(days=1), timedelta(days=7)),
+            RemoveAll(timedelta(days=30)),
+        ]))
+    """
+
+    rules: Sequence[CleanupRule] = (RemoveAll(timedelta(days=14)),)
+
+
+def _cleanup_policy_to_json(policy: CleanupPolicy) -> str:
+    if not isinstance(policy, CleanupPolicy):
+        raise TypeError(f"policy must be a CleanupPolicy, got {type(policy)}")
     rules = []
-    for rule in policy:
+    for rule in policy.rules:
         if isinstance(rule, KeepOne):
             rules.append(
                 {
@@ -911,7 +934,7 @@ def _cleanup_policy_to_json(policy: Sequence[Union[KeepOne, RemoveAll]]) -> str:
             raise TypeError(
                 f"policy entries must be KeepOne or RemoveAll, got {type(rule)}"
             )
-    return json.dumps(rules)
+    return json.dumps({"rules": rules})
 
 
 class LanceDataset(pa.dataset.Dataset):
@@ -3490,7 +3513,7 @@ class LanceDataset(pa.dataset.Dataset):
         versions: Optional[List[int]] = None,
         delete_concurrency: Optional[int] = None,
         keep_one: Optional[KeepOne] = None,
-        policy: Optional[Sequence[Union[KeepOne, RemoveAll]]] = None,
+        policy: Optional[CleanupPolicy] = None,
     ) -> CleanupStats:
         """
         Cleans up old versions of the dataset.
@@ -3561,7 +3584,7 @@ class LanceDataset(pa.dataset.Dataset):
             The two-day delay bounds exposure to delayed hint writes; it does not
             make hint updates monotonic.
 
-        policy: sequence of KeepOne or RemoveAll, optional
+        policy: CleanupPolicy, optional
             Retention rules ordered by strictly increasing ``older_than`` ages.
             Each version uses the oldest matching KeepOne rule. RemoveAll is
             optional and must be last; without it, sampled history never expires.
@@ -3571,11 +3594,11 @@ class LanceDataset(pa.dataset.Dataset):
             tags and branch protections still apply. Cannot be combined with
             ``older_than`` or ``keep_one``. For example::
 
-                dataset.cleanup_old_versions(policy=[
+                dataset.cleanup_old_versions(policy=CleanupPolicy(rules=[
                     KeepOne(timedelta(hours=1), timedelta(days=2)),
                     KeepOne(timedelta(days=1), timedelta(days=7)),
                     RemoveAll(timedelta(days=30)),
-                ])
+                ]))
         """
         if policy is not None and (older_than is not None or keep_one is not None):
             raise ValueError("policy cannot be combined with older_than or keep_one")
@@ -3586,7 +3609,7 @@ class LanceDataset(pa.dataset.Dataset):
             and keep_one is None
             and policy is None
         ):
-            older_than = timedelta(days=14)
+            policy = CleanupPolicy()
 
         return self._ds.cleanup_old_versions(
             td_to_micros(older_than) if older_than is not None else None,
@@ -3617,7 +3640,7 @@ class LanceDataset(pa.dataset.Dataset):
         include_files: bool = False,
         max_files: int = 1000,
         keep_one: Optional[KeepOne] = None,
-        policy: Optional[Sequence[Union[KeepOne, RemoveAll]]] = None,
+        policy: Optional[CleanupPolicy] = None,
     ) -> CleanupExplanation:
         """
         Explain what :meth:`cleanup_old_versions` would remove without deleting files.
@@ -3658,7 +3681,7 @@ class LanceDataset(pa.dataset.Dataset):
             Thinning interval and minimum age, as in :meth:`cleanup_old_versions`.
             Its age is independent of the expiration ``older_than`` argument.
 
-        policy: sequence of KeepOne or RemoveAll, optional
+        policy: CleanupPolicy, optional
             Ordered retention rules, as in :meth:`cleanup_old_versions`.
             Cannot be combined with ``older_than`` or ``keep_one``.
         """
@@ -3671,7 +3694,7 @@ class LanceDataset(pa.dataset.Dataset):
             and keep_one is None
             and policy is None
         ):
-            older_than = timedelta(days=14)
+            policy = CleanupPolicy()
         if max_files <= 0:
             raise ValueError("max_files must be positive")
 

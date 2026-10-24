@@ -36,10 +36,10 @@
 //! (which should only be done if the caller can guarantee there are no updates
 //! happening at the same time)
 
-mod retention;
+pub mod retention;
 
-use retention::{MIN_THINNING_AGE, validate_retention_policy};
-pub use retention::{RetentionRule, parse_retention_policy};
+use retention::{CleanupPolicy as RetentionPolicy, MIN_THINNING_AGE, validate_retention_policy};
+pub use retention::{CleanupRule, parse_cleanup_policy};
 
 use super::refs::TagContents;
 use crate::dataset::TRANSACTIONS_DIR;
@@ -349,7 +349,7 @@ struct CleanupTask<'a> {
     delete_execution: Option<Arc<DeleteExecution>>,
     dataset: &'a Dataset,
     policy: CleanupPolicy,
-    retention_policy: Option<Vec<RetentionRule>>,
+    retention_policy: Option<Vec<CleanupRule>>,
     thinning_rules: Vec<ThinningRule>,
     thinning_version_floor: Option<u64>,
     action: CleanupAction,
@@ -471,7 +471,7 @@ pub struct CleanupOperation<'a> {
     max_candidate_files: usize,
     delete_concurrency: Option<usize>,
     delete_rate_limit: Option<u64>,
-    retention_policy: Option<Vec<RetentionRule>>,
+    retention_policy: Option<Vec<CleanupRule>>,
 }
 
 impl<'a> CleanupOperation<'a> {
@@ -515,10 +515,10 @@ impl<'a> CleanupOperation<'a> {
     /// # }
     /// ```
     pub fn with_keep_one(self, per_interval: Duration, older_than: Duration) -> Result<Self> {
-        self.with_retention_policy(vec![RetentionRule::KeepOne {
+        self.with_retention_policy(RetentionPolicy::new(vec![CleanupRule::KeepOne {
             per_interval,
             older_than,
-        }])
+        }]))
     }
 
     /// Set age bands for thinning and expiration. Ages must strictly increase;
@@ -528,18 +528,20 @@ impl<'a> CleanupOperation<'a> {
     ///
     /// ```
     /// # use lance::{Dataset, Result};
-    /// # use lance::dataset::cleanup::{CleanupPolicy, RetentionRule};
+    /// # use lance::dataset::cleanup::{CleanupPolicy, CleanupRule};
+    /// # use lance::dataset::cleanup::retention::CleanupPolicy as RetentionPolicy;
     /// # use std::time::Duration;
     /// # async fn example(dataset: &Dataset) -> Result<()> {
-    /// dataset.cleanup(CleanupPolicy::default()).with_retention_policy(vec![
-    ///     RetentionRule::KeepOne { per_interval: Duration::from_secs(3600), older_than: Duration::from_secs(2 * 86_400) },
-    ///     RetentionRule::KeepOne { per_interval: Duration::from_secs(86_400), older_than: Duration::from_secs(7 * 86_400) },
-    ///     RetentionRule::RemoveAll { older_than: Duration::from_secs(30 * 86_400) },
-    /// ])?.execute().await?;
+    /// dataset.cleanup(CleanupPolicy::default()).with_retention_policy(RetentionPolicy::new(vec![
+    ///     CleanupRule::KeepOne { per_interval: Duration::from_secs(3600), older_than: Duration::from_secs(2 * 86_400) },
+    ///     CleanupRule::KeepOne { per_interval: Duration::from_secs(86_400), older_than: Duration::from_secs(7 * 86_400) },
+    ///     CleanupRule::RemoveAll { older_than: Duration::from_secs(30 * 86_400) },
+    /// ]))?.execute().await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub fn with_retention_policy(mut self, rules: Vec<RetentionRule>) -> Result<Self> {
+    pub fn with_retention_policy(mut self, policy: RetentionPolicy) -> Result<Self> {
+        let rules = policy.rules;
         validate_retention_policy(&rules)?;
         self.retention_policy = Some(rules);
         Ok(self)
@@ -704,7 +706,7 @@ impl<'a> CleanupTask<'a> {
     async fn run(mut self) -> Result<CleanupRunResult> {
         if let Some(rules) = &self.retention_policy {
             for rule in rules {
-                if let RetentionRule::RemoveAll { older_than } = rule {
+                if let CleanupRule::RemoveAll { older_than } = rule {
                     let delta = TimeDelta::from_std(*older_than).map_err(|_| {
                         Error::invalid_input(format!(
                             "remove_all.older_than is out of range: {older_than:?}"
@@ -726,7 +728,7 @@ impl<'a> CleanupTask<'a> {
         if self.retention_policy.as_ref().is_some_and(|rules| {
             rules
                 .iter()
-                .any(|rule| matches!(rule, RetentionRule::KeepOne { .. }))
+                .any(|rule| matches!(rule, CleanupRule::KeepOne { .. }))
         }) {
             let anchor = {
                 // Other readers can use a durable hint even when this process disables it.
@@ -786,7 +788,7 @@ impl<'a> CleanupTask<'a> {
             };
             if let Some(rules) = &self.retention_policy {
                 for rule in rules {
-                    if let RetentionRule::KeepOne {
+                    if let CleanupRule::KeepOne {
                         per_interval,
                         older_than,
                     } = rule
@@ -2798,7 +2800,7 @@ async fn build_cleanup_operation<'a>(
                 "lance.auto_cleanup.policy cannot be combined with older_than or keep_one settings",
             ));
         }
-        operation = operation.with_retention_policy(parse_retention_policy(value)?)?;
+        operation = operation.with_retention_policy(parse_cleanup_policy(value)?)?;
     }
     if let Some(value) = manifest
         .config
@@ -2910,6 +2912,44 @@ mod tests {
     use rstest::rstest;
     use uuid::Uuid;
 
+    #[tokio::test]
+    async fn cleanup_default_policy_is_remove_all_after_two_weeks() {
+        let policy = RetentionPolicy::default();
+        assert_eq!(
+            policy.rules(),
+            &[CleanupRule::RemoveAll {
+                older_than: Duration::from_secs(14 * 86_400)
+            }]
+        );
+        let fixture = MockDatasetFixture::try_new_in_memory().unwrap();
+        for (index, hour) in [0, 24, 360].into_iter().enumerate() {
+            MockClock::set_system_time(Duration::from_secs(hour * 3600));
+            if index == 0 {
+                fixture.create_some_data().await.unwrap();
+            } else {
+                fixture.overwrite_some_data().await.unwrap();
+            }
+        }
+        let dataset = fixture.open().await.unwrap();
+        let operation = dataset
+            .cleanup(CleanupPolicy::default())
+            .with_retention_policy(policy)
+            .unwrap();
+        assert_eq!(operation.explain().await.unwrap().stats.old_versions, 1);
+        assert_eq!(operation.execute().await.unwrap().old_versions, 1);
+        assert_eq!(
+            dataset
+                .version_refs()
+                .await
+                .unwrap()
+                .iter()
+                .map(|version| version.version)
+                .collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+        assert_eq!(operation.execute().await.unwrap().old_versions, 0);
+    }
+
     #[rstest]
     #[tokio::test]
     async fn cleanup_retention_policy_ladder(
@@ -2953,11 +2993,11 @@ mod tests {
                 ("lance.auto_cleanup.interval".into(), "1".into()),
                 (
                     "lance.auto_cleanup.policy".into(),
-                    r#"[
+                    r#"{"rules":[
                     {"type":"keep_one","per_interval":"1h","older_than":"2days"},
                     {"type":"keep_one","per_interval":"1day","older_than":"7days"},
                     {"type":"remove_all","older_than":"30days"}
-                ]"#
+                ]}"#
                     .into(),
                 ),
             ]);
@@ -2968,19 +3008,19 @@ mod tests {
         } else {
             dataset
                 .cleanup(CleanupPolicy::default())
-                .with_retention_policy(vec![
-                    RetentionRule::KeepOne {
+                .with_retention_policy(RetentionPolicy::new(vec![
+                    CleanupRule::KeepOne {
                         per_interval: Duration::from_secs(3600),
                         older_than: MIN_THINNING_AGE,
                     },
-                    RetentionRule::KeepOne {
+                    CleanupRule::KeepOne {
                         per_interval: Duration::from_secs(86_400),
                         older_than: Duration::from_secs(7 * 86_400),
                     },
-                    RetentionRule::RemoveAll {
+                    CleanupRule::RemoveAll {
                         older_than: Duration::from_secs(30 * 86_400),
                     },
-                ])
+                ]))
                 .unwrap()
         };
         let mut expected = vec![3, 4, 6, 8, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20];
@@ -3037,16 +3077,16 @@ mod tests {
         let dataset = fixture.open().await.unwrap();
         let operation = dataset
             .cleanup(CleanupPolicy::default())
-            .with_retention_policy(vec![
-                RetentionRule::KeepOne {
+            .with_retention_policy(RetentionPolicy::new(vec![
+                CleanupRule::KeepOne {
                     per_interval: Duration::from_secs(3600),
                     older_than: MIN_THINNING_AGE,
                 },
-                RetentionRule::KeepOne {
+                CleanupRule::KeepOne {
                     per_interval: Duration::from_secs(900),
                     older_than: Duration::from_secs(7 * 86_400),
                 },
-            ])
+            ]))
             .unwrap();
         assert_eq!(operation.explain().await.unwrap().stats.old_versions, 0);
         assert_eq!(operation.execute().await.unwrap().old_versions, 0);
@@ -3078,7 +3118,7 @@ mod tests {
         "at least 2 days"
     )]
     fn cleanup_retention_policy_validation(#[case] value: &str, #[case] message: &str) {
-        let error = parse_retention_policy(value).unwrap_err();
+        let error = parse_cleanup_policy(&format!(r#"{{"rules":{value}}}"#)).unwrap_err();
         assert!(matches!(error, Error::InvalidInput { .. }));
         assert_contains!(error.to_string(), message);
     }
@@ -3496,7 +3536,7 @@ mod tests {
             .cleanup(CleanupPolicy::default())
             .with_keep_one(Duration::from_secs(1), MIN_THINNING_AGE)
             .unwrap();
-        operation.retention_policy = Some(vec![RetentionRule::KeepOne {
+        operation.retention_policy = Some(vec![CleanupRule::KeepOne {
             per_interval: Duration::from_secs(1),
             older_than: age,
         }]);

@@ -31,7 +31,7 @@ use jni::{JNIEnv, objects::JObject};
 use lance::dataset::builder::DatasetBuilder;
 use lance::dataset::cleanup::{
     CleanupCandidateFile, CleanupExplanation, CleanupFileKind, CleanupPolicy,
-    CleanupReferencedBranch, RemovalStats, parse_retention_policy,
+    CleanupReferencedBranch, RemovalStats, parse_cleanup_policy,
 };
 use lance::dataset::optimize::{CompactionOptions as RustCompactionOptions, compact_files};
 use lance::dataset::refs::{Ref, TagContents};
@@ -3689,7 +3689,7 @@ fn inner_cleanup_with_policy<'local>(
             unsafe { env.get_rust_field::<_, _, BlockingDataset>(jdataset, NATIVE_DATASET) }?;
         let mut operation = dataset.inner.cleanup(policy);
         if let Some(value) = retention_policy {
-            operation = operation.with_retention_policy(parse_retention_policy(&value)?)?;
+            operation = operation.with_retention_policy(parse_cleanup_policy(&value)?)?;
         }
         if let Some(concurrency) = delete_concurrency {
             operation = operation.with_delete_concurrency(concurrency)?;
@@ -3753,7 +3753,7 @@ fn inner_explain_cleanup_with_policy<'local>(
             unsafe { env.get_rust_field::<_, _, BlockingDataset>(jdataset, NATIVE_DATASET) }?;
         let mut operation = dataset.inner.cleanup(policy);
         if let Some(value) = retention_policy {
-            operation = operation.with_retention_policy(parse_retention_policy(&value)?)?;
+            operation = operation.with_retention_policy(parse_cleanup_policy(&value)?)?;
         }
         if let Some(limit) = max_candidate_files {
             operation = operation.with_max_candidate_files(limit);

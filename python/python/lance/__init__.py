@@ -23,6 +23,8 @@ from .blob import (
     blob_field,
 )
 from .dataset import (
+    CleanupPolicy,
+    CleanupRule,
     DataStatistics,
     FieldStatistics,
     Index,
@@ -98,6 +100,8 @@ __all__ = [
     "CleanupExplanation",
     "CleanupReferencedBranch",
     "CleanupStats",
+    "CleanupPolicy",
+    "CleanupRule",
     "KeepOne",
     "RemoveAll",
     "DatasetBasePath",

@@ -59,27 +59,30 @@ impl SimilaritySearchOptions {
 }
 
 /// Source blocks are striped across workers; each assigned source probes every
-/// selected target block. Both sides are read as ranges of at most `rows` rows.
+/// selected target block. Both sides are read as ranges of at most `rows_per_block` rows.
 #[derive(Debug, Clone, Copy)]
-pub struct SimilaritySearchSharding {
-    pub rows: usize,
-    pub index: usize,
-    pub count: usize,
+pub struct SimilaritySearchBlocking {
+    pub rows_per_block: usize,
+    pub worker_index: usize,
+    pub worker_count: usize,
 }
-impl Default for SimilaritySearchSharding {
+impl Default for SimilaritySearchBlocking {
     fn default() -> Self {
         Self {
-            rows: 8192,
-            index: 0,
-            count: 1,
+            rows_per_block: 8192,
+            worker_index: 0,
+            worker_count: 1,
         }
     }
 }
-impl SimilaritySearchSharding {
+impl SimilaritySearchBlocking {
     pub fn validate(&self) -> Result<()> {
-        if self.rows == 0 || self.count == 0 || self.index >= self.count {
+        if self.rows_per_block == 0
+            || self.worker_count == 0
+            || self.worker_index >= self.worker_count
+        {
             return Err(Error::invalid_input(
-                "invalid similarity-search shard assignment",
+                "invalid similarity-search worker assignment",
             ));
         }
         Ok(())
@@ -104,29 +107,29 @@ pub async fn find_similar_pairs_in_partition(
     threshold: f32,
     options: SimilaritySearchOptions,
 ) -> Result<SendableRecordBatchStream> {
-    find_similar_pairs_in_partition_with_sharding(
+    find_similar_pairs_in_partition_with_blocking(
         dataset,
         column,
         segment_id,
         partition_id,
         threshold,
         options,
-        SimilaritySearchSharding::default(),
+        SimilaritySearchBlocking::default(),
     )
     .await
 }
 
-pub async fn find_similar_pairs_in_partition_with_sharding(
+pub async fn find_similar_pairs_in_partition_with_blocking(
     dataset: Arc<Dataset>,
     column: &str,
     segment_id: Uuid,
     partition_id: usize,
     threshold: f32,
     options: SimilaritySearchOptions,
-    mut sharding: SimilaritySearchSharding,
+    mut blocking: SimilaritySearchBlocking,
 ) -> Result<SendableRecordBatchStream> {
     options.validate()?;
-    sharding.validate()?;
+    blocking.validate()?;
     let dimension = match dataset
         .schema()
         .field(column)
@@ -135,7 +138,7 @@ pub async fn find_similar_pairs_in_partition_with_sharding(
         Some(DataType::FixedSizeList(_, dimension)) if dimension > 0 => dimension as usize,
         _ => return Err(Error::invalid_input("expected fixed-size vector column")),
     };
-    sharding.rows = sharding
+    blocking.rows_per_block = blocking
         .rows
         .min((16 * 1024 * 1024 / dimension.saturating_mul(8)).max(1));
     if !threshold.is_finite() {
@@ -232,18 +235,20 @@ pub async fn find_similar_pairs_in_partition_with_sharding(
         return Err(Error::invalid_input("source partition out of range"));
     }
     let source_mask = source_mask.ok_or_else(|| Error::internal("missing source row mask"))?;
-    let blocks = source.partition_size(partition_id).div_ceil(sharding.rows);
+    let blocks = source
+        .partition_size(partition_id)
+        .div_ceil(blocking.rows_per_block);
     let source_schema = Arc::new(arrow_schema::Schema::new(vec![
         lance_core::ROW_ID_FIELD.clone(),
     ]));
-    let source =
-        stream::iter((sharding.index..blocks).step_by(sharding.count)).then(move |block| {
+    let source = stream::iter((blocking.worker_index..blocks).step_by(blocking.worker_count)).then(
+        move |block| {
             let source = source.clone();
             let schema = source_schema.clone();
             async move {
-                let start = block * sharding.rows;
+                let start = block * blocking.rows_per_block;
                 let end = start
-                    .saturating_add(sharding.rows)
+                    .saturating_add(blocking.rows_per_block)
                     .min(source.partition_size(partition_id));
                 let ids = source
                     .partition_row_ids_range(partition_id, start..end)
@@ -253,7 +258,8 @@ pub async fn find_similar_pairs_in_partition_with_sharding(
                     vec![Arc::new(ids)],
                 )?)
             }
-        });
+        },
+    );
     let targets = Arc::new(targets);
     let column = column.to_owned();
     let schema = super::dedup::pair_schema();
@@ -320,7 +326,7 @@ pub async fn find_similar_pairs_in_partition_with_sharding(
                                 (id, key),
                                 threshold,
                                 options,
-                                sharding,
+                                blocking,
                             )
                         })
                         .map_err(datafusion::error::DataFusionError::from)
@@ -455,7 +461,7 @@ async fn query_stream(
     source: (u64, ArrayRef),
     threshold: f32,
     options: SimilaritySearchOptions,
-    sharding: SimilaritySearchSharding,
+    blocking: SimilaritySearchBlocking,
 ) -> Result<SendableRecordBatchStream> {
     let (id, raw_key) = source;
     let schema = super::dedup::pair_schema();
@@ -481,13 +487,18 @@ async fn query_stream(
                             let targets = targets.clone();
                             move |(partition, dist_q_c)| {
                                 let count = targets[target_id].index.partition_size(partition);
-                                stream::iter((0..count).step_by(sharding.rows).map(move |start| {
-                                    (
-                                        partition,
-                                        dist_q_c,
-                                        start..start.saturating_add(sharding.rows).min(count),
-                                    )
-                                }))
+                                stream::iter((0..count).step_by(blocking.rows_per_block).map(
+                                    move |start| {
+                                        (
+                                            partition,
+                                            dist_q_c,
+                                            start
+                                                ..start
+                                                    .saturating_add(blocking.rows_per_block)
+                                                    .min(count),
+                                        )
+                                    },
+                                ))
                             }
                         })
                         .then(move |(partition, dist_q_c, rows)| {

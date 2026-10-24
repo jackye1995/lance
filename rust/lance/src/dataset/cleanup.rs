@@ -693,7 +693,7 @@ impl<'a> CleanupTask<'a> {
                 };
                 let anchor_version = hinted_version.unwrap_or(self.read_version);
                 self.thinning_version_floor = Some(anchor_version.min(self.read_version));
-                if anchor_version == self.read_version {
+                if hinted_version.is_none() {
                     self.dataset.manifest.timestamp()
                 } else {
                     let location = self
@@ -3135,10 +3135,14 @@ mod tests {
     }
 
     #[rstest]
-    #[case::malformed(true)]
-    #[case::missing_manifest(false)]
+    #[case::malformed(true, 1)]
+    #[case::missing_historical_manifest(false, 1)]
+    #[case::missing_current_manifest(false, 2)]
     #[tokio::test]
-    async fn cleanup_thinning_fails_on_invalid_hint(#[case] is_malformed: bool) {
+    async fn cleanup_thinning_fails_on_invalid_hint(
+        #[case] is_malformed: bool,
+        #[case] hinted_version: u64,
+    ) {
         let fixture = MockDatasetFixture::try_new().unwrap();
         fixture.create_some_data().await.unwrap();
         fixture.overwrite_some_data().await.unwrap();
@@ -3157,10 +3161,14 @@ mod tests {
                 .await
                 .unwrap();
         } else {
-            write_version_hint(&dataset.object_store, &dataset.base, 1).await;
+            write_version_hint(&dataset.object_store, &dataset.base, hinted_version).await;
             let location = dataset
                 .commit_handler
-                .resolve_version_location(&dataset.base, 1, dataset.object_store.inner.as_ref())
+                .resolve_version_location(
+                    &dataset.base,
+                    hinted_version,
+                    dataset.object_store.inner.as_ref(),
+                )
                 .await
                 .unwrap();
             dataset.object_store.delete(&location.path).await.unwrap();

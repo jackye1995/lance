@@ -566,7 +566,10 @@ dataset.cleanup_old_versions(
 ```
 
 Both durations are configurable. With `keep_one_per` set, `older_than` defaults
-to two days. Each bucket is aligned to the UTC Unix epoch and keeps the newest
+to, and must be at least, two days. The cutoff is the hinted commit's timestamp
+minus `older_than`, falling back to this dataset's commit when no hint exists.
+The hinted version and every later version are retained even if their clocks
+went backwards. Each bucket is aligned to the UTC Unix epoch and keeps the newest
 eligible logical commit timestamp, breaking ties by version number. Tags, the
 current version and branch dependencies remain protected, so a bucket can have
 additional protected versions. Other filters, such as `retain_versions` and
@@ -576,16 +579,17 @@ are available on `explain_cleanup_old_versions` for a preview.
 
 In Rust, use `dataset.cleanup(policy).with_keep_one_per(Duration::from_secs(86_400))?`;
 in Java, use `dataset.cleanup(policy).withKeepOnePer(Duration.ofDays(1))`.
-The policy's timestamp cutoff configures the full-history window in both APIs.
+Use `.with_older_than(Duration::from_secs(2 * 86_400))?` in Rust or
+`.withOlderThan(Duration.ofDays(2))` in Java to configure the age. An absolute
+timestamp in the policy remains an additional filter.
 For automatic cleanup, set `lance.auto_cleanup.keep_one_per` to a duration string
 such as `1day`, and `lance.auto_cleanup.older_than` to `2days`. When thinning is
 unset, cleanup retains its existing behavior.
 
-Time-bucket retention currently requires lexicographically ordered storage
-listings, such as S3 Standard, GCS or Azure. Cleanup rejects this option on
-non-lexical stores, including local filesystems and S3 Express, because their
-version-hint readers cannot safely find the latest version through sparse
-history. Existing cleanup without `keep_one_per` remains available.
+Thinning also supports local filesystems and S3 Express. The hint-relative
+two-day minimum provides a retention buffer for delayed hint writes; it does not
+make hint updates monotonic. On stores using hints, unreadable or malformed hints
+and missing hinted manifests fail cleanup instead of using the wall clock.
 
 !!! note
 

@@ -3491,14 +3491,15 @@ class LanceDataset(pa.dataset.Dataset):
         keep_one_per: timedelta, optional
             Keep the newest eligible commit per UTC epoch-aligned period, breaking
             timestamp ties by version. Must be positive. All versions newer than
-            ``older_than`` are retained; its default is two days when thinning is
-            enabled. Protected versions can add extra survivors to a period.
+            ``older_than`` are retained; when thinning is enabled its default and
+            minimum are two days, measured from the hinted commit timestamp (or
+            this dataset's commit if no hint exists), rather than wall time.
+            The hinted version and all later versions are protected even if their
+            clocks went backwards. Protected versions can add extra survivors.
             For daily history after two days, use
             ``older_than=timedelta(days=2), keep_one_per=timedelta(days=1)``.
-            Requires lexicographically ordered storage listings, such as S3
-            Standard, GCS or Azure. Local filesystems and S3 Express are currently
-            unsupported because their version-hint readers cannot safely handle
-            sparse history.
+            The two-day delay bounds exposure to delayed hint writes; it does not
+            make hint updates monotonic.
         """
         if older_than is None and retain_versions is None and versions is None:
             older_than = timedelta(days=2 if keep_one_per is not None else 14)
@@ -3564,8 +3565,8 @@ class LanceDataset(pa.dataset.Dataset):
         keep_one_per: timedelta, optional
             Keep the newest eligible commit per UTC epoch-aligned period, as in
             :meth:`cleanup_old_versions`. Must be positive. When set, the default
-            age cutoff is two days.
-            Requires storage with lexicographically ordered listings.
+            age is two days and must be at least two days, measured from the hinted
+            commit (or this dataset's commit when no hint exists).
         """
         if older_than is None and retain_versions is None and versions is None:
             older_than = timedelta(days=2 if keep_one_per is not None else 14)

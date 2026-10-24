@@ -1832,7 +1832,7 @@ def test_cleanup_rejects_invalid_keep_one_per(tmp_path: Path, period):
 
 
 def test_cleanup_keeps_one_per_period(tmp_path: Path):
-    uri = f"shared-memory://{tmp_path.name}"
+    uri = tmp_path
     table = pa.table({"a": [1, 2, 3, 4]})
     ds = lance.write_dataset(table, uri, max_rows_per_file=2)
     for _ in range(3):
@@ -1840,25 +1840,28 @@ def test_cleanup_keeps_one_per_period(tmp_path: Path):
     assert ds.cleanup_old_versions(keep_one_per=timedelta(days=1)).old_versions == 0
     period = timedelta(days=365 * 10_000)
     explanation = ds.explain_cleanup_old_versions(
-        older_than=timedelta(0), keep_one_per=period
+        older_than=timedelta(days=2), keep_one_per=period
     )
-    assert explanation.stats.old_versions == 2
+    assert explanation.stats.old_versions == 0
     assert len(ds.versions()) == 4
-    stats = ds.cleanup_old_versions(older_than=timedelta(0), keep_one_per=period)
+    stats = ds.cleanup_old_versions(older_than=timedelta(days=2), keep_one_per=period)
     assert stats.old_versions == explanation.stats.old_versions
-    assert stats.data_files_removed == explanation.stats.data_files_removed == 4
+    assert stats.data_files_removed == explanation.stats.data_files_removed == 0
     assert stats.bytes_removed == explanation.stats.bytes_removed
-    assert [v["version"] for v in ds.versions()] == [3, 4]
+    assert [v["version"] for v in ds.versions()] == [1, 2, 3, 4]
     assert lance.dataset(uri, version=3).to_table() == table
     assert ds.to_table() == table
 
 
-def test_cleanup_rejects_thinning_on_non_lexical_storage(tmp_path: Path):
+@pytest.mark.parametrize(
+    "age", [timedelta(0), timedelta(days=1), timedelta(days=2, microseconds=-1)]
+)
+def test_cleanup_thinning_requires_two_days(tmp_path: Path, age):
     ds = lance.write_dataset(pa.table({"a": [1, 2]}), tmp_path)
-    with pytest.raises(OSError, match="keep_one_per requires lexicographically"):
-        ds.cleanup_old_versions(keep_one_per=timedelta(days=1))
-    with pytest.raises(OSError, match="keep_one_per requires lexicographically"):
-        ds.explain_cleanup_old_versions(keep_one_per=timedelta(days=1))
+    with pytest.raises(OSError, match="older_than must be at least 2 days"):
+        ds.cleanup_old_versions(older_than=age, keep_one_per=timedelta(days=1))
+    with pytest.raises(OSError, match="older_than must be at least 2 days"):
+        ds.explain_cleanup_old_versions(older_than=age, keep_one_per=timedelta(days=1))
     assert len(ds.versions()) == 1
 
 

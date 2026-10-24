@@ -3641,6 +3641,7 @@ pub extern "system" fn Java_org_lance_Dataset_nativeCleanupWithPolicy<'local>(
     jdelete_concurrency: JObject,
     jdelete_rate_limit: JObject,
     jkeep_one_per_millis: JObject,
+    jolder_than_millis: JObject,
 ) -> JObject<'local> {
     ok_or_throw!(
         env,
@@ -3650,7 +3651,8 @@ pub extern "system" fn Java_org_lance_Dataset_nativeCleanupWithPolicy<'local>(
             jpolicy,
             jdelete_concurrency,
             jdelete_rate_limit,
-            jkeep_one_per_millis
+            jkeep_one_per_millis,
+            jolder_than_millis
         )
     )
 }
@@ -3662,8 +3664,19 @@ fn inner_cleanup_with_policy<'local>(
     jdelete_concurrency: JObject,
     jdelete_rate_limit: JObject,
     jkeep_one_per_millis: JObject,
+    jolder_than_millis: JObject,
 ) -> Result<JObject<'local>> {
     let policy = extract_cleanup_policy(env, &jpolicy)?;
+    let older_than = env.get_optional(&jolder_than_millis, |env, obj| {
+        let value = env.call_method(obj, "longValue", "()J", &[])?.j()?;
+        u64::try_from(value)
+            .map(Duration::from_millis)
+            .map_err(|_| {
+                Error::input_error(format!(
+                    "older_than must be non-negative, got {value} milliseconds"
+                ))
+            })
+    })?;
     let keep_one_per = env.get_optional(&jkeep_one_per_millis, |env, obj| {
         let value = env.call_method(obj, "longValue", "()J", &[])?.j()?;
         u64::try_from(value)
@@ -3698,6 +3711,9 @@ fn inner_cleanup_with_policy<'local>(
         if let Some(period) = keep_one_per {
             operation = operation.with_keep_one_per(period)?;
         }
+        if let Some(age) = older_than {
+            operation = operation.with_older_than(age)?;
+        }
         if let Some(concurrency) = delete_concurrency {
             operation = operation.with_delete_concurrency(concurrency)?;
         }
@@ -3717,6 +3733,7 @@ pub extern "system" fn Java_org_lance_Dataset_nativeExplainCleanupWithPolicy<'lo
     jpolicy: JObject,
     jmax_candidate_files: JObject,
     jkeep_one_per_millis: JObject,
+    jolder_than_millis: JObject,
 ) -> JObject<'local> {
     ok_or_throw!(
         env,
@@ -3725,7 +3742,8 @@ pub extern "system" fn Java_org_lance_Dataset_nativeExplainCleanupWithPolicy<'lo
             jdataset,
             jpolicy,
             jmax_candidate_files,
-            jkeep_one_per_millis
+            jkeep_one_per_millis,
+            jolder_than_millis
         )
     )
 }
@@ -3736,8 +3754,19 @@ fn inner_explain_cleanup_with_policy<'local>(
     jpolicy: JObject,
     jmax_candidate_files: JObject,
     jkeep_one_per_millis: JObject,
+    jolder_than_millis: JObject,
 ) -> Result<JObject<'local>> {
     let policy = extract_cleanup_policy(env, &jpolicy)?;
+    let older_than = env.get_optional(&jolder_than_millis, |env, obj| {
+        let value = env.call_method(obj, "longValue", "()J", &[])?.j()?;
+        u64::try_from(value)
+            .map(Duration::from_millis)
+            .map_err(|_| {
+                Error::input_error(format!(
+                    "older_than must be non-negative, got {value} milliseconds"
+                ))
+            })
+    })?;
     let keep_one_per = env.get_optional(&jkeep_one_per_millis, |env, obj| {
         let value = env.call_method(obj, "longValue", "()J", &[])?.j()?;
         u64::try_from(value)
@@ -3768,6 +3797,9 @@ fn inner_explain_cleanup_with_policy<'local>(
         let mut operation = dataset.inner.cleanup(policy);
         if let Some(period) = keep_one_per {
             operation = operation.with_keep_one_per(period)?;
+        }
+        if let Some(age) = older_than {
+            operation = operation.with_older_than(age)?;
         }
         if let Some(limit) = max_candidate_files {
             operation = operation.with_max_candidate_files(limit);

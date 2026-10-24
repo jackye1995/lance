@@ -845,7 +845,7 @@ impl Dataset {
         keep_one_per_micros: Option<i64>,
     ) -> lance_core::Result<lance::dataset::cleanup::CleanupOperation<'_>> {
         let mut builder = CleanupPolicyBuilder::default();
-        if let Some(v) = older_than_micros {
+        if let Some(v) = older_than_micros.filter(|_| keep_one_per_micros.is_none()) {
             let older_than = Duration::microseconds(v);
             builder = builder.before_timestamp(Utc::now() - older_than);
         }
@@ -869,6 +869,12 @@ impl Dataset {
                 ))
             })?);
             operation = operation.with_keep_one_per(period)?;
+            if let Some(value) = older_than_micros {
+                let age = u64::try_from(value).map_err(|_| lance::Error::invalid_input(
+                    format!("older_than must be at least 2 days when keep_one_per is set, got {value} microseconds")
+                ))?;
+                operation = operation.with_older_than(std::time::Duration::from_micros(age))?;
+            }
         }
         Ok(operation)
     }

@@ -57,7 +57,7 @@ use lance_table::{
     feature_flags::{ensure_can_read_manifest, ensure_can_write_manifest},
     format::{IndexMetadata, Manifest},
     io::{
-        commit::{ManifestLocation, ManifestNamingScheme},
+        commit::{ManifestLocation, ManifestNamingScheme, read_version_hint, uses_version_hint},
         deletion::deletion_file_path,
         manifest::{read_manifest, read_manifest_indexes},
     },
@@ -344,6 +344,8 @@ struct CleanupTask<'a> {
     dataset: &'a Dataset,
     policy: CleanupPolicy,
     keep_one_per: Option<Duration>,
+    older_than: Option<Duration>,
+    thinning_version_floor: Option<u64>,
     action: CleanupAction,
     read_version: u64,
     ignored_manifests: HashSet<Path>,
@@ -445,6 +447,16 @@ impl CleanupInspection {
 /// this many days old.
 const UNVERIFIED_THRESHOLD_DAYS: i64 = 7;
 const DEFAULT_EXPLANATION_MAX_CANDIDATE_FILES: usize = 1_000;
+const MIN_THINNING_AGE: Duration = Duration::from_secs(2 * 86_400);
+
+fn validate_thinning_age(age: Duration) -> Result<()> {
+    if age < MIN_THINNING_AGE {
+        return Err(Error::invalid_input(format!(
+            "older_than must be at least 2 days when keep_one_per is set, got {age:?}"
+        )));
+    }
+    Ok(())
+}
 
 /// Builder-style cleanup operation.
 ///
@@ -458,6 +470,7 @@ pub struct CleanupOperation<'a> {
     delete_concurrency: Option<usize>,
     delete_rate_limit: Option<u64>,
     keep_one_per: Option<Duration>,
+    older_than: Option<Duration>,
 }
 
 impl<'a> CleanupOperation<'a> {
@@ -469,6 +482,7 @@ impl<'a> CleanupOperation<'a> {
             delete_concurrency: None,
             delete_rate_limit: None,
             keep_one_per: None,
+            older_than: None,
         }
     }
 
@@ -477,26 +491,24 @@ impl<'a> CleanupOperation<'a> {
     /// Buckets use logical commit timestamps, with the higher version breaking ties.
     /// Only versions matching all policy filters participate. Tags, current/newer
     /// versions and branch dependencies retain their usual protection, so a bucket
-    /// may contain additional protected versions. Without a timestamp filter, keep
-    /// all versions from the last two days; set [`CleanupPolicy::before_timestamp`]
-    /// to configure this age cutoff. Without this option, cleanup deletes every
-    /// eligible version as before. A zero period returns an invalid-input error.
-    /// Requires lexicographically ordered object-store listings (for example,
-    /// S3 Standard, GCS or Azure). Non-lexical stores, including local filesystems
-    /// and S3 Express, return a not-supported error: their version-hint readers
-    /// cannot safely discover the latest version through sparse history.
+    /// may contain additional protected versions. The full-history window defaults
+    /// to two days and must be at least two days; use [`Self::with_older_than`] to
+    /// configure it. Its cutoff is relative to the hinted commit's timestamp,
+    /// falling back to this dataset's commit when no hint exists. The hinted
+    /// version and all later versions remain intact even with disordered clocks.
+    /// The two-day delay bounds exposure to delayed hint writes; it does not make
+    /// hint updates monotonic. Without this option, cleanup behaves as before.
+    /// A zero period returns an invalid-input error.
     ///
     /// ```
     /// # use lance::{Dataset, Result};
     /// # use lance::dataset::cleanup::CleanupPolicyBuilder;
-    /// # use chrono::{Utc, TimeDelta};
     /// # use std::time::Duration;
     /// # async fn example(dataset: &Dataset) -> Result<()> {
-    /// let policy = CleanupPolicyBuilder::default()
-    ///     .before_timestamp(Utc::now() - TimeDelta::days(2))
-    ///     .build();
+    /// let policy = CleanupPolicyBuilder::default().build();
     /// dataset.cleanup(policy)
     ///     .with_keep_one_per(Duration::from_secs(86_400))?
+    ///     .with_older_than(Duration::from_secs(2 * 86_400))?
     ///     .execute().await?;
     /// # Ok(())
     /// # }
@@ -507,12 +519,26 @@ impl<'a> CleanupOperation<'a> {
                 "keep_one_per must be greater than zero",
             ));
         }
-        if !self.dataset.object_store.list_is_lexically_ordered {
-            return Err(Error::not_supported(
-                "keep_one_per requires lexicographically ordered listings; version-hint readers on non-lexical stores cannot safely read sparse history",
-            ));
+        if let Some(age) = self.older_than {
+            validate_thinning_age(age)?;
         }
         self.keep_one_per = Some(period);
+        Ok(self)
+    }
+
+    /// Set the age of versions eligible for cleanup, intersecting policy filters.
+    ///
+    /// With time-bucket retention, this must be at least two days (also the
+    /// default) and is measured from the hinted commit, or this dataset's commit
+    /// when no hint exists. Without thinning it is measured from the current time.
+    /// Invalid thinning ages are rejected by both explain and execute.
+    pub fn with_older_than(mut self, age: Duration) -> Result<Self> {
+        TimeDelta::from_std(age)
+            .map_err(|_| Error::invalid_input(format!("older_than is out of range: {age:?}")))?;
+        if self.keep_one_per.is_some() {
+            validate_thinning_age(age)?;
+        }
+        self.older_than = Some(age);
         Ok(self)
     }
 
@@ -619,9 +645,8 @@ impl<'a> CleanupTask<'a> {
         include_referenced_branches: bool,
         mut delete_execution: Option<Arc<DeleteExecution>>,
     ) -> Result<Self> {
-        let mut policy = operation.policy.clone();
-        if operation.keep_one_per.is_some() && policy.before_timestamp.is_none() {
-            policy.before_timestamp = Some(utc_now() - TimeDelta::days(2));
+        if operation.keep_one_per.is_some() {
+            validate_thinning_age(operation.older_than.unwrap_or(MIN_THINNING_AGE))?;
         }
         if action.deletes_files() && delete_execution.is_none() {
             let concurrency = operation
@@ -641,8 +666,10 @@ impl<'a> CleanupTask<'a> {
         Ok(Self {
             delete_execution,
             dataset: operation.dataset,
-            policy,
+            policy: operation.policy.clone(),
             keep_one_per: operation.keep_one_per,
+            older_than: operation.older_than,
+            thinning_version_floor: None,
             action,
             read_version: operation.dataset.version().version,
             ignored_manifests,
@@ -651,7 +678,54 @@ impl<'a> CleanupTask<'a> {
         })
     }
 
-    async fn run(self) -> Result<CleanupRunResult> {
+    async fn run(mut self) -> Result<CleanupRunResult> {
+        if self.keep_one_per.is_some() || self.older_than.is_some() {
+            let age = self.older_than.unwrap_or(MIN_THINNING_AGE);
+            let delta = TimeDelta::from_std(age).map_err(|_| {
+                Error::invalid_input(format!("older_than is out of range: {age:?}"))
+            })?;
+            let anchor = if self.keep_one_per.is_some() {
+                let hinted_version = if uses_version_hint(&self.dataset.object_store) {
+                    read_version_hint(&self.dataset.object_store, &self.dataset.base).await?
+                } else {
+                    None
+                };
+                let floor = hinted_version
+                    .unwrap_or(self.read_version)
+                    .min(self.read_version);
+                self.thinning_version_floor = Some(floor);
+                if floor == self.read_version {
+                    self.dataset.manifest.timestamp()
+                } else {
+                    let location = self
+                        .dataset
+                        .commit_handler
+                        .resolve_version_location(
+                            &self.dataset.base,
+                            floor,
+                            self.dataset.object_store.inner.as_ref(),
+                        )
+                        .await?;
+                    let manifest =
+                        read_manifest(&self.dataset.object_store, &location.path, location.size)
+                            .await?;
+                    ensure_can_read_manifest(&manifest)?;
+                    manifest.timestamp()
+                }
+            } else {
+                utc_now()
+            };
+            let cutoff = anchor.checked_sub_signed(delta).ok_or_else(|| {
+                Error::invalid_input(format!(
+                    "older_than={age:?} underflows anchor timestamp {anchor}"
+                ))
+            })?;
+            self.policy.before_timestamp = Some(
+                self.policy
+                    .before_timestamp
+                    .map_or(cutoff, |existing| existing.min(cutoff)),
+            );
+        }
         let mut final_result = CleanupRunResult::default();
         let candidate_file_limit = self.action.candidate_file_limit();
         // First check if we need to clean referenced branches
@@ -945,7 +1019,10 @@ impl<'a> CleanupTask<'a> {
         // Don't delete the latest version, even if it is old. Don't delete tagged versions,
         // regardless of age. Don't delete manifests if their version is newer than the dataset
         // version.  These are either in-progress or newly added since we started.
-        let is_latest = self.read_version <= manifest.version;
+        let is_latest = self.read_version <= manifest.version
+            || self
+                .thinning_version_floor
+                .is_some_and(|floor| manifest.version >= floor);
         let is_tagged = tagged_versions.contains(&manifest.version);
         let in_working_set = retain_bucket_survivor
             || is_latest
@@ -2566,6 +2643,7 @@ async fn build_cleanup_operation<'a>(
     }
 
     let mut builder = CleanupPolicyBuilder::default();
+    let mut configured_age = None;
     if let Some(older_than) = manifest.config.get("lance.auto_cleanup.older_than") {
         let std_older_than = match parse_duration(older_than) {
             Ok(t) => t,
@@ -2578,8 +2656,15 @@ async fn build_cleanup_operation<'a>(
                 });
             }
         };
-        let timestamp = utc_now() - TimeDelta::from_std(std_older_than).unwrap_or(TimeDelta::MAX);
-        builder = builder.before_timestamp(timestamp);
+        if !manifest
+            .config
+            .contains_key("lance.auto_cleanup.keep_one_per")
+        {
+            let timestamp =
+                utc_now() - TimeDelta::from_std(std_older_than).unwrap_or(TimeDelta::MAX);
+            builder = builder.before_timestamp(timestamp);
+        }
+        configured_age = Some(std_older_than);
     }
     if let Some(retain_versions) = manifest.config.get("lance.auto_cleanup.retain_versions") {
         let retain_versions: usize = match retain_versions.parse() {
@@ -2628,6 +2713,10 @@ async fn build_cleanup_operation<'a>(
             message: format!("Error parsing lance.auto_cleanup.keep_one_per={value:?}: {error}"),
         })?;
         operation = operation.with_keep_one_per(period)?;
+        if let Some(age) = configured_age {
+            operation.policy.before_timestamp = None;
+            operation = operation.with_older_than(age)?;
+        }
     }
     if !cascade && let Some(value) = manifest.config.get("lance.auto_cleanup.delete_concurrency") {
         let concurrency = value.parse::<usize>().map_err(|error| Error::Cleanup {
@@ -2699,7 +2788,7 @@ mod tests {
         ObjectStore, ObjectStoreParams, ObjectStoreRegistry, WrappingObjectStore,
     };
     use lance_linalg::distance::MetricType;
-    use lance_table::io::commit::RenameCommitHandler;
+    use lance_table::io::commit::{RenameCommitHandler, write_version_hint};
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32, RandomVector, some_batch};
     use mock_instant::thread_local::MockClock;
     use object_store::ObjectStoreExt;
@@ -2718,7 +2807,7 @@ mod tests {
         #[values(false, true)] auto_config: bool,
     ) {
         let fixture = MockDatasetFixture::try_new_in_memory().unwrap();
-        for (index, hour) in [0, 2, 1, 12, 24, 26, 26, 48, 49, 72]
+        for (index, hour) in [0, 2, 1, 12, 24, 26, 26, 48, 49, 96]
             .into_iter()
             .enumerate()
         {
@@ -2805,6 +2894,7 @@ mod tests {
         fixture.create_some_data().await.unwrap();
         fixture.overwrite_some_data().await.unwrap();
         fixture.overwrite_some_data().await.unwrap();
+        MockClock::set_system_time(Duration::from_secs(3 * 86_400));
         fixture.overwrite_some_data().await.unwrap();
         let dataset = fixture.open().await.unwrap();
         dataset.tags().create("keep-first", 1).await.unwrap();
@@ -2887,9 +2977,9 @@ mod tests {
             .await
             .unwrap();
         let expected = branch.scan().try_into_batch().await.unwrap();
-        MockClock::set_system_time(Duration::from_secs(1));
+        MockClock::set_system_time(Duration::from_secs(3600));
         fixture.overwrite_some_data().await.unwrap();
-        MockClock::set_system_time(Duration::from_secs(2));
+        MockClock::set_system_time(Duration::from_secs(3 * 86_400));
         fixture.overwrite_some_data().await.unwrap();
         let parent = fixture.open().await.unwrap();
         let operation = parent
@@ -2898,7 +2988,7 @@ mod tests {
                     .before_timestamp(utc_now())
                     .build(),
             )
-            .with_keep_one_per(Duration::from_secs(60))
+            .with_keep_one_per(Duration::from_secs(86_400))
             .unwrap();
         assert_eq!(operation.execute().await.unwrap().old_versions, 0);
         let branch = parent.checkout_version(("keep-root", None)).await.unwrap();
@@ -2906,34 +2996,178 @@ mod tests {
         assert_eq!(parent.version_refs().await.unwrap().len(), 3);
     }
 
+    #[rstest]
+    #[case::default(None, 1)]
+    #[case::three_days(Some(Duration::from_secs(3 * 86_400)), 0)]
     #[tokio::test]
-    async fn cleanup_thinning_rejects_non_lexical_storage() {
+    async fn cleanup_thinning_anchors_to_hint(
+        #[case] age: Option<Duration>,
+        #[case] expected_removed: u64,
+        #[values(false, true)] auto_config: bool,
+    ) {
         let fixture = MockDatasetFixture::try_new().unwrap();
-        fixture.create_some_data().await.unwrap();
-        fixture.overwrite_some_data().await.unwrap();
+        for (index, hour) in [0, 1, 24, 25, 48, 49, 72, 1, 120].into_iter().enumerate() {
+            MockClock::set_system_time(Duration::from_secs(hour * 3600));
+            if index == 0 {
+                fixture.create_some_data().await.unwrap();
+            } else {
+                fixture.overwrite_some_data().await.unwrap();
+            }
+        }
         let dataset = fixture.open().await.unwrap();
         assert!(!dataset.object_store.list_is_lexically_ordered);
+        write_version_hint(&dataset.object_store, &dataset.base, 7).await;
+        MockClock::set_system_time(Duration::from_secs(30 * 86_400));
+        let operation = if auto_config {
+            let mut manifest = dataset.manifest.as_ref().clone();
+            manifest.config.extend([
+                ("lance.auto_cleanup.interval".into(), "1".into()),
+                ("lance.auto_cleanup.keep_one_per".into(), "1day".into()),
+            ]);
+            if let Some(age) = age {
+                manifest.config.insert(
+                    "lance.auto_cleanup.older_than".into(),
+                    format!("{}s", age.as_secs()),
+                );
+            }
+            build_cleanup_operation(&dataset, &manifest, false)
+                .await
+                .unwrap()
+                .unwrap()
+        } else {
+            let operation = dataset
+                .cleanup(CleanupPolicy::default())
+                .with_keep_one_per(Duration::from_secs(86_400))
+                .unwrap();
+            if let Some(age) = age {
+                operation.with_older_than(age).unwrap()
+            } else {
+                operation
+            }
+        };
+        let before = fixture.count_files().await.unwrap();
+        assert_eq!(
+            operation.explain().await.unwrap().stats.old_versions,
+            expected_removed
+        );
+        assert_eq!(before, fixture.count_files().await.unwrap());
+        assert_eq!(
+            operation.execute().await.unwrap().old_versions,
+            expected_removed
+        );
+        let expected: Vec<_> = ((1 + expected_removed)..=9).collect();
+        assert_eq!(
+            dataset
+                .version_refs()
+                .await
+                .unwrap()
+                .iter()
+                .map(|v| v.version)
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(dataset.latest_version_id().await.unwrap(), 9);
+        for version in expected {
+            dataset
+                .checkout_version(version)
+                .await
+                .unwrap()
+                .scan()
+                .try_into_batch()
+                .await
+                .unwrap();
+        }
+    }
+
+    #[rstest]
+    #[case::zero(Duration::ZERO)]
+    #[case::one_day(Duration::from_secs(86_400))]
+    #[case::just_below(Duration::from_nanos(2 * 86_400 * 1_000_000_000 - 1))]
+    #[tokio::test]
+    async fn cleanup_thinning_requires_two_days(#[case] age: Duration) {
+        let fixture = MockDatasetFixture::try_new().unwrap();
+        fixture.create_some_data().await.unwrap();
+        let dataset = fixture.open().await.unwrap();
         let before = fixture.count_files().await.unwrap();
         let error = dataset
             .cleanup(CleanupPolicy::default())
-            .with_keep_one_per(Duration::from_secs(2))
+            .with_keep_one_per(Duration::from_secs(1))
+            .unwrap()
+            .with_older_than(age)
             .err()
             .unwrap();
-        assert!(matches!(error, Error::NotSupported { .. }));
-        assert_contains!(error.to_string(), "version-hint readers");
+        assert!(matches!(error, Error::InvalidInput { .. }));
+        assert_contains!(error.to_string(), "older_than must be at least 2 days");
+        let error = dataset
+            .cleanup(CleanupPolicy::default())
+            .with_older_than(age)
+            .unwrap()
+            .with_keep_one_per(Duration::from_secs(1))
+            .err()
+            .unwrap();
+        assert_contains!(error.to_string(), "older_than must be at least 2 days");
+        let mut operation = dataset
+            .cleanup(CleanupPolicy::default())
+            .with_keep_one_per(Duration::from_secs(1))
+            .unwrap();
+        operation.older_than = Some(age);
+        assert!(operation.explain().await.is_err());
+        assert!(operation.execute().await.is_err());
         let mut manifest = dataset.manifest.as_ref().clone();
         manifest.config.extend([
             ("lance.auto_cleanup.interval".into(), "1".into()),
-            ("lance.auto_cleanup.keep_one_per".into(), "2s".into()),
+            ("lance.auto_cleanup.keep_one_per".into(), "1s".into()),
+            ("lance.auto_cleanup.older_than".into(), "1day".into()),
         ]);
         let error = build_cleanup_operation(&dataset, &manifest, false)
             .await
             .err()
             .unwrap();
-        assert!(matches!(error, Error::NotSupported { .. }));
-        assert_contains!(error.to_string(), "version-hint readers");
+        assert_contains!(error.to_string(), "older_than must be at least 2 days");
         assert_eq!(before, fixture.count_files().await.unwrap());
-        assert_eq!(dataset.version_refs().await.unwrap().len(), 2);
+    }
+
+    #[rstest]
+    #[case::malformed(true)]
+    #[case::missing_manifest(false)]
+    #[tokio::test]
+    async fn cleanup_thinning_fails_on_invalid_hint(#[case] is_malformed: bool) {
+        let fixture = MockDatasetFixture::try_new().unwrap();
+        fixture.create_some_data().await.unwrap();
+        fixture.overwrite_some_data().await.unwrap();
+        let dataset = fixture.open().await.unwrap();
+        if is_malformed {
+            dataset
+                .object_store
+                .put(
+                    &dataset.base.join("_versions/latest_version_hint.json"),
+                    b"invalid",
+                )
+                .await
+                .unwrap();
+        } else {
+            write_version_hint(&dataset.object_store, &dataset.base, 1).await;
+            let location = dataset
+                .commit_handler
+                .resolve_version_location(&dataset.base, 1, dataset.object_store.inner.as_ref())
+                .await
+                .unwrap();
+            dataset.object_store.delete(&location.path).await.unwrap();
+        }
+        let before = fixture.count_files().await.unwrap();
+        let operation = dataset
+            .cleanup(CleanupPolicy::default())
+            .with_keep_one_per(Duration::from_secs(1))
+            .unwrap();
+        let error = operation.explain().await.unwrap_err();
+        if is_malformed {
+            assert!(matches!(error, Error::InvalidInput { .. }));
+            assert_contains!(error.to_string(), "Invalid version hint");
+        } else {
+            assert!(error.is_not_found(), "{error}");
+        }
+        assert!(operation.execute().await.is_err());
+        assert_eq!(before, fixture.count_files().await.unwrap());
     }
 
     #[rstest]

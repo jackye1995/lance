@@ -41,7 +41,7 @@ public class CleanupTest {
   public void testCleanupKeepOnePer(@TempDir Path tempDir) {
     try (RootAllocator allocator = new RootAllocator(Long.MAX_VALUE)) {
       TestUtils.SimpleTestDataset fixture =
-          new TestUtils.SimpleTestDataset(allocator, "shared-memory://" + tempDir.getFileName());
+          new TestUtils.SimpleTestDataset(allocator, tempDir.resolve("thinning").toString());
       fixture.createEmptyDataset().close();
       fixture.write(1, 10).close();
       fixture.write(2, 10).close();
@@ -54,12 +54,15 @@ public class CleanupTest {
                 .withBeforeTimestampMillis(System.currentTimeMillis() + 1000)
                 .build();
         CleanupOperation cleanup =
-            dataset.cleanup(policy).withKeepOnePer(Duration.ofDays(365L * 10_000));
-        assertEquals(2L, cleanup.explain().getStats().getOldVersions());
+            dataset
+                .cleanup(policy)
+                .withKeepOnePer(Duration.ofDays(365L * 10_000))
+                .withOlderThan(Duration.ofDays(2));
+        assertEquals(0L, cleanup.explain().getStats().getOldVersions());
         assertEquals(4, dataset.listVersions().size());
-        assertEquals(2L, cleanup.execute().getOldVersions());
+        assertEquals(0L, cleanup.execute().getOldVersions());
         assertEquals(
-            List.of(3L, 4L),
+            List.of(1L, 2L, 3L, 4L),
             dataset.listVersions().stream().map(Version::getId).collect(Collectors.toList()));
         Assertions.assertThrows(
             IllegalArgumentException.class,
@@ -72,15 +75,18 @@ public class CleanupTest {
   }
 
   @Test
-  public void testCleanupRejectsThinningOnNonLexicalStorage(@TempDir Path tempDir) {
+  public void testCleanupThinningRequiresTwoDays(@TempDir Path tempDir) {
     try (RootAllocator allocator = new RootAllocator(Long.MAX_VALUE)) {
       TestUtils.SimpleTestDataset fixture =
           new TestUtils.SimpleTestDataset(allocator, tempDir.resolve("unsupported").toString());
       try (Dataset dataset = fixture.createEmptyDataset()) {
         CleanupOperation cleanup =
-            dataset.cleanup(CleanupPolicy.builder().build()).withKeepOnePer(Duration.ofDays(1));
+            dataset
+                .cleanup(CleanupPolicy.builder().build())
+                .withKeepOnePer(Duration.ofDays(1))
+                .withOlderThan(Duration.ofDays(1));
         RuntimeException error = Assertions.assertThrows(RuntimeException.class, cleanup::explain);
-        assertTrue(error.getMessage().contains("keep_one_per requires lexicographically"));
+        assertTrue(error.getMessage().contains("older_than must be at least 2 days"));
         Assertions.assertThrows(RuntimeException.class, cleanup::execute);
         assertEquals(1, dataset.listVersions().size());
       }

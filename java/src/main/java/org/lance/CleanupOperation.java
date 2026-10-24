@@ -35,6 +35,7 @@ public class CleanupOperation {
   private Optional<Long> deleteRateLimit = Optional.empty();
   private Optional<Long> maxCandidateFiles = Optional.empty();
   private Optional<Long> keepOnePerMillis = Optional.empty();
+  private Optional<Long> olderThanMillis = Optional.empty();
 
   CleanupOperation(Dataset dataset, CleanupPolicy policy) {
     this.dataset = Preconditions.checkNotNull(dataset, "dataset cannot be null");
@@ -45,11 +46,11 @@ public class CleanupOperation {
    * Keep the newest eligible commit per UTC epoch-aligned period, breaking timestamp ties by
    * version. Tags, current/newer versions and branch dependencies remain protected, so a period may
    * contain additional protected versions. Defaults to retaining full history for two days; use
-   * {@link CleanupPolicy.Builder#withBeforeTimestampMillis(long)} to configure the cutoff. Without
-   * this option, cleanup removes all eligible versions as before. Requires lexicographically
-   * ordered storage listings, such as S3 Standard, GCS or Azure. Local filesystems and S3 Express
-   * are currently unsupported because their version-hint readers cannot safely handle sparse
-   * history; rejected on explain or execute.
+   * {@link #withOlderThan(Duration)} to configure the age, which must be at least two days. The
+   * cutoff is relative to the hinted commit timestamp, or this dataset's commit if no hint exists.
+   * The hinted version and every later version remain intact. This delay bounds exposure to delayed
+   * hint writes; it does not make hint updates monotonic. Without this option, cleanup removes all
+   * eligible versions as before.
    *
    * <p>Example: {@code dataset.cleanup(policy).withKeepOnePer(Duration.ofDays(1)).execute()}.
    *
@@ -64,6 +65,26 @@ public class CleanupOperation {
         "keep_one_per must be positive with millisecond precision, got %s",
         period);
     this.keepOnePerMillis = Optional.of(millis);
+    return this;
+  }
+
+  /**
+   * Configure the age of versions eligible for cleanup, intersecting policy filters. With thinning
+   * this defaults to, and must be at least, two days measured from the hinted commit (or this
+   * dataset's commit without a hint). Otherwise it is measured from current time. Validated on
+   * explain and execute.
+   *
+   * @param age non-negative duration with millisecond precision
+   * @return this operation for chaining
+   */
+  public CleanupOperation withOlderThan(Duration age) {
+    Preconditions.checkNotNull(age, "age cannot be null");
+    long millis = age.toMillis();
+    Preconditions.checkArgument(
+        millis >= 0 && age.equals(Duration.ofMillis(millis)),
+        "older_than must be non-negative with millisecond precision, got %s",
+        age);
+    this.olderThanMillis = Optional.of(millis);
     return this;
   }
 
@@ -122,7 +143,7 @@ public class CleanupOperation {
    * @return cleanup explanation
    */
   public CleanupExplanation explain() {
-    return dataset.explainCleanup(policy, maxCandidateFiles, keepOnePerMillis);
+    return dataset.explainCleanup(policy, maxCandidateFiles, keepOnePerMillis, olderThanMillis);
   }
 
   /**
@@ -131,6 +152,7 @@ public class CleanupOperation {
    * @return removal stats
    */
   public RemovalStats execute() {
-    return dataset.executeCleanup(policy, deleteConcurrency, deleteRateLimit, keepOnePerMillis);
+    return dataset.executeCleanup(
+        policy, deleteConcurrency, deleteRateLimit, keepOnePerMillis, olderThanMillis);
   }
 }

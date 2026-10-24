@@ -605,7 +605,7 @@ dataset.update_config({
 Thinning also supports local filesystems and S3 Express. The hint-relative
 two-day minimum provides a retention buffer for delayed hint writes; it does not
 make hint updates monotonic. On stores using hints, unreadable or malformed hints
-and missing hinted manifests fail cleanup instead of using the wall clock.
+fail cleanup instead of using the wall clock. If explicit expiration has removed\nan older hinted manifest, cleanup falls back to the dataset snapshot, as latest\nversion discovery does when a hint target is missing. A missing current manifest\nstill fails cleanup.
 
 !!! note
 

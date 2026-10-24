@@ -697,26 +697,54 @@ impl<'a> CleanupTask<'a> {
                 } else {
                     None
                 };
-                let anchor_version = hinted_version.unwrap_or(self.read_version);
-                self.thinning_version_floor = Some(anchor_version.min(self.read_version));
-                if hinted_version.is_none() {
-                    self.dataset.manifest.timestamp()
-                } else {
-                    let location = self
-                        .dataset
-                        .commit_handler
-                        .resolve_version_location(
-                            &self.dataset.base,
-                            anchor_version,
-                            self.dataset.object_store.inner.as_ref(),
+                let hinted_manifest = if let Some(version) = hinted_version {
+                    let result = async {
+                        let location = self
+                            .dataset
+                            .commit_handler
+                            .resolve_version_location(
+                                &self.dataset.base,
+                                version,
+                                self.dataset.object_store.inner.as_ref(),
+                            )
+                            .await?;
+                        let manifest = read_manifest(
+                            &self.dataset.object_store,
+                            &location.path,
+                            location.size,
                         )
                         .await?;
-                    let manifest =
-                        read_manifest(&self.dataset.object_store, &location.path, location.size)
-                            .await?;
-                    ensure_can_read_manifest(&manifest)?;
-                    manifest.timestamp()
-                }
+                        ensure_can_read_manifest(&manifest)?;
+                        Ok::<_, Error>(manifest)
+                    }
+                    .await;
+                    match result {
+                        Ok(manifest) => Some(manifest),
+                        // Explicit expiration can remove an old hint target. Discovery
+                        // also falls back to listing when that target no longer exists.
+                        Err(error)
+                            if error.is_not_found()
+                                && version < self.read_version
+                                && self.policy.before_timestamp.is_some() =>
+                        {
+                            None
+                        }
+                        Err(error) => return Err(error),
+                    }
+                } else {
+                    None
+                };
+                self.thinning_version_floor = Some(
+                    hinted_manifest
+                        .as_ref()
+                        .map_or(self.read_version, |manifest| {
+                            manifest.version.min(self.read_version)
+                        }),
+                );
+                hinted_manifest
+                    .as_ref()
+                    .unwrap_or(&self.dataset.manifest)
+                    .timestamp()
             };
             let cutoff = anchor.checked_sub_signed(delta).ok_or_else(|| {
                 Error::invalid_input(format!(
@@ -2904,12 +2932,13 @@ mod tests {
 
     #[rstest]
     #[case::current_hint(None, vec![5, 7, 9, 10, 11, 12, 13, 14])]
-    #[case::stale_hint(Some(2), (5..=14).collect())]
+    #[case::stale_hint(Some(9), vec![5, 7, 8, 9, 10, 11, 12, 13, 14])]
     #[tokio::test]
     async fn cleanup_separates_expiration_and_thinning(
         #[case] hinted_version: Option<u64>,
-        #[case] expected_versions: Vec<u64>,
+        #[case] mut expected_versions: Vec<u64>,
         #[values(false, true)] auto_config: bool,
+        #[values(false, true)] filtered: bool,
     ) {
         let fixture = MockDatasetFixture::try_new().unwrap();
         for (index, hour) in [0, 1, 24, 25, 72, 96, 97, 168, 169, 192, 193, 216, 217, 240]
@@ -2928,7 +2957,7 @@ mod tests {
         if let Some(version) = hinted_version {
             write_version_hint(&dataset.object_store, &dataset.base, version).await;
         }
-        let operation = if auto_config {
+        let mut operation = if auto_config {
             let mut manifest = dataset.manifest.as_ref().clone();
             manifest.config.extend([
                 ("lance.auto_cleanup.interval".into(), "1".into()),
@@ -2956,6 +2985,11 @@ mod tests {
                 .with_keep_one(Duration::from_secs(86_400), MIN_THINNING_AGE)
                 .unwrap()
         };
+        if filtered {
+            operation.policy.versions = Some((2..14).filter(|version| *version != 6).collect());
+            expected_versions.extend([1, 6]);
+            expected_versions.sort_unstable();
+        }
         let before = fixture.count_files().await.unwrap();
         let explanation = operation.explain().await.unwrap();
         assert_eq!(before, fixture.count_files().await.unwrap());
@@ -3330,20 +3364,28 @@ mod tests {
         assert_eq!(dataset.latest_version_id().await.unwrap(), 3);
     }
 
+    #[rstest]
     #[tokio::test]
-    async fn cleanup_age_without_thinning_uses_wall_clock() {
+    async fn cleanup_expiration_uses_wall_clock(#[values(false, true)] thinning: bool) {
         let fixture = MockDatasetFixture::try_new().unwrap();
         MockClock::set_system_time(Duration::ZERO);
         fixture.create_some_data().await.unwrap();
         MockClock::set_system_time(Duration::from_secs(3600));
         fixture.overwrite_some_data().await.unwrap();
         let dataset = fixture.open().await.unwrap();
+        write_version_hint(&dataset.object_store, &dataset.base, 1).await;
         MockClock::set_system_time(Duration::from_secs(86_400));
         let mut manifest = dataset.manifest.as_ref().clone();
         manifest.config.extend([
             ("lance.auto_cleanup.interval".into(), "1".into()),
             ("lance.auto_cleanup.older_than".into(), "2days".into()),
         ]);
+        if thinning {
+            manifest.config.insert(
+                "lance.auto_cleanup.keep_one.per_interval".into(),
+                "1day".into(),
+            );
+        }
         let operation = build_cleanup_operation(&dataset, &manifest, false)
             .await
             .unwrap()
@@ -3356,6 +3398,9 @@ mod tests {
             .unwrap();
         assert_eq!(operation.explain().await.unwrap().stats.old_versions, 1);
         assert_eq!(operation.execute().await.unwrap().old_versions, 1);
+        assert_eq!(dataset.latest_version_id().await.unwrap(), 2);
+        assert_eq!(operation.explain().await.unwrap().stats.old_versions, 0);
+        assert_eq!(operation.execute().await.unwrap().old_versions, 0);
     }
 
     #[tokio::test]

@@ -547,7 +547,7 @@ dataset = lance.dataset("./my_dataset.lance")
 dataset.cleanup_old_versions()
 ```
 
-By default, versions older than 7 days are removed. You can override this with
+By default, versions older than two weeks are removed. You can override this with
 the `older_than` parameter (a `timedelta`):
 
 ```python
@@ -556,36 +556,51 @@ from datetime import timedelta
 dataset.cleanup_old_versions(older_than=timedelta(days=1))
 ```
 
-To retain sparse history, set `keep_one_per` to a positive duration. For example,
-keep every version from the last two days and one version per day before that:
+To thin older history independently of expiration, use `KeepOne`. For example,
+keep every version from the last two days, one per day between two and seven
+days, and remove every version older than seven days:
 
 ```python
+from lance import KeepOne
+
 dataset.cleanup_old_versions(
-    older_than=timedelta(days=2), keep_one_per=timedelta(days=1)
+    older_than=timedelta(days=7),
+    keep_one=KeepOne(per_interval=timedelta(days=1), older_than=timedelta(days=2)),
 )
 ```
 
-Both durations are configurable. With `keep_one_per` set, `older_than` defaults
-to, and must be at least, two days. The cutoff is the hinted commit's timestamp
-minus `older_than`, falling back to this dataset's commit when no hint exists.
-The hinted version and every later version are retained even if their clocks
-went backwards. Cleanup honors existing durable hints even when the cleaner
-sets `LANCE_USE_VERSION_HINT=0`. Each bucket is aligned to the UTC Unix epoch and keeps the newest
-eligible logical commit timestamp, breaking ties by version number. Tags, the
-current version and branch dependencies remain protected, so a bucket can have
-additional protected versions. Other filters, such as `retain_versions` and
-`versions`, still limit which versions can be removed. Cleanup also preserves
-the data and index files needed by these retained snapshots. The same options
-are available on `explain_cleanup_old_versions` for a preview.
+The existing top-level `older_than` remains a wall-clock expiration age and
+removes even sampled versions. `KeepOne.older_than` controls when thinning starts;
+it defaults to two days and must be at least two days. Its cutoff is the hinted
+commit's timestamp minus that age, falling back to the dataset snapshot's commit
+when no hint exists. The hinted version and every later version are protected
+from thinning even with backwards clocks. Existing durable hints are honored even
+when the cleaner sets `LANCE_USE_VERSION_HINT=0`.
 
-In Rust, use `dataset.cleanup(policy).with_keep_one_per(Duration::from_secs(86_400))?`;
-in Java, use `dataset.cleanup(policy).withKeepOnePer(Duration.ofDays(1))`.
-Use `.with_older_than(Duration::from_secs(2 * 86_400))?` in Rust or
-`.withOlderThan(Duration.ofDays(2))` in Java to configure the age. An absolute
-timestamp in the policy remains an additional filter.
-For automatic cleanup, set `lance.auto_cleanup.keep_one_per` to a duration string
-such as `1day`, and `lance.auto_cleanup.older_than` to `2days`. When thinning is
-unset, cleanup retains its existing behavior.
+Each interval is aligned to the UTC Unix epoch and keeps the newest eligible
+logical commit timestamp, breaking ties by version. Tags, the current version
+and branch dependencies remain protected, so a bucket can have extra survivors.
+Version filters such as `retain_versions` and `versions` limit both expiration
+and thinning. Cleanup preserves the data and index files needed by all retained
+snapshots. The same options are available on `explain_cleanup_old_versions`.
+With `keep_one` alone, sampled history has no expiration limit. Without thinning,
+cleanup retains its existing defaults and behavior.
+
+In Rust, use `dataset.cleanup(policy).with_keep_one(per_interval, older_than)?`;
+in Java, use `dataset.cleanup(policy).withKeepOne(perInterval, olderThan)`.
+Both parameters are durations. The policy's absolute timestamp remains an
+independent expiration cutoff.
+
+For automatic cleanup, configure the same example with:
+
+```python
+dataset.update_config({
+    "lance.auto_cleanup.interval": "100",
+    "lance.auto_cleanup.older_than": "7days",
+    "lance.auto_cleanup.keep_one.per_interval": "1day",
+    "lance.auto_cleanup.keep_one.older_than": "2days",
+})
+```
 
 Thinning also supports local filesystems and S3 Express. The hint-relative
 two-day minimum provides a retention buffer for delayed hint writes; it does not

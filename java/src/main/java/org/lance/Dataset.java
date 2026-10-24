@@ -2710,12 +2710,16 @@ public class Dataset implements Closeable {
       CleanupPolicy policy,
       Optional<Long> deleteConcurrency,
       Optional<Long> deleteRateLimit,
-      Optional<Long> keepOnePerMillis,
-      Optional<Long> olderThanMillis) {
+      Optional<Long> keepOnePerIntervalMillis,
+      Optional<Long> keepOneOlderThanMillis) {
     try (LockManager.WriteLock writeLock = lockManager.acquireWriteLock()) {
       Preconditions.checkArgument(nativeDatasetHandle != 0, "Dataset is closed");
       return nativeCleanupWithPolicy(
-          policy, deleteConcurrency, deleteRateLimit, keepOnePerMillis, olderThanMillis);
+          policy,
+          deleteConcurrency,
+          deleteRateLimit,
+          keepOnePerIntervalMillis,
+          keepOneOlderThanMillis);
     }
   }
 
@@ -2723,24 +2727,24 @@ public class Dataset implements Closeable {
       CleanupPolicy policy,
       Optional<Long> deleteConcurrency,
       Optional<Long> deleteRateLimit,
-      Optional<Long> keepOnePerMillis,
-      Optional<Long> olderThanMillis);
+      Optional<Long> keepOnePerIntervalMillis,
+      Optional<Long> keepOneOlderThanMillis);
 
   CleanupExplanation explainCleanup(
       CleanupPolicy policy,
       Optional<Long> maxCandidateFiles,
-      Optional<Long> keepOnePerMillis,
-      Optional<Long> olderThanMillis) {
+      Optional<Long> keepOnePerIntervalMillis,
+      Optional<Long> keepOneOlderThanMillis) {
     try (LockManager.ReadLock readLock = lockManager.acquireReadLock()) {
       Preconditions.checkArgument(nativeDatasetHandle != 0, "Dataset is closed");
       return nativeExplainCleanupWithPolicy(
-          policy, maxCandidateFiles, keepOnePerMillis, olderThanMillis);
+          policy, maxCandidateFiles, keepOnePerIntervalMillis, keepOneOlderThanMillis);
     }
   }
 
   private native CleanupExplanation nativeExplainCleanupWithPolicy(
       CleanupPolicy policy,
       Optional<Long> maxCandidateFiles,
-      Optional<Long> keepOnePerMillis,
-      Optional<Long> olderThanMillis);
+      Optional<Long> keepOnePerIntervalMillis,
+      Optional<Long> keepOneOlderThanMillis);
 }

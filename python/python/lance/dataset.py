@@ -856,6 +856,26 @@ class MergeInsertBuilder(_MergeInsertBuilder):
         return self
 
 
+@dataclass(frozen=True)
+class KeepOne:
+    """Thin history older than a full-history window, keeping one commit per interval.
+
+    ``per_interval`` must be positive. ``older_than`` defaults to two days and
+    must be at least two days, measured from the hinted commit timestamp (or
+    the dataset snapshot without a hint). Validation occurs during cleanup.
+    Cleanup's separate ``older_than`` argument expires all older versions,
+    including sampled commits. For example::
+
+        dataset.cleanup_old_versions(
+            older_than=timedelta(days=7),
+            keep_one=KeepOne(timedelta(days=1), timedelta(days=2)),
+        )
+    """
+
+    per_interval: timedelta
+    older_than: timedelta = timedelta(days=2)
+
+
 class LanceDataset(pa.dataset.Dataset):
     """A Lance Dataset in Lance format where the data is stored at the given uri."""
 
@@ -3431,7 +3451,7 @@ class LanceDataset(pa.dataset.Dataset):
         delete_rate_limit: Optional[int] = None,
         versions: Optional[List[int]] = None,
         delete_concurrency: Optional[int] = None,
-        keep_one_per: Optional[timedelta] = None,
+        keep_one: Optional[KeepOne] = None,
     ) -> CleanupStats:
         """
         Cleans up old versions of the dataset.
@@ -3448,8 +3468,10 @@ class LanceDataset(pa.dataset.Dataset):
         ----------
 
         older_than: timedelta, optional
-            Only versions older than this will be removed.  If ``older_than`` and
-            ``retain_versions`` are not specified, this will default to two weeks.
+            Remove all versions older than this wall-clock age, including sampled
+            commits from ``keep_one``. Without ``keep_one``, ``retain_versions``
+            or ``versions``, defaults to two weeks. With ``keep_one`` alone,
+            sampled history has no expiration limit.
 
         retain_versions: int, optional
             Retain the last N versions of the dataset. Must be positive.
@@ -3488,21 +3510,25 @@ class LanceDataset(pa.dataset.Dataset):
             never removed, and tagged versions are still protected by
             ``error_if_tagged_old_versions``.
 
-        keep_one_per: timedelta, optional
-            Keep the newest eligible commit per UTC epoch-aligned period, breaking
-            timestamp ties by version. Must be positive. All versions newer than
-            ``older_than`` are retained; when thinning is enabled its default and
-            minimum are two days, measured from the hinted commit timestamp (or
-            this dataset's commit if no hint exists), rather than wall time.
-            The hinted version and all later versions are protected even if their
-            clocks went backwards. Protected versions can add extra survivors.
-            For daily history after two days, use
-            ``older_than=timedelta(days=2), keep_one_per=timedelta(days=1)``.
+        keep_one: KeepOne, optional
+            Keep the newest eligible commit per UTC epoch-aligned interval, breaking
+            timestamp ties by version. Its ``older_than`` age controls when thinning
+            begins and is independent of this method's expiration ``older_than``.
+            The hinted version and all later versions are protected from thinning
+            even with backwards clocks. Tags, current versions and branch
+            dependencies remain protected. For daily history between two and seven
+            days, use ``older_than=timedelta(days=7),
+            keep_one=KeepOne(timedelta(days=1), timedelta(days=2))``.
             The two-day delay bounds exposure to delayed hint writes; it does not
             make hint updates monotonic.
         """
-        if older_than is None and retain_versions is None and versions is None:
-            older_than = timedelta(days=2 if keep_one_per is not None else 14)
+        if (
+            older_than is None
+            and retain_versions is None
+            and versions is None
+            and keep_one is None
+        ):
+            older_than = timedelta(days=14)
 
         return self._ds.cleanup_old_versions(
             td_to_micros(older_than) if older_than is not None else None,
@@ -3512,7 +3538,12 @@ class LanceDataset(pa.dataset.Dataset):
             delete_rate_limit,
             versions,
             delete_concurrency,
-            td_to_micros(keep_one_per) if keep_one_per is not None else None,
+            (
+                td_to_micros(keep_one.per_interval),
+                td_to_micros(keep_one.older_than),
+            )
+            if keep_one is not None
+            else None,
         )
 
     def explain_cleanup_old_versions(
@@ -3526,7 +3557,7 @@ class LanceDataset(pa.dataset.Dataset):
         versions: Optional[List[int]] = None,
         include_files: bool = False,
         max_files: int = 1000,
-        keep_one_per: Optional[timedelta] = None,
+        keep_one: Optional[KeepOne] = None,
     ) -> CleanupExplanation:
         """
         Explain what :meth:`cleanup_old_versions` would remove without deleting files.
@@ -3535,8 +3566,9 @@ class LanceDataset(pa.dataset.Dataset):
         ----------
 
         older_than: timedelta, optional
-            Only versions older than this would be removed. If ``older_than`` and
-            ``retain_versions`` are not specified, this will default to two weeks.
+            Remove all versions older than this wall-clock age, including sampled
+            commits. Defaults to two weeks only when no version filters or
+            ``keep_one`` are specified, as in :meth:`cleanup_old_versions`.
 
         retain_versions: int, optional
             Retain the last N versions of the dataset. Must be positive.
@@ -3562,14 +3594,17 @@ class LanceDataset(pa.dataset.Dataset):
             Maximum number of candidate files to include when ``include_files``
             is `True`.
 
-        keep_one_per: timedelta, optional
-            Keep the newest eligible commit per UTC epoch-aligned period, as in
-            :meth:`cleanup_old_versions`. Must be positive. When set, the default
-            age is two days and must be at least two days, measured from the hinted
-            commit (or this dataset's commit when no hint exists).
+        keep_one: KeepOne, optional
+            Thinning interval and minimum age, as in :meth:`cleanup_old_versions`.
+            Its age is independent of the expiration ``older_than`` argument.
         """
-        if older_than is None and retain_versions is None and versions is None:
-            older_than = timedelta(days=2 if keep_one_per is not None else 14)
+        if (
+            older_than is None
+            and retain_versions is None
+            and versions is None
+            and keep_one is None
+        ):
+            older_than = timedelta(days=14)
         if max_files <= 0:
             raise ValueError("max_files must be positive")
 
@@ -3582,7 +3617,12 @@ class LanceDataset(pa.dataset.Dataset):
             versions,
             include_files,
             max_files,
-            td_to_micros(keep_one_per) if keep_one_per is not None else None,
+            (
+                td_to_micros(keep_one.per_interval),
+                td_to_micros(keep_one.older_than),
+            )
+            if keep_one is not None
+            else None,
         )
 
     def _prepare_scalar_index_request(

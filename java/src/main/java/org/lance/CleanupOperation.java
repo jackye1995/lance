@@ -34,8 +34,8 @@ public class CleanupOperation {
   private Optional<Long> deleteConcurrency = Optional.empty();
   private Optional<Long> deleteRateLimit = Optional.empty();
   private Optional<Long> maxCandidateFiles = Optional.empty();
-  private Optional<Long> keepOnePerMillis = Optional.empty();
-  private Optional<Long> olderThanMillis = Optional.empty();
+  private Optional<Long> keepOnePerIntervalMillis = Optional.empty();
+  private Optional<Long> keepOneOlderThanMillis = Optional.empty();
 
   CleanupOperation(Dataset dataset, CleanupPolicy policy) {
     this.dataset = Preconditions.checkNotNull(dataset, "dataset cannot be null");
@@ -43,48 +43,36 @@ public class CleanupOperation {
   }
 
   /**
-   * Keep the newest eligible commit per UTC epoch-aligned period, breaking timestamp ties by
-   * version. Tags, current/newer versions and branch dependencies remain protected, so a period may
-   * contain additional protected versions. Defaults to retaining full history for two days; use
-   * {@link #withOlderThan(Duration)} to configure the age, which must be at least two days. The
-   * cutoff is relative to the hinted commit timestamp, or this dataset's commit if no hint exists.
-   * The hinted version and every later version remain intact. This delay bounds exposure to delayed
-   * hint writes; it does not make hint updates monotonic. Without this option, cleanup removes all
-   * eligible versions as before.
+   * Keep the newest eligible commit per UTC epoch-aligned interval after the given age, breaking
+   * timestamp ties by version. The age must be at least two days, measured from the hinted commit
+   * timestamp (or this dataset's commit without a hint). The hinted version and later versions are
+   * protected from thinning. The policy's beforeTimestampMillis independently expires all older
+   * versions, including sampled commits. Version filters limit both operations; tags, current
+   * versions and branch dependencies remain protected. The delay bounds exposure to delayed hint
+   * writes; it does not make hint updates monotonic.
    *
-   * <p>Example: {@code dataset.cleanup(policy).withKeepOnePer(Duration.ofDays(1)).execute()}.
+   * <p>Example: {@code dataset.cleanup(policy).withKeepOne(Duration.ofDays(1),
+   * Duration.ofDays(2)).execute()}.
    *
-   * @param period positive bucket width, with millisecond precision
+   * @param perInterval positive bucket width with millisecond precision
+   * @param olderThan full-history window, at least two days with millisecond precision
    * @return this operation for chaining
    */
-  public CleanupOperation withKeepOnePer(Duration period) {
-    Preconditions.checkNotNull(period, "period cannot be null");
-    long millis = period.toMillis();
+  public CleanupOperation withKeepOne(Duration perInterval, Duration olderThan) {
+    Preconditions.checkNotNull(perInterval, "perInterval cannot be null");
+    Preconditions.checkNotNull(olderThan, "olderThan cannot be null");
+    long intervalMillis = perInterval.toMillis();
+    long ageMillis = olderThan.toMillis();
     Preconditions.checkArgument(
-        millis > 0 && period.equals(Duration.ofMillis(millis)),
-        "keep_one_per must be positive with millisecond precision, got %s",
-        period);
-    this.keepOnePerMillis = Optional.of(millis);
-    return this;
-  }
-
-  /**
-   * Configure the age of versions eligible for cleanup, intersecting policy filters. With thinning
-   * this defaults to, and must be at least, two days measured from the hinted commit (or this
-   * dataset's commit without a hint). Otherwise it is measured from current time. Validated on
-   * explain and execute.
-   *
-   * @param age non-negative duration with millisecond precision
-   * @return this operation for chaining
-   */
-  public CleanupOperation withOlderThan(Duration age) {
-    Preconditions.checkNotNull(age, "age cannot be null");
-    long millis = age.toMillis();
+        intervalMillis > 0 && perInterval.equals(Duration.ofMillis(intervalMillis)),
+        "keep_one.per_interval must be positive with millisecond precision, got %s",
+        perInterval);
     Preconditions.checkArgument(
-        millis >= 0 && age.equals(Duration.ofMillis(millis)),
-        "older_than must be non-negative with millisecond precision, got %s",
-        age);
-    this.olderThanMillis = Optional.of(millis);
+        ageMillis >= 0 && olderThan.equals(Duration.ofMillis(ageMillis)),
+        "keep_one.older_than must be non-negative with millisecond precision, got %s",
+        olderThan);
+    this.keepOnePerIntervalMillis = Optional.of(intervalMillis);
+    this.keepOneOlderThanMillis = Optional.of(ageMillis);
     return this;
   }
 
@@ -143,7 +131,8 @@ public class CleanupOperation {
    * @return cleanup explanation
    */
   public CleanupExplanation explain() {
-    return dataset.explainCleanup(policy, maxCandidateFiles, keepOnePerMillis, olderThanMillis);
+    return dataset.explainCleanup(
+        policy, maxCandidateFiles, keepOnePerIntervalMillis, keepOneOlderThanMillis);
   }
 
   /**
@@ -153,6 +142,10 @@ public class CleanupOperation {
    */
   public RemovalStats execute() {
     return dataset.executeCleanup(
-        policy, deleteConcurrency, deleteRateLimit, keepOnePerMillis, olderThanMillis);
+        policy,
+        deleteConcurrency,
+        deleteRateLimit,
+        keepOnePerIntervalMillis,
+        keepOneOlderThanMillis);
   }
 }

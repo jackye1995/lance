@@ -1822,12 +1822,12 @@ def test_cleanup_with_retain_versions(tmp_path: Path):
 
 
 @pytest.mark.parametrize("period", [timedelta(0), timedelta(microseconds=-1)])
-def test_cleanup_rejects_invalid_keep_one_per(tmp_path: Path, period):
+def test_cleanup_rejects_invalid_keep_one(tmp_path: Path, period):
     ds = lance.write_dataset(pa.table({"a": [1, 2]}), tmp_path)
-    with pytest.raises(OSError, match="keep_one_per"):
-        ds.cleanup_old_versions(keep_one_per=period)
-    with pytest.raises(OSError, match="keep_one_per"):
-        ds.explain_cleanup_old_versions(keep_one_per=period)
+    with pytest.raises(OSError, match="keep_one"):
+        ds.cleanup_old_versions(keep_one=lance.KeepOne(period))
+    with pytest.raises(OSError, match="keep_one"):
+        ds.explain_cleanup_old_versions(keep_one=lance.KeepOne(period))
     assert len(ds.versions()) == 1
 
 
@@ -1837,19 +1837,33 @@ def test_cleanup_keeps_one_per_period(tmp_path: Path):
     ds = lance.write_dataset(table, uri, max_rows_per_file=2)
     for _ in range(3):
         ds = lance.write_dataset(table, uri, mode="overwrite", max_rows_per_file=2)
-    assert ds.cleanup_old_versions(keep_one_per=timedelta(days=1)).old_versions == 0
+    assert (
+        ds.cleanup_old_versions(keep_one=lance.KeepOne(timedelta(days=1))).old_versions
+        == 0
+    )
     period = timedelta(days=365 * 10_000)
     explanation = ds.explain_cleanup_old_versions(
-        older_than=timedelta(days=2), keep_one_per=period
+        older_than=timedelta(days=7), keep_one=lance.KeepOne(period, timedelta(days=2))
     )
     assert explanation.stats.old_versions == 0
     assert len(ds.versions()) == 4
-    stats = ds.cleanup_old_versions(older_than=timedelta(days=2), keep_one_per=period)
+    stats = ds.cleanup_old_versions(
+        older_than=timedelta(days=7), keep_one=lance.KeepOne(period, timedelta(days=2))
+    )
     assert stats.old_versions == explanation.stats.old_versions
     assert stats.data_files_removed == explanation.stats.data_files_removed == 0
     assert stats.bytes_removed == explanation.stats.bytes_removed
     assert [v["version"] for v in ds.versions()] == [1, 2, 3, 4]
     assert lance.dataset(uri, version=3).to_table() == table
+    assert ds.to_table() == table
+
+    expiration = dict(
+        older_than=timedelta(0), keep_one=lance.KeepOne(timedelta(days=1))
+    )
+    explanation = ds.explain_cleanup_old_versions(**expiration)
+    assert explanation.stats.old_versions == 3
+    assert ds.cleanup_old_versions(**expiration).old_versions == 3
+    assert [v["version"] for v in ds.versions()] == [4]
     assert ds.to_table() == table
 
 
@@ -1859,9 +1873,13 @@ def test_cleanup_keeps_one_per_period(tmp_path: Path):
 def test_cleanup_thinning_requires_two_days(tmp_path: Path, age):
     ds = lance.write_dataset(pa.table({"a": [1, 2]}), tmp_path)
     with pytest.raises(OSError, match="older_than must be at least 2 days"):
-        ds.cleanup_old_versions(older_than=age, keep_one_per=timedelta(days=1))
+        ds.cleanup_old_versions(
+            older_than=timedelta(days=7), keep_one=lance.KeepOne(timedelta(days=1), age)
+        )
     with pytest.raises(OSError, match="older_than must be at least 2 days"):
-        ds.explain_cleanup_old_versions(older_than=age, keep_one_per=timedelta(days=1))
+        ds.explain_cleanup_old_versions(
+            older_than=timedelta(days=7), keep_one=lance.KeepOne(timedelta(days=1), age)
+        )
     assert len(ds.versions()) == 1
 
 

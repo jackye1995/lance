@@ -47,29 +47,39 @@ public class CleanupTest {
       fixture.write(2, 10).close();
       try (Dataset dataset = fixture.write(3, 10)) {
         CleanupOperation recent =
-            dataset.cleanup(CleanupPolicy.builder().build()).withKeepOnePer(Duration.ofDays(1));
+            dataset
+                .cleanup(CleanupPolicy.builder().build())
+                .withKeepOne(Duration.ofDays(1), Duration.ofDays(2));
         assertEquals(0L, recent.explain().getStats().getOldVersions());
         CleanupPolicy policy =
             CleanupPolicy.builder()
-                .withBeforeTimestampMillis(System.currentTimeMillis() + 1000)
+                .withBeforeTimestampMillis(
+                    System.currentTimeMillis() - Duration.ofDays(7).toMillis())
                 .build();
         CleanupOperation cleanup =
-            dataset
-                .cleanup(policy)
-                .withKeepOnePer(Duration.ofDays(365L * 10_000))
-                .withOlderThan(Duration.ofDays(2));
+            dataset.cleanup(policy).withKeepOne(Duration.ofDays(365L * 10_000), Duration.ofDays(2));
         assertEquals(0L, cleanup.explain().getStats().getOldVersions());
         assertEquals(4, dataset.listVersions().size());
         assertEquals(0L, cleanup.execute().getOldVersions());
         assertEquals(
             List.of(1L, 2L, 3L, 4L),
             dataset.listVersions().stream().map(Version::getId).collect(Collectors.toList()));
+        CleanupOperation expireAll =
+            dataset
+                .cleanup(
+                    CleanupPolicy.builder()
+                        .withBeforeTimestampMillis(System.currentTimeMillis() + 1000)
+                        .build())
+                .withKeepOne(Duration.ofDays(1), Duration.ofDays(2));
+        assertEquals(3L, expireAll.explain().getStats().getOldVersions());
+        assertEquals(3L, expireAll.execute().getOldVersions());
+        assertEquals(1, dataset.listVersions().size());
         Assertions.assertThrows(
             IllegalArgumentException.class,
-            () -> dataset.cleanup(policy).withKeepOnePer(Duration.ZERO));
+            () -> dataset.cleanup(policy).withKeepOne(Duration.ZERO, Duration.ofDays(2)));
         Assertions.assertThrows(
             IllegalArgumentException.class,
-            () -> dataset.cleanup(policy).withKeepOnePer(Duration.ofNanos(1)));
+            () -> dataset.cleanup(policy).withKeepOne(Duration.ofNanos(1), Duration.ofDays(2)));
       }
     }
   }
@@ -83,8 +93,7 @@ public class CleanupTest {
         CleanupOperation cleanup =
             dataset
                 .cleanup(CleanupPolicy.builder().build())
-                .withKeepOnePer(Duration.ofDays(1))
-                .withOlderThan(Duration.ofDays(1));
+                .withKeepOne(Duration.ofDays(1), Duration.ofDays(1));
         RuntimeException error = Assertions.assertThrows(RuntimeException.class, cleanup::explain);
         assertTrue(error.getMessage().contains("older_than must be at least 2 days"));
         Assertions.assertThrows(RuntimeException.class, cleanup::execute);

@@ -842,10 +842,10 @@ impl Dataset {
         delete_unverified: Option<bool>,
         error_if_tagged_old_versions: Option<bool>,
         versions: Option<Vec<u64>>,
-        keep_one_per_micros: Option<i64>,
+        keep_one_micros: Option<(i64, i64)>,
     ) -> lance_core::Result<lance::dataset::cleanup::CleanupOperation<'_>> {
         let mut builder = CleanupPolicyBuilder::default();
-        if let Some(v) = older_than_micros.filter(|_| keep_one_per_micros.is_none()) {
+        if let Some(v) = older_than_micros {
             let older_than = Duration::microseconds(v);
             builder = builder.before_timestamp(Utc::now() - older_than);
         }
@@ -862,19 +862,18 @@ impl Dataset {
             builder = builder.versions(v)?;
         }
         let mut operation = self.ds.cleanup(builder.build());
-        if let Some(value) = keep_one_per_micros {
+        if let Some((value, age)) = keep_one_micros {
             let period = std::time::Duration::from_micros(u64::try_from(value).map_err(|_| {
                 lance::Error::invalid_input(format!(
-                    "keep_one_per must be positive, got {value} microseconds"
+                    "keep_one.per_interval must be positive, got {value} microseconds"
                 ))
             })?);
-            operation = operation.with_keep_one_per(period)?;
-            if let Some(value) = older_than_micros {
-                let age = u64::try_from(value).map_err(|_| lance::Error::invalid_input(
-                    format!("older_than must be at least 2 days when keep_one_per is set, got {value} microseconds")
-                ))?;
-                operation = operation.with_older_than(std::time::Duration::from_micros(age))?;
-            }
+            let age = u64::try_from(age).map_err(|_| {
+                lance::Error::invalid_input(format!(
+                    "keep_one.older_than must be at least 2 days, got {age} microseconds"
+                ))
+            })?;
+            operation = operation.with_keep_one(period, std::time::Duration::from_micros(age))?;
         }
         Ok(operation)
     }
@@ -2314,7 +2313,7 @@ impl Dataset {
     }
 
     /// Cleanup old versions from the dataset
-    #[pyo3(signature = (older_than_micros = None, retain_versions = None, delete_unverified = None, error_if_tagged_old_versions = None, delete_rate_limit = None, versions = None, delete_concurrency = None, keep_one_per_micros = None))]
+    #[pyo3(signature = (older_than_micros = None, retain_versions = None, delete_unverified = None, error_if_tagged_old_versions = None, delete_rate_limit = None, versions = None, delete_concurrency = None, keep_one_micros = None))]
     #[allow(clippy::too_many_arguments)]
     fn cleanup_old_versions(
         &self,
@@ -2325,7 +2324,7 @@ impl Dataset {
         delete_rate_limit: Option<u64>,
         versions: Option<Vec<u64>>,
         delete_concurrency: Option<usize>,
-        keep_one_per_micros: Option<i64>,
+        keep_one_micros: Option<(i64, i64)>,
     ) -> PyResult<CleanupStats> {
         let stats = rt()
             .block_on(None, async {
@@ -2336,7 +2335,7 @@ impl Dataset {
                         delete_unverified,
                         error_if_tagged_old_versions,
                         versions,
-                        keep_one_per_micros,
+                        keep_one_micros,
                     )
                     .await?;
                 if let Some(value) = delete_concurrency {
@@ -2353,7 +2352,7 @@ impl Dataset {
 
     /// Explain cleanup old versions from the dataset without deleting files
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (older_than_micros = None, retain_versions = None, delete_unverified = None, error_if_tagged_old_versions = None, delete_rate_limit = None, versions = None, include_files = false, max_files = 1000, keep_one_per_micros = None))]
+    #[pyo3(signature = (older_than_micros = None, retain_versions = None, delete_unverified = None, error_if_tagged_old_versions = None, delete_rate_limit = None, versions = None, include_files = false, max_files = 1000, keep_one_micros = None))]
     fn explain_cleanup_old_versions(
         &self,
         older_than_micros: Option<i64>,
@@ -2364,7 +2363,7 @@ impl Dataset {
         versions: Option<Vec<u64>>,
         include_files: bool,
         max_files: usize,
-        keep_one_per_micros: Option<i64>,
+        keep_one_micros: Option<(i64, i64)>,
     ) -> PyResult<CleanupExplanation> {
         let _ = delete_rate_limit; // Retained in the signature for existing callers.
         let explanation = rt()
@@ -2376,7 +2375,7 @@ impl Dataset {
                         delete_unverified,
                         error_if_tagged_old_versions,
                         versions,
-                        keep_one_per_micros,
+                        keep_one_micros,
                     )
                     .await?;
                 operation

@@ -3140,7 +3140,11 @@ mod tests {
             dataset
                 .object_store
                 .put(
-                    &dataset.base.join("_versions/latest_version_hint.json"),
+                    &dataset
+                        .base
+                        .clone()
+                        .join("_versions")
+                        .join("latest_version_hint.json"),
                     b"invalid",
                 )
                 .await
@@ -3168,6 +3172,72 @@ mod tests {
         }
         assert!(operation.execute().await.is_err());
         assert_eq!(before, fixture.count_files().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn cleanup_thinning_without_hint_uses_snapshot() {
+        let fixture = MockDatasetFixture::try_new().unwrap();
+        MockClock::set_system_time(Duration::ZERO);
+        fixture.create_some_data().await.unwrap();
+        MockClock::set_system_time(Duration::from_secs(3600));
+        fixture.overwrite_some_data().await.unwrap();
+        MockClock::set_system_time(Duration::from_secs(3 * 86_400));
+        fixture.overwrite_some_data().await.unwrap();
+        let dataset = fixture.open().await.unwrap();
+        dataset
+            .object_store
+            .delete(
+                &dataset
+                    .base
+                    .clone()
+                    .join("_versions")
+                    .join("latest_version_hint.json"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            read_version_hint(&dataset.object_store, &dataset.base)
+                .await
+                .unwrap(),
+            None
+        );
+        MockClock::set_system_time(Duration::from_secs(30 * 86_400));
+        let operation = dataset
+            .cleanup(CleanupPolicy::default())
+            .with_keep_one_per(Duration::from_secs(86_400))
+            .unwrap();
+        assert_eq!(operation.explain().await.unwrap().stats.old_versions, 1);
+        assert_eq!(operation.execute().await.unwrap().old_versions, 1);
+        assert_eq!(
+            dataset
+                .version_refs()
+                .await
+                .unwrap()
+                .iter()
+                .map(|v| v.version)
+                .collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+        assert_eq!(dataset.latest_version_id().await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn cleanup_age_without_thinning_uses_wall_clock() {
+        let fixture = MockDatasetFixture::try_new().unwrap();
+        MockClock::set_system_time(Duration::ZERO);
+        fixture.create_some_data().await.unwrap();
+        MockClock::set_system_time(Duration::from_secs(3600));
+        fixture.overwrite_some_data().await.unwrap();
+        let dataset = fixture.open().await.unwrap();
+        let operation = dataset
+            .cleanup(CleanupPolicy::default())
+            .with_older_than(MIN_THINNING_AGE)
+            .unwrap();
+        MockClock::set_system_time(Duration::from_secs(86_400));
+        assert_eq!(operation.explain().await.unwrap().stats.old_versions, 0);
+        MockClock::set_system_time(Duration::from_secs(3 * 86_400));
+        assert_eq!(operation.explain().await.unwrap().stats.old_versions, 1);
+        assert_eq!(operation.execute().await.unwrap().old_versions, 1);
     }
 
     #[rstest]

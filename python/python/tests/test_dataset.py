@@ -1821,6 +1821,67 @@ def test_cleanup_with_retain_versions(tmp_path: Path):
     assert ds.count_rows() == len(ds.to_table())
 
 
+def test_cleanup_retention_policy(tmp_path: Path):
+    table = pa.table({"a": [1, 2, 3, 4]})
+    ds = lance.write_dataset(table, tmp_path, max_rows_per_file=2)
+    for _ in range(3):
+        ds = lance.write_dataset(table, tmp_path, mode="overwrite", max_rows_per_file=2)
+    policy = [
+        lance.KeepOne(per_interval=timedelta(hours=1), older_than=timedelta(days=2)),
+        lance.KeepOne(per_interval=timedelta(days=1), older_than=timedelta(days=7)),
+        lance.RemoveAll(older_than=timedelta(days=30)),
+    ]
+    assert ds.explain_cleanup_old_versions(policy=policy).stats.old_versions == 0
+    assert ds.cleanup_old_versions(policy=policy).old_versions == 0
+    assert len(ds.versions()) == 4
+    expiration = [lance.RemoveAll(older_than=timedelta(0))]
+    explanation = ds.explain_cleanup_old_versions(policy=expiration)
+    assert len(ds.versions()) == 4
+    assert explanation.stats.old_versions == 3
+    assert ds.cleanup_old_versions(policy=expiration).old_versions == 3
+    assert [version["version"] for version in ds.versions()] == [4]
+    assert ds.to_table() == table
+    assert ds.cleanup_old_versions(policy=expiration).old_versions == 0
+
+
+@pytest.mark.parametrize(
+    "policy,message",
+    [
+        ([], "must not be empty"),
+        ([lance.KeepOne(timedelta(hours=1), timedelta(days=1))], "at least 2 days"),
+        ([lance.KeepOne(timedelta(0))], "keep_one.per_interval"),
+        (
+            [lance.KeepOne(timedelta(hours=1)), lance.KeepOne(timedelta(days=1))],
+            "strictly increasing",
+        ),
+        (
+            [lance.RemoveAll(timedelta(days=30)), lance.KeepOne(timedelta(hours=1))],
+            "final retention rule",
+        ),
+    ],
+)
+def test_cleanup_rejects_invalid_retention_policy(tmp_path: Path, policy, message):
+    ds = lance.write_dataset(pa.table({"a": [1, 2]}), tmp_path)
+    with pytest.raises(OSError, match=message):
+        ds.explain_cleanup_old_versions(policy=policy)
+    with pytest.raises(OSError, match=message):
+        ds.cleanup_old_versions(policy=policy)
+    assert len(ds.versions()) == 1
+
+
+@pytest.mark.parametrize(
+    "conflict",
+    [{"older_than": timedelta(days=7)}, {"keep_one": lance.KeepOne(timedelta(days=1))}],
+)
+def test_cleanup_rejects_conflicting_retention_policy(tmp_path: Path, conflict):
+    ds = lance.write_dataset(pa.table({"a": [1, 2]}), tmp_path)
+    policy = [lance.RemoveAll(timedelta(days=30))]
+    with pytest.raises(ValueError, match="policy cannot be combined"):
+        ds.explain_cleanup_old_versions(policy=policy, **conflict)
+    with pytest.raises(ValueError, match="policy cannot be combined"):
+        ds.cleanup_old_versions(policy=policy, **conflict)
+
+
 @pytest.mark.parametrize("period", [timedelta(0), timedelta(microseconds=-1)])
 def test_cleanup_rejects_invalid_keep_one(tmp_path: Path, period):
     ds = lance.write_dataset(pa.table({"a": [1, 2]}), tmp_path)

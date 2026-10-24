@@ -31,7 +31,7 @@ use jni::{JNIEnv, objects::JObject};
 use lance::dataset::builder::DatasetBuilder;
 use lance::dataset::cleanup::{
     CleanupCandidateFile, CleanupExplanation, CleanupFileKind, CleanupPolicy,
-    CleanupReferencedBranch, RemovalStats,
+    CleanupReferencedBranch, RemovalStats, parse_retention_policy,
 };
 use lance::dataset::optimize::{CompactionOptions as RustCompactionOptions, compact_files};
 use lance::dataset::refs::{Ref, TagContents};
@@ -3640,8 +3640,7 @@ pub extern "system" fn Java_org_lance_Dataset_nativeCleanupWithPolicy<'local>(
     jpolicy: JObject,
     jdelete_concurrency: JObject,
     jdelete_rate_limit: JObject,
-    jkeep_one_per_interval_millis: JObject,
-    jkeep_one_older_than_millis: JObject,
+    jretention_policy: JObject,
 ) -> JObject<'local> {
     ok_or_throw!(
         env,
@@ -3651,8 +3650,7 @@ pub extern "system" fn Java_org_lance_Dataset_nativeCleanupWithPolicy<'local>(
             jpolicy,
             jdelete_concurrency,
             jdelete_rate_limit,
-            jkeep_one_per_interval_millis,
-            jkeep_one_older_than_millis
+            jretention_policy
         )
     )
 }
@@ -3663,29 +3661,11 @@ fn inner_cleanup_with_policy<'local>(
     jpolicy: JObject,
     jdelete_concurrency: JObject,
     jdelete_rate_limit: JObject,
-    jkeep_one_per_interval_millis: JObject,
-    jkeep_one_older_than_millis: JObject,
+    jretention_policy: JObject,
 ) -> Result<JObject<'local>> {
     let policy = extract_cleanup_policy(env, &jpolicy)?;
-    let keep_one_older_than = env.get_optional(&jkeep_one_older_than_millis, |env, obj| {
-        let value = env.call_method(obj, "longValue", "()J", &[])?.j()?;
-        u64::try_from(value)
-            .map(Duration::from_millis)
-            .map_err(|_| {
-                Error::input_error(format!(
-                    "keep_one.older_than must be non-negative, got {value} milliseconds"
-                ))
-            })
-    })?;
-    let keep_one_per_interval = env.get_optional(&jkeep_one_per_interval_millis, |env, obj| {
-        let value = env.call_method(obj, "longValue", "()J", &[])?.j()?;
-        u64::try_from(value)
-            .map(Duration::from_millis)
-            .map_err(|_| {
-                Error::input_error(format!(
-                    "keep_one.per_interval must be positive, got {value} milliseconds"
-                ))
-            })
+    let retention_policy: Option<String> = env.get_optional(&jretention_policy, |env, obj| {
+        Ok(env.get_string(&JString::from(obj))?.into())
     })?;
     let delete_concurrency = env.get_optional(&jdelete_concurrency, |env, obj| {
         let value = env.call_method(obj, "longValue", "()J", &[])?.j()?;
@@ -3708,10 +3688,8 @@ fn inner_cleanup_with_policy<'local>(
         let dataset =
             unsafe { env.get_rust_field::<_, _, BlockingDataset>(jdataset, NATIVE_DATASET) }?;
         let mut operation = dataset.inner.cleanup(policy);
-        if let Some(period) = keep_one_per_interval {
-            let age = keep_one_older_than
-                .ok_or_else(|| Error::input_error("keep_one.older_than is required".to_string()))?;
-            operation = operation.with_keep_one(period, age)?;
+        if let Some(value) = retention_policy {
+            operation = operation.with_retention_policy(parse_retention_policy(&value)?)?;
         }
         if let Some(concurrency) = delete_concurrency {
             operation = operation.with_delete_concurrency(concurrency)?;
@@ -3731,8 +3709,7 @@ pub extern "system" fn Java_org_lance_Dataset_nativeExplainCleanupWithPolicy<'lo
     jdataset: JObject,
     jpolicy: JObject,
     jmax_candidate_files: JObject,
-    jkeep_one_per_interval_millis: JObject,
-    jkeep_one_older_than_millis: JObject,
+    jretention_policy: JObject,
 ) -> JObject<'local> {
     ok_or_throw!(
         env,
@@ -3741,8 +3718,7 @@ pub extern "system" fn Java_org_lance_Dataset_nativeExplainCleanupWithPolicy<'lo
             jdataset,
             jpolicy,
             jmax_candidate_files,
-            jkeep_one_per_interval_millis,
-            jkeep_one_older_than_millis
+            jretention_policy
         )
     )
 }
@@ -3752,29 +3728,11 @@ fn inner_explain_cleanup_with_policy<'local>(
     jdataset: JObject,
     jpolicy: JObject,
     jmax_candidate_files: JObject,
-    jkeep_one_per_interval_millis: JObject,
-    jkeep_one_older_than_millis: JObject,
+    jretention_policy: JObject,
 ) -> Result<JObject<'local>> {
     let policy = extract_cleanup_policy(env, &jpolicy)?;
-    let keep_one_older_than = env.get_optional(&jkeep_one_older_than_millis, |env, obj| {
-        let value = env.call_method(obj, "longValue", "()J", &[])?.j()?;
-        u64::try_from(value)
-            .map(Duration::from_millis)
-            .map_err(|_| {
-                Error::input_error(format!(
-                    "keep_one.older_than must be non-negative, got {value} milliseconds"
-                ))
-            })
-    })?;
-    let keep_one_per_interval = env.get_optional(&jkeep_one_per_interval_millis, |env, obj| {
-        let value = env.call_method(obj, "longValue", "()J", &[])?.j()?;
-        u64::try_from(value)
-            .map(Duration::from_millis)
-            .map_err(|_| {
-                Error::input_error(format!(
-                    "keep_one.per_interval must be positive, got {value} milliseconds"
-                ))
-            })
+    let retention_policy: Option<String> = env.get_optional(&jretention_policy, |env, obj| {
+        Ok(env.get_string(&JString::from(obj))?.into())
     })?;
     let max_candidate_files = env
         .get_optional(&jmax_candidate_files, |env, inner| {
@@ -3794,10 +3752,8 @@ fn inner_explain_cleanup_with_policy<'local>(
         let dataset =
             unsafe { env.get_rust_field::<_, _, BlockingDataset>(jdataset, NATIVE_DATASET) }?;
         let mut operation = dataset.inner.cleanup(policy);
-        if let Some(period) = keep_one_per_interval {
-            let age = keep_one_older_than
-                .ok_or_else(|| Error::input_error("keep_one.older_than is required".to_string()))?;
-            operation = operation.with_keep_one(period, age)?;
+        if let Some(value) = retention_policy {
+            operation = operation.with_retention_policy(parse_retention_policy(&value)?)?;
         }
         if let Some(limit) = max_candidate_files {
             operation = operation.with_max_candidate_files(limit);

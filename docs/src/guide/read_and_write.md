@@ -556,51 +556,68 @@ from datetime import timedelta
 dataset.cleanup_old_versions(older_than=timedelta(days=1))
 ```
 
-To thin older history independently of expiration, use `KeepOne`. For example,
-keep every version from the last two days, one per day between two and seven
-days, and remove every version older than seven days:
+For multiple retention windows, pass an ordered `policy` list. This example keeps
+full recent history, hourly samples between two and seven days, daily samples
+between seven and thirty days, and expires everything older than thirty days:
 
 ```python
-from lance import KeepOne
+from lance import KeepOne, RemoveAll
 
 dataset.cleanup_old_versions(
-    older_than=timedelta(days=7),
-    keep_one=KeepOne(per_interval=timedelta(days=1), older_than=timedelta(days=2)),
+    policy=[
+        KeepOne(per_interval=timedelta(hours=1), older_than=timedelta(days=2)),
+        KeepOne(per_interval=timedelta(days=1), older_than=timedelta(days=7)),
+        RemoveAll(older_than=timedelta(days=30)),
+    ]
 )
 ```
 
-The existing top-level `older_than` remains a wall-clock expiration age and
-removes even sampled versions. `KeepOne.older_than` controls when thinning starts;
-it defaults to two days and must be at least two days. Its cutoff is the hinted
-commit's timestamp minus that age, falling back to the dataset snapshot's commit
-when no hint exists. The hinted version and every later version are protected
-from thinning even with backwards clocks. Existing durable hints are honored even
-when the cleaner sets `LANCE_USE_VERSION_HINT=0`.
+Ages must strictly increase. Each version uses the oldest matching `KeepOne`
+rule, with separate buckets for each band. `RemoveAll` is optional and must be
+last; without it, sampled history has no expiration limit. Empty policies,
+duplicate thresholds and unsupported rules are rejected. Comparisons are strictly
+older-than: a version exactly at a threshold stays in the younger band.
 
-Each interval is aligned to the UTC Unix epoch and keeps the newest eligible
-logical commit timestamp, breaking ties by version. Tags, the current version
-and branch dependencies remain protected, so a bucket can have extra survivors.
-Version filters such as `retain_versions` and `versions` limit both expiration
-and thinning. Cleanup preserves the data and index files needed by all retained
-snapshots. The same options are available on `explain_cleanup_old_versions`.
-With `keep_one` alone, sampled history has no expiration limit. Without thinning,
-cleanup retains its existing defaults and behavior.
+`KeepOne.older_than` must be at least two days. Sampling ages are relative to the
+hinted commit timestamp, falling back to this dataset's commit when no hint
+exists. The hinted version and every later version are protected from thinning,
+even with backwards clocks or `LANCE_USE_VERSION_HINT=0` in the cleaner.
+`RemoveAll.older_than` is a wall-clock expiration age and expires sampled versions
+too. Each sampling interval aligns to the UTC Unix epoch and selects the newest
+eligible commit timestamp, breaking ties by version number.
 
-In Rust, use `dataset.cleanup(policy).with_keep_one(per_interval, older_than)?`;
-in Java, use `dataset.cleanup(policy).withKeepOne(perInterval, olderThan)`.
-Both parameters are durations. The policy's absolute timestamp remains an
-independent expiration cutoff.
+Tags, current versions and branch dependencies remain protected. `versions` and
+`retain_versions` limit which versions either operation can remove. Cleanup also
+preserves the data, indices and blobs needed by retained snapshots. The same
+`policy` is accepted by `explain_cleanup_old_versions` for a read-only preview.
 
-For automatic cleanup, configure the same example with:
+The existing top-level `older_than` keeps its wall-clock expiration meaning.
+Existing cleanup calls and defaults continue to work. The single-window shorthand
+`older_than=timedelta(days=7), keep_one=KeepOne(timedelta(days=1), timedelta(days=2))`
+is also supported. Do not combine `policy` with `older_than` or `keep_one`.
+
+Rust accepts a `Vec<RetentionRule>` through `.with_retention_policy(...)`; Java
+accepts a `List<RetentionRule>` through `.withRetentionPolicy(...)`, using
+`RetentionRule.keepOne(perInterval, olderThan)` and
+`RetentionRule.removeAll(olderThan)`. Existing native policy filters still apply.
+
+For automatic cleanup, use the same rules with duration strings:
 
 ```python
+import json
+
 dataset.update_config({
     "lance.auto_cleanup.interval": "100",
-    "lance.auto_cleanup.older_than": "7days",
-    "lance.auto_cleanup.keep_one.per_interval": "1day",
-    "lance.auto_cleanup.keep_one.older_than": "2days",
+    "lance.auto_cleanup.policy": json.dumps([
+        {"type": "keep_one", "per_interval": "1h", "older_than": "2days"},
+        {"type": "keep_one", "per_interval": "1day", "older_than": "7days"},
+        {"type": "remove_all", "older_than": "30days"},
+    ]),
 })
 ```
+
+Do not combine this policy setting with `lance.auto_cleanup.older_than` or the
+single-window `lance.auto_cleanup.keep_one.*` settings.
 
 Thinning also supports local filesystems and S3 Express. The hint-relative
 two-day minimum provides a retention buffer for delayed hint writes; it does not

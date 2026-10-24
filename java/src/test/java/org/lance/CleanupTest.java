@@ -16,6 +16,7 @@ package org.lance;
 import org.lance.cleanup.CleanupExplanation;
 import org.lance.cleanup.CleanupPolicy;
 import org.lance.cleanup.RemovalStats;
+import org.lance.cleanup.RetentionRule;
 
 import org.apache.arrow.memory.RootAllocator;
 import org.junit.jupiter.api.Assertions;
@@ -37,6 +38,52 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class CleanupTest {
+  @Test
+  public void testCleanupRetentionPolicy(@TempDir Path tempDir) {
+    try (RootAllocator allocator = new RootAllocator(Long.MAX_VALUE)) {
+      TestUtils.SimpleTestDataset fixture =
+          new TestUtils.SimpleTestDataset(allocator, tempDir.toString());
+      fixture.createEmptyDataset().close();
+      fixture.write(1, 10).close();
+      fixture.write(2, 10).close();
+      try (Dataset dataset = fixture.write(3, 10)) {
+        CleanupOperation cleanup =
+            dataset
+                .cleanup(CleanupPolicy.builder().build())
+                .withRetentionPolicy(
+                    List.of(
+                        RetentionRule.keepOne(Duration.ofHours(1), Duration.ofDays(2)),
+                        RetentionRule.keepOne(Duration.ofDays(1), Duration.ofDays(7)),
+                        RetentionRule.removeAll(Duration.ofDays(30))));
+        assertEquals(0L, cleanup.explain().getStats().getOldVersions());
+        assertEquals(0L, cleanup.execute().getOldVersions());
+        CleanupOperation expire =
+            dataset
+                .cleanup(CleanupPolicy.builder().build())
+                .withRetentionPolicy(List.of(RetentionRule.removeAll(Duration.ZERO)));
+        assertEquals(3L, expire.explain().getStats().getOldVersions());
+        assertEquals(4, dataset.listVersions().size());
+        assertEquals(3L, expire.execute().getOldVersions());
+        assertEquals(1, dataset.listVersions().size());
+        assertEquals(0L, expire.execute().getOldVersions());
+        for (List<RetentionRule> invalid :
+            List.of(
+                List.<RetentionRule>of(),
+                List.of(
+                    RetentionRule.keepOne(Duration.ofHours(1), Duration.ofDays(2)),
+                    RetentionRule.keepOne(Duration.ofDays(1), Duration.ofDays(2))),
+                List.of(
+                    RetentionRule.removeAll(Duration.ofDays(30)),
+                    RetentionRule.keepOne(Duration.ofHours(1), Duration.ofDays(2))))) {
+          CleanupOperation bad =
+              dataset.cleanup(CleanupPolicy.builder().build()).withRetentionPolicy(invalid);
+          Assertions.assertThrows(RuntimeException.class, bad::explain);
+          Assertions.assertThrows(RuntimeException.class, bad::execute);
+        }
+      }
+    }
+  }
+
   @Test
   public void testCleanupKeepOnePer(@TempDir Path tempDir) {
     try (RootAllocator allocator = new RootAllocator(Long.MAX_VALUE)) {

@@ -16,11 +16,15 @@ package org.lance;
 import org.lance.cleanup.CleanupExplanation;
 import org.lance.cleanup.CleanupPolicy;
 import org.lance.cleanup.RemovalStats;
+import org.lance.cleanup.RetentionRule;
+import org.lance.util.JsonUtils;
 
 import org.apache.arrow.util.Preconditions;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 /**
  * A cleanup operation with separate read-only explain and destructive execute actions.
@@ -34,8 +38,7 @@ public class CleanupOperation {
   private Optional<Long> deleteConcurrency = Optional.empty();
   private Optional<Long> deleteRateLimit = Optional.empty();
   private Optional<Long> maxCandidateFiles = Optional.empty();
-  private Optional<Long> keepOnePerIntervalMillis = Optional.empty();
-  private Optional<Long> keepOneOlderThanMillis = Optional.empty();
+  private Optional<String> retentionPolicyJson = Optional.empty();
 
   CleanupOperation(Dataset dataset, CleanupPolicy policy) {
     this.dataset = Preconditions.checkNotNull(dataset, "dataset cannot be null");
@@ -59,20 +62,32 @@ public class CleanupOperation {
    * @return this operation for chaining
    */
   public CleanupOperation withKeepOne(Duration perInterval, Duration olderThan) {
-    Preconditions.checkNotNull(perInterval, "perInterval cannot be null");
-    Preconditions.checkNotNull(olderThan, "olderThan cannot be null");
-    long intervalMillis = perInterval.toMillis();
-    long ageMillis = olderThan.toMillis();
-    Preconditions.checkArgument(
-        intervalMillis > 0 && perInterval.equals(Duration.ofMillis(intervalMillis)),
-        "keep_one.per_interval must be positive with millisecond precision, got %s",
-        perInterval);
-    Preconditions.checkArgument(
-        ageMillis >= 0 && olderThan.equals(Duration.ofMillis(ageMillis)),
-        "keep_one.older_than must be non-negative with millisecond precision, got %s",
-        olderThan);
-    this.keepOnePerIntervalMillis = Optional.of(intervalMillis);
-    this.keepOneOlderThanMillis = Optional.of(ageMillis);
+    return withRetentionPolicy(List.of(RetentionRule.keepOne(perInterval, olderThan)));
+  }
+
+  /**
+   * Set retention age bands, with strictly increasing ages and an optional final RemoveAll rule.
+   * Version filters constrain every rule. Omitting RemoveAll retains sampled history indefinitely
+   * unless the legacy policy expires it.
+   *
+   * <p>Example: {@code dataset.cleanup(policy).withRetentionPolicy(List.of(
+   * RetentionRule.keepOne(Duration.ofHours(1), Duration.ofDays(2)),
+   * RetentionRule.keepOne(Duration.ofDays(1), Duration.ofDays(7)),
+   * RetentionRule.removeAll(Duration.ofDays(30)))).execute()}.
+   *
+   * @param rules ordered retention rules, validated on explain and execute
+   * @return this operation for chaining, replacing any previous retention rules
+   */
+  public CleanupOperation withRetentionPolicy(List<RetentionRule> rules) {
+    Preconditions.checkNotNull(rules, "rules cannot be null");
+    this.retentionPolicyJson =
+        Optional.of(
+            rules.stream()
+                .map(
+                    rule ->
+                        JsonUtils.toJson(
+                            Preconditions.checkNotNull(rule, "rule cannot be null").toConfig()))
+                .collect(Collectors.joining(",", "[", "]")));
     return this;
   }
 
@@ -131,8 +146,7 @@ public class CleanupOperation {
    * @return cleanup explanation
    */
   public CleanupExplanation explain() {
-    return dataset.explainCleanup(
-        policy, maxCandidateFiles, keepOnePerIntervalMillis, keepOneOlderThanMillis);
+    return dataset.explainCleanup(policy, maxCandidateFiles, retentionPolicyJson);
   }
 
   /**
@@ -141,11 +155,6 @@ public class CleanupOperation {
    * @return removal stats
    */
   public RemovalStats execute() {
-    return dataset.executeCleanup(
-        policy,
-        deleteConcurrency,
-        deleteRateLimit,
-        keepOnePerIntervalMillis,
-        keepOneOlderThanMillis);
+    return dataset.executeCleanup(policy, deleteConcurrency, deleteRateLimit, retentionPolicyJson);
   }
 }

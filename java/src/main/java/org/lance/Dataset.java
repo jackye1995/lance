@@ -2710,16 +2710,11 @@ public class Dataset implements Closeable {
       CleanupPolicy policy,
       Optional<Long> deleteConcurrency,
       Optional<Long> deleteRateLimit,
-      Optional<Long> keepOnePerIntervalMillis,
-      Optional<Long> keepOneOlderThanMillis) {
+      Optional<String> retentionPolicyJson) {
     try (LockManager.WriteLock writeLock = lockManager.acquireWriteLock()) {
       Preconditions.checkArgument(nativeDatasetHandle != 0, "Dataset is closed");
       return nativeCleanupWithPolicy(
-          policy,
-          deleteConcurrency,
-          deleteRateLimit,
-          keepOnePerIntervalMillis,
-          keepOneOlderThanMillis);
+          policy, deleteConcurrency, deleteRateLimit, retentionPolicyJson);
     }
   }
 
@@ -2727,24 +2722,18 @@ public class Dataset implements Closeable {
       CleanupPolicy policy,
       Optional<Long> deleteConcurrency,
       Optional<Long> deleteRateLimit,
-      Optional<Long> keepOnePerIntervalMillis,
-      Optional<Long> keepOneOlderThanMillis);
+      Optional<String> retentionPolicyJson);
 
   CleanupExplanation explainCleanup(
       CleanupPolicy policy,
       Optional<Long> maxCandidateFiles,
-      Optional<Long> keepOnePerIntervalMillis,
-      Optional<Long> keepOneOlderThanMillis) {
+      Optional<String> retentionPolicyJson) {
     try (LockManager.ReadLock readLock = lockManager.acquireReadLock()) {
       Preconditions.checkArgument(nativeDatasetHandle != 0, "Dataset is closed");
-      return nativeExplainCleanupWithPolicy(
-          policy, maxCandidateFiles, keepOnePerIntervalMillis, keepOneOlderThanMillis);
+      return nativeExplainCleanupWithPolicy(policy, maxCandidateFiles, retentionPolicyJson);
     }
   }
 
   private native CleanupExplanation nativeExplainCleanupWithPolicy(
-      CleanupPolicy policy,
-      Optional<Long> maxCandidateFiles,
-      Optional<Long> keepOnePerIntervalMillis,
-      Optional<Long> keepOneOlderThanMillis);
+      CleanupPolicy policy, Optional<Long> maxCandidateFiles, Optional<String> retentionPolicyJson);
 }

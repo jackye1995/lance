@@ -36,6 +36,11 @@
 //! (which should only be done if the caller can guarantee there are no updates
 //! happening at the same time)
 
+mod retention;
+
+use retention::{MIN_THINNING_AGE, validate_retention_policy};
+pub use retention::{RetentionRule, parse_retention_policy};
+
 use super::refs::TagContents;
 use crate::dataset::TRANSACTIONS_DIR;
 use crate::{Dataset, utils::temporal::utc_now};
@@ -65,6 +70,7 @@ use lance_table::{
 use object_store::ObjectMeta;
 use object_store::path::Path;
 use prost::Message;
+
 use std::fmt::Debug;
 use std::{
     collections::{HashMap, HashSet},
@@ -343,8 +349,8 @@ struct CleanupTask<'a> {
     delete_execution: Option<Arc<DeleteExecution>>,
     dataset: &'a Dataset,
     policy: CleanupPolicy,
-    keep_one: Option<KeepOne>,
-    thinning_cutoff: Option<DateTime<Utc>>,
+    retention_policy: Option<Vec<RetentionRule>>,
+    thinning_rules: Vec<ThinningRule>,
     thinning_version_floor: Option<u64>,
     action: CleanupAction,
     read_version: u64,
@@ -381,7 +387,7 @@ struct CleanupInspection {
     // only whether they found owner paths, not another copy of all references.
     managed_scans: HashMap<ManagedScanKey, Arc<OnceCell<bool>>>,
     old_manifests: HashMap<Path, ExpiredManifest>,
-    bucket_survivors: HashMap<u128, (u128, ManifestLocation)>,
+    bucket_survivors: HashMap<(usize, u128), (u128, ManifestLocation)>,
     /// Store records to retire once their manifests are gone, by version;
     /// see `CommitHandler::forget_version`.
     retired_records: HashMap<u64, String>,
@@ -447,24 +453,11 @@ impl CleanupInspection {
 /// this many days old.
 const UNVERIFIED_THRESHOLD_DAYS: i64 = 7;
 const DEFAULT_EXPLANATION_MAX_CANDIDATE_FILES: usize = 1_000;
-const MIN_THINNING_AGE: Duration = Duration::from_secs(2 * 86_400);
 
 #[derive(Clone, Copy, Debug)]
-struct KeepOne {
+struct ThinningRule {
     per_interval: Duration,
-    older_than: Duration,
-}
-
-fn validate_thinning_age(age: Duration) -> Result<()> {
-    TimeDelta::from_std(age).map_err(|_| {
-        Error::invalid_input(format!("keep_one.older_than is out of range: {age:?}"))
-    })?;
-    if age < MIN_THINNING_AGE {
-        return Err(Error::invalid_input(format!(
-            "keep_one.older_than must be at least 2 days, got {age:?}"
-        )));
-    }
-    Ok(())
+    cutoff: DateTime<Utc>,
 }
 
 /// Builder-style cleanup operation.
@@ -478,7 +471,7 @@ pub struct CleanupOperation<'a> {
     max_candidate_files: usize,
     delete_concurrency: Option<usize>,
     delete_rate_limit: Option<u64>,
-    keep_one: Option<KeepOne>,
+    retention_policy: Option<Vec<RetentionRule>>,
 }
 
 impl<'a> CleanupOperation<'a> {
@@ -489,7 +482,7 @@ impl<'a> CleanupOperation<'a> {
             max_candidate_files: DEFAULT_EXPLANATION_MAX_CANDIDATE_FILES,
             delete_concurrency: None,
             delete_rate_limit: None,
-            keep_one: None,
+            retention_policy: None,
         }
     }
 
@@ -521,17 +514,34 @@ impl<'a> CleanupOperation<'a> {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn with_keep_one(mut self, per_interval: Duration, older_than: Duration) -> Result<Self> {
-        if per_interval.is_zero() {
-            return Err(Error::invalid_input(
-                "keep_one.per_interval must be greater than zero",
-            ));
-        }
-        validate_thinning_age(older_than)?;
-        self.keep_one = Some(KeepOne {
+    pub fn with_keep_one(self, per_interval: Duration, older_than: Duration) -> Result<Self> {
+        self.with_retention_policy(vec![RetentionRule::KeepOne {
             per_interval,
             older_than,
-        });
+        }])
+    }
+
+    /// Set age bands for thinning and expiration. Ages must strictly increase;
+    /// `RemoveAll` is optional and must be last. Without it, samples never expire
+    /// unless the legacy policy specifies `before_timestamp`. Version filters
+    /// constrain every rule. A policy replaces a previous retention policy.
+    ///
+    /// ```
+    /// # use lance::{Dataset, Result};
+    /// # use lance::dataset::cleanup::{CleanupPolicy, RetentionRule};
+    /// # use std::time::Duration;
+    /// # async fn example(dataset: &Dataset) -> Result<()> {
+    /// dataset.cleanup(CleanupPolicy::default()).with_retention_policy(vec![
+    ///     RetentionRule::KeepOne { per_interval: Duration::from_secs(3600), older_than: Duration::from_secs(2 * 86_400) },
+    ///     RetentionRule::KeepOne { per_interval: Duration::from_secs(86_400), older_than: Duration::from_secs(7 * 86_400) },
+    ///     RetentionRule::RemoveAll { older_than: Duration::from_secs(30 * 86_400) },
+    /// ])?.execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn with_retention_policy(mut self, rules: Vec<RetentionRule>) -> Result<Self> {
+        validate_retention_policy(&rules)?;
+        self.retention_policy = Some(rules);
         Ok(self)
     }
 
@@ -617,17 +627,24 @@ impl<'a> CleanupOperation<'a> {
 }
 
 impl<'a> CleanupTask<'a> {
-    fn cleanup_candidates(&self, manifest: &Manifest) -> (bool, bool) {
-        let hard_expired = (self.keep_one.is_none() || self.policy.before_timestamp.is_some())
+    fn cleanup_candidates(&self, manifest: &Manifest) -> (bool, Option<usize>) {
+        if !self.policy.matches_version_filters(manifest) {
+            return (false, None);
+        }
+        let hard_expired = (self.retention_policy.is_none()
+            || self.policy.before_timestamp.is_some())
             && self.policy.should_clean(manifest);
-        let thinning_candidate = self
-            .thinning_cutoff
-            .is_some_and(|cutoff| manifest.timestamp() < cutoff)
-            && self
-                .thinning_version_floor
-                .is_some_and(|floor| manifest.version < floor)
-            && self.policy.matches_version_filters(manifest);
-        (hard_expired, thinning_candidate)
+        let tier = if self
+            .thinning_version_floor
+            .is_some_and(|floor| manifest.version < floor)
+        {
+            self.thinning_rules
+                .iter()
+                .rposition(|rule| manifest.timestamp() < rule.cutoff)
+        } else {
+            None
+        };
+        (hard_expired, tier)
     }
 
     fn new(operation: &CleanupOperation<'a>, action: CleanupAction) -> Result<Self> {
@@ -651,8 +668,8 @@ impl<'a> CleanupTask<'a> {
         include_referenced_branches: bool,
         mut delete_execution: Option<Arc<DeleteExecution>>,
     ) -> Result<Self> {
-        if let Some(keep_one) = operation.keep_one {
-            validate_thinning_age(keep_one.older_than)?;
+        if let Some(rules) = &operation.retention_policy {
+            validate_retention_policy(rules)?;
         }
         if action.deletes_files() && delete_execution.is_none() {
             let concurrency = operation
@@ -673,8 +690,8 @@ impl<'a> CleanupTask<'a> {
             delete_execution,
             dataset: operation.dataset,
             policy: operation.policy.clone(),
-            keep_one: operation.keep_one,
-            thinning_cutoff: None,
+            retention_policy: operation.retention_policy.clone(),
+            thinning_rules: Vec::new(),
             thinning_version_floor: None,
             action,
             read_version: operation.dataset.version().version,
@@ -685,11 +702,32 @@ impl<'a> CleanupTask<'a> {
     }
 
     async fn run(mut self) -> Result<CleanupRunResult> {
-        if let Some(keep_one) = self.keep_one {
-            let age = keep_one.older_than;
-            let delta = TimeDelta::from_std(age).map_err(|_| {
-                Error::invalid_input(format!("keep_one.older_than is out of range: {age:?}"))
-            })?;
+        if let Some(rules) = &self.retention_policy {
+            for rule in rules {
+                if let RetentionRule::RemoveAll { older_than } = rule {
+                    let delta = TimeDelta::from_std(*older_than).map_err(|_| {
+                        Error::invalid_input(format!(
+                            "remove_all.older_than is out of range: {older_than:?}"
+                        ))
+                    })?;
+                    let cutoff = utc_now().checked_sub_signed(delta).ok_or_else(|| {
+                        Error::invalid_input(format!(
+                            "remove_all.older_than={older_than:?} underflows current time"
+                        ))
+                    })?;
+                    self.policy.before_timestamp = Some(
+                        self.policy
+                            .before_timestamp
+                            .map_or(cutoff, |existing| existing.max(cutoff)),
+                    );
+                }
+            }
+        }
+        if self.retention_policy.as_ref().is_some_and(|rules| {
+            rules
+                .iter()
+                .any(|rule| matches!(rule, RetentionRule::KeepOne { .. }))
+        }) {
             let anchor = {
                 // Other readers can use a durable hint even when this process disables it.
                 let hinted_version = if !self.dataset.object_store.list_is_lexically_ordered {
@@ -746,12 +784,27 @@ impl<'a> CleanupTask<'a> {
                     .unwrap_or(&self.dataset.manifest)
                     .timestamp()
             };
-            let cutoff = anchor.checked_sub_signed(delta).ok_or_else(|| {
-                Error::invalid_input(format!(
-                    "keep_one.older_than={age:?} underflows anchor timestamp {anchor}"
-                ))
-            })?;
-            self.thinning_cutoff = Some(cutoff);
+            if let Some(rules) = &self.retention_policy {
+                for rule in rules {
+                    if let RetentionRule::KeepOne {
+                        per_interval,
+                        older_than,
+                    } = rule
+                    {
+                        let delta = TimeDelta::from_std(*older_than).map_err(|_| {
+                            Error::invalid_input(format!(
+                                "keep_one.older_than is out of range: {older_than:?}"
+                            ))
+                        })?;
+                        let cutoff = anchor.checked_sub_signed(delta).ok_or_else(|| Error::invalid_input(
+                            format!("keep_one.older_than={older_than:?} underflows anchor timestamp {anchor}")))?;
+                        self.thinning_rules.push(ThinningRule {
+                            per_interval: *per_interval,
+                            cutoff,
+                        });
+                    }
+                }
+            }
         }
         let mut final_result = CleanupRunResult::default();
         let candidate_file_limit = self.action.candidate_file_limit();
@@ -978,7 +1031,7 @@ impl<'a> CleanupTask<'a> {
         // cleaned them, where almost every manifest is expired. Branch roots must also
         // be read: lineage retention can rescue them and their own FRI row maps later.
         if self.policy.delete_unverified
-            && self.keep_one.is_none()
+            && self.retention_policy.is_none()
             && !tagged_versions.contains(&location.version)
             && !branch_versions.contains(&location.version)
             && location.version < self.read_version
@@ -1051,7 +1104,7 @@ impl<'a> CleanupTask<'a> {
         let is_tagged = tagged_versions.contains(&manifest.version);
         let in_working_set = retain_bucket_survivor
             || is_latest
-            || !(hard_expired || thinning_candidate)
+            || !(hard_expired || thinning_candidate.is_some())
             || is_tagged;
         if manifest.has_managed_blobs() {
             let snapshot = self
@@ -1065,15 +1118,18 @@ impl<'a> CleanupTask<'a> {
 
         // Track tagged old versions in case we want to return a `CleanupError` later.
         // Only track tagged when it is old.
-        if is_tagged && !is_latest && (hard_expired || thinning_candidate) {
+        if is_tagged && !is_latest && (hard_expired || thinning_candidate.is_some()) {
             inspection.tagged_old_versions.insert(manifest.version);
         }
 
         self.process_manifest(&manifest, &indexes, in_working_set, &mut inspection)?;
         let commit_ts = manifest.timestamp();
         if !in_working_set {
-            if let Some(keep_one) = self.keep_one.filter(|_| !hard_expired) {
-                let bucket = manifest.timestamp_nanos / keep_one.per_interval.as_nanos();
+            if let Some(tier) = thinning_candidate.filter(|_| !hard_expired) {
+                let bucket = (
+                    tier,
+                    manifest.timestamp_nanos / self.thinning_rules[tier].per_interval.as_nanos(),
+                );
                 let candidate = (manifest.timestamp_nanos, manifest.version);
                 let survivor = inspection
                     .bucket_survivors
@@ -1927,7 +1983,7 @@ impl<'a> CleanupTask<'a> {
                             ensure_can_write_manifest(&manifest)?;
                             let (hard_expired, thinning_candidate) =
                                 self.cleanup_candidates(&manifest);
-                            if hard_expired || thinning_candidate {
+                            if hard_expired || thinning_candidate.is_some() {
                                 referenced_branches.insert(branch_name.clone());
                             }
                         }
@@ -2637,7 +2693,7 @@ pub async fn build_cleanup_policy(
     let operation = build_cleanup_operation(dataset, manifest, false).await?;
     if operation
         .as_ref()
-        .is_some_and(|operation| operation.keep_one.is_some())
+        .is_some_and(|operation| operation.retention_policy.is_some())
     {
         return Err(Error::not_supported(
             "build_cleanup_policy cannot represent keep_one retention; use auto_cleanup_hook instead",
@@ -2729,6 +2785,21 @@ async fn build_cleanup_operation<'a>(
     }
 
     let mut operation = dataset.cleanup(builder.build());
+    if let Some(value) = manifest.config.get("lance.auto_cleanup.policy") {
+        if manifest
+            .config
+            .contains_key("lance.auto_cleanup.older_than")
+            || manifest
+                .config
+                .keys()
+                .any(|key| key.starts_with("lance.auto_cleanup.keep_one."))
+        {
+            return Err(Error::invalid_input(
+                "lance.auto_cleanup.policy cannot be combined with older_than or keep_one settings",
+            ));
+        }
+        operation = operation.with_retention_policy(parse_retention_policy(value)?)?;
+    }
     if let Some(value) = manifest
         .config
         .get("lance.auto_cleanup.keep_one.per_interval")
@@ -2838,6 +2909,179 @@ mod tests {
     use object_store::throttle::{ThrottleConfig, ThrottledStore};
     use rstest::rstest;
     use uuid::Uuid;
+
+    #[rstest]
+    #[tokio::test]
+    async fn cleanup_retention_policy_ladder(
+        #[values(false, true)] auto_config: bool,
+        #[values(false, true)] protected: bool,
+    ) {
+        let fixture = MockDatasetFixture::try_new_in_memory().unwrap();
+        for (index, hour) in [
+            0, 1, 240, 264, 576, 577, 769, 770, 792, 792, 793, 864, 864, 865, 911, 912, 912, 913,
+            959, 960,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            MockClock::set_system_time(Duration::from_secs(hour * 3600));
+            let data = lance_datagen::gen_batch()
+                .col("value", lance_datagen::array::step::<Int32Type>())
+                .into_reader_rows(2.into(), 2.into());
+            Dataset::write(
+                data,
+                &fixture.dataset_path,
+                Some(WriteParams {
+                    mode: if index == 0 {
+                        WriteMode::Create
+                    } else {
+                        WriteMode::Overwrite
+                    },
+                    max_rows_per_file: 2,
+                    store_params: Some(fixture.os_params()),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        }
+        let dataset = fixture.open().await.unwrap();
+        let expected_data = dataset.scan().try_into_batch().await.unwrap();
+        let mut operation = if auto_config {
+            let mut manifest = dataset.manifest.as_ref().clone();
+            manifest.config.extend([
+                ("lance.auto_cleanup.interval".into(), "1".into()),
+                (
+                    "lance.auto_cleanup.policy".into(),
+                    r#"[
+                    {"type":"keep_one","per_interval":"1h","older_than":"2days"},
+                    {"type":"keep_one","per_interval":"1day","older_than":"7days"},
+                    {"type":"remove_all","older_than":"30days"}
+                ]"#
+                    .into(),
+                ),
+            ]);
+            build_cleanup_operation(&dataset, &manifest, false)
+                .await
+                .unwrap()
+                .unwrap()
+        } else {
+            dataset
+                .cleanup(CleanupPolicy::default())
+                .with_retention_policy(vec![
+                    RetentionRule::KeepOne {
+                        per_interval: Duration::from_secs(3600),
+                        older_than: MIN_THINNING_AGE,
+                    },
+                    RetentionRule::KeepOne {
+                        per_interval: Duration::from_secs(86_400),
+                        older_than: Duration::from_secs(7 * 86_400),
+                    },
+                    RetentionRule::RemoveAll {
+                        older_than: Duration::from_secs(30 * 86_400),
+                    },
+                ])
+                .unwrap()
+        };
+        let mut expected = vec![3, 4, 6, 8, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20];
+        if protected {
+            dataset.tags().create("keep-oldest", 1).await.unwrap();
+            operation.policy.error_if_tagged_old_versions = false;
+            operation.policy.versions = Some(
+                (1..=20)
+                    .filter(|version| ![2, 5].contains(version))
+                    .collect(),
+            );
+            expected.extend([1, 2, 5]);
+            expected.sort_unstable();
+        }
+        let before = fixture.count_files().await.unwrap();
+        let explanation = operation.explain().await.unwrap();
+        assert_eq!(before, fixture.count_files().await.unwrap());
+        let stats = operation.execute().await.unwrap();
+        assert_eq!(stats, explanation.stats);
+        assert_eq!(stats.old_versions, 20 - expected.len() as u64);
+        assert_eq!(stats.data_files_removed, stats.old_versions * 2);
+        assert_eq!(
+            dataset
+                .version_refs()
+                .await
+                .unwrap()
+                .iter()
+                .map(|version| version.version)
+                .collect::<Vec<_>>(),
+            expected
+        );
+        for version in expected {
+            let snapshot = dataset.checkout_version(version).await.unwrap();
+            assert_eq!(snapshot.get_fragments().len(), 2);
+            assert_eq!(
+                snapshot.scan().try_into_batch().await.unwrap(),
+                expected_data
+            );
+        }
+        assert_eq!(operation.execute().await.unwrap().old_versions, 0);
+    }
+
+    #[tokio::test]
+    async fn cleanup_retention_bands_have_independent_buckets() {
+        let fixture = MockDatasetFixture::try_new_in_memory().unwrap();
+        for (index, hour) in [200, 800, 801, 960].into_iter().enumerate() {
+            MockClock::set_system_time(Duration::from_secs(hour * 3600));
+            if index == 0 {
+                fixture.create_some_data().await.unwrap();
+            } else {
+                fixture.overwrite_some_data().await.unwrap();
+            }
+        }
+        let dataset = fixture.open().await.unwrap();
+        let operation = dataset
+            .cleanup(CleanupPolicy::default())
+            .with_retention_policy(vec![
+                RetentionRule::KeepOne {
+                    per_interval: Duration::from_secs(3600),
+                    older_than: MIN_THINNING_AGE,
+                },
+                RetentionRule::KeepOne {
+                    per_interval: Duration::from_secs(900),
+                    older_than: Duration::from_secs(7 * 86_400),
+                },
+            ])
+            .unwrap();
+        assert_eq!(operation.explain().await.unwrap().stats.old_versions, 0);
+        assert_eq!(operation.execute().await.unwrap().old_versions, 0);
+        assert_eq!(dataset.version_refs().await.unwrap().len(), 4);
+    }
+
+    #[rstest]
+    #[case::empty("[]", "must not be empty")]
+    #[case::duplicate(r#"[{"type":"keep_one","per_interval":"1h","older_than":"2days"},{"type":"keep_one","per_interval":"1day","older_than":"2days"}]"#, "strictly increasing")]
+    #[case::unsorted(r#"[{"type":"keep_one","per_interval":"1h","older_than":"7days"},{"type":"keep_one","per_interval":"1day","older_than":"2days"}]"#, "strictly increasing")]
+    #[case::early_remove(r#"[{"type":"remove_all","older_than":"30days"},{"type":"keep_one","per_interval":"1h","older_than":"2days"}]"#, "final retention rule")]
+    #[case::early_expiration(r#"[{"type":"keep_one","per_interval":"1h","older_than":"2days"},{"type":"remove_all","older_than":"1day"}]"#, "strictly increasing")]
+    #[case::unknown(r#"[{"type":"keep_all","older_than":"2days"}]"#, "unknown variant")]
+    #[case::extra_field(
+        r#"[{"type":"remove_all","older_than":"30days","per_interval":"1h"}]"#,
+        "unknown field"
+    )]
+    #[case::missing_field(r#"[{"type":"keep_one","older_than":"2days"}]"#, "missing field")]
+    #[case::invalid_duration(
+        r#"[{"type":"remove_all","older_than":"invalid"}]"#,
+        "Invalid cleanup retention policy"
+    )]
+    #[case::zero_interval(
+        r#"[{"type":"keep_one","per_interval":"0s","older_than":"2days"}]"#,
+        "keep_one.per_interval"
+    )]
+    #[case::young(
+        r#"[{"type":"keep_one","per_interval":"1h","older_than":"1day"}]"#,
+        "at least 2 days"
+    )]
+    fn cleanup_retention_policy_validation(#[case] value: &str, #[case] message: &str) {
+        let error = parse_retention_policy(value).unwrap_err();
+        assert!(matches!(error, Error::InvalidInput { .. }));
+        assert_contains!(error.to_string(), message);
+    }
 
     #[rstest]
     #[case::daily(24, vec![4, 7, 8, 9, 10])]
@@ -3252,7 +3496,10 @@ mod tests {
             .cleanup(CleanupPolicy::default())
             .with_keep_one(Duration::from_secs(1), MIN_THINNING_AGE)
             .unwrap();
-        operation.keep_one.as_mut().unwrap().older_than = age;
+        operation.retention_policy = Some(vec![RetentionRule::KeepOne {
+            per_interval: Duration::from_secs(1),
+            older_than: age,
+        }]);
         assert!(operation.explain().await.is_err());
         assert!(operation.execute().await.is_err());
         let mut manifest = dataset.manifest.as_ref().clone();

@@ -3710,7 +3710,7 @@ fn inner_cleanup_with_policy<'local>(
         let mut operation = dataset.inner.cleanup(policy);
         if let Some(period) = keep_one_per_interval {
             let age = keep_one_older_than
-                .ok_or_else(|| Error::input_error("keep_one.older_than is required"))?;
+                .ok_or_else(|| Error::input_error("keep_one.older_than is required".to_string()))?;
             operation = operation.with_keep_one(period, age)?;
         }
         if let Some(concurrency) = delete_concurrency {
@@ -3796,7 +3796,7 @@ fn inner_explain_cleanup_with_policy<'local>(
         let mut operation = dataset.inner.cleanup(policy);
         if let Some(period) = keep_one_per_interval {
             let age = keep_one_older_than
-                .ok_or_else(|| Error::input_error("keep_one.older_than is required"))?;
+                .ok_or_else(|| Error::input_error("keep_one.older_than is required".to_string()))?;
             operation = operation.with_keep_one(period, age)?;
         }
         if let Some(limit) = max_candidate_files {

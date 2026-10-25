@@ -3458,8 +3458,11 @@ mod tests {
         }
     }
 
+    #[rstest]
     #[tokio::test]
-    async fn cleanup_thinning_preserves_branch_dependencies() {
+    async fn cleanup_thinning_preserves_branch_dependencies(
+        #[values(false, true)] delete_unverified: bool,
+    ) {
         MockClock::set_system_time(Duration::ZERO);
         let fixture = MockDatasetFixture::try_new_in_memory().unwrap();
         fixture.create_some_data().await.unwrap();
@@ -3475,7 +3478,11 @@ mod tests {
         fixture.overwrite_some_data().await.unwrap();
         let parent = fixture.open().await.unwrap();
         let operation = parent
-            .cleanup(CleanupPolicy::default())
+            .cleanup(
+                CleanupPolicyBuilder::default()
+                    .delete_unverified(delete_unverified)
+                    .build(),
+            )
             .with_keep_one(Duration::from_secs(86_400), MIN_THINNING_AGE)
             .unwrap();
         assert_eq!(operation.execute().await.unwrap().old_versions, 0);

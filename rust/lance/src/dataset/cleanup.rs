@@ -2923,8 +2923,11 @@ mod tests {
     use rstest::rstest;
     use uuid::Uuid;
 
+    #[rstest]
     #[tokio::test]
-    async fn cleanup_default_policy_is_remove_all_after_two_weeks() {
+    async fn cleanup_default_policy_is_remove_all_after_two_weeks(
+        #[values(false, true)] delete_unverified: bool,
+    ) {
         let policy = RetentionPolicy::default();
         assert_eq!(
             policy.rules(),
@@ -2943,7 +2946,11 @@ mod tests {
         }
         let dataset = fixture.open().await.unwrap();
         let operation = dataset
-            .cleanup(CleanupPolicy::default())
+            .cleanup(
+                CleanupPolicyBuilder::default()
+                    .delete_unverified(delete_unverified)
+                    .build(),
+            )
             .with_retention_policy(policy)
             .unwrap();
         assert_eq!(operation.explain().await.unwrap().stats.old_versions, 1);
@@ -2983,6 +2990,7 @@ mod tests {
     async fn cleanup_retention_policy_ladder(
         #[values(false, true)] auto_config: bool,
         #[values(false, true)] protected: bool,
+        #[values(false, true)] delete_unverified: bool,
     ) {
         let fixture = MockDatasetFixture::try_new_in_memory().unwrap();
         for (index, hour) in [
@@ -3015,6 +3023,12 @@ mod tests {
         }
         let dataset = fixture.open().await.unwrap();
         let expected_data = dataset.scan().try_into_batch().await.unwrap();
+        let orphan = dataset.data_dir().join("uncommitted.lance");
+        dataset
+            .object_store
+            .put(&orphan, b"uncommitted")
+            .await
+            .unwrap();
         let mut operation = if auto_config {
             let mut manifest = dataset.manifest.as_ref().clone();
             manifest.config.extend([
@@ -3051,6 +3065,7 @@ mod tests {
                 ]))
                 .unwrap()
         };
+        operation.policy.delete_unverified = delete_unverified;
         let mut expected = vec![3, 4, 6, 8, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20];
         if protected {
             dataset.tags().create("keep-oldest", 1).await.unwrap();
@@ -3066,10 +3081,26 @@ mod tests {
         let before = fixture.count_files().await.unwrap();
         let explanation = operation.explain().await.unwrap();
         assert_eq!(before, fixture.count_files().await.unwrap());
+        let orphan_candidate = explanation
+            .candidate_files
+            .iter()
+            .find(|file| file.path == orphan.as_ref());
+        assert_eq!(orphan_candidate.is_some(), delete_unverified);
+        if let Some(file) = orphan_candidate {
+            assert!(file.unverified);
+            assert_eq!(file.kind, CleanupFileKind::Data);
+        }
         let stats = operation.execute().await.unwrap();
         assert_eq!(stats, explanation.stats);
         assert_eq!(stats.old_versions, 20 - expected.len() as u64);
-        assert_eq!(stats.data_files_removed, stats.old_versions * 2);
+        assert_eq!(
+            stats.data_files_removed,
+            stats.old_versions * 2 + u64::from(delete_unverified)
+        );
+        assert_eq!(
+            dataset.object_store.exists(&orphan).await.unwrap(),
+            !delete_unverified
+        );
         assert_eq!(
             dataset
                 .version_refs()

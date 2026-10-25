@@ -1885,7 +1885,9 @@ def test_cleanup_retention_activation_is_atomic(tmp_path: Path, shorthand):
         assert lance.dataset(tmp_path, version=version).to_table() == table
 
 
-def test_cleanup_retention_policy(tmp_path: Path):
+@pytest.mark.parametrize("delete_unverified", [False, True])
+def test_cleanup_retention_policy(tmp_path: Path, delete_unverified):
+    options = {"delete_unverified": delete_unverified}
     assert list(lance.CleanupPolicy().rules) == [lance.RemoveAll(timedelta(days=14))]
     assert isinstance(lance.KeepOne(timedelta(hours=1)), lance.CleanupRule)
     assert isinstance(lance.RemoveAll(timedelta(days=30)), lance.CleanupRule)
@@ -1902,24 +1904,40 @@ def test_cleanup_retention_policy(tmp_path: Path):
             lance.RemoveAll(older_than=timedelta(days=30)),
         ]
     )
-    assert ds.explain_cleanup_old_versions(policy=policy).stats.old_versions == 0
-    assert ds.cleanup_old_versions(policy=policy).old_versions == 0
+    assert (
+        ds.explain_cleanup_old_versions(policy=policy, **options).stats.old_versions
+        == 0
+    )
+    assert ds.cleanup_old_versions(policy=policy, **options).old_versions == 0
     assert len(ds.versions()) == 4
     large_interval = lance.CleanupPolicy(
         [lance.KeepOne(timedelta(days=365 * 10_000, microseconds=1))]
     )
     assert (
-        ds.explain_cleanup_old_versions(policy=large_interval).stats.old_versions == 0
+        ds.explain_cleanup_old_versions(
+            policy=large_interval, **options
+        ).stats.old_versions
+        == 0
     )
-    assert ds.cleanup_old_versions(policy=large_interval).old_versions == 0
+    assert ds.cleanup_old_versions(policy=large_interval, **options).old_versions == 0
+    orphan = tmp_path / "data" / "uncommitted.lance"
+    orphan.write_bytes(b"uncommitted")
     expiration = lance.CleanupPolicy([lance.RemoveAll(older_than=timedelta(0))])
-    explanation = ds.explain_cleanup_old_versions(policy=expiration)
+    explanation = ds.explain_cleanup_old_versions(policy=expiration, **options)
     assert len(ds.versions()) == 4
     assert explanation.stats.old_versions == 3
-    assert ds.cleanup_old_versions(policy=expiration).old_versions == 3
+    assert orphan.exists()
+    stats = ds.cleanup_old_versions(policy=expiration, **options)
+    assert stats.old_versions == explanation.stats.old_versions
+    assert (
+        stats.data_files_removed
+        == explanation.stats.data_files_removed
+        == 6 + int(delete_unverified)
+    )
+    assert orphan.exists() == (not delete_unverified)
     assert [version["version"] for version in ds.versions()] == [4]
     assert ds.to_table() == table
-    assert ds.cleanup_old_versions(policy=expiration).old_versions == 0
+    assert ds.cleanup_old_versions(policy=expiration, **options).old_versions == 0
 
 
 @pytest.mark.parametrize(

@@ -594,6 +594,11 @@ Tags, current versions and branch dependencies remain protected. `versions` and
 preserves the data, indices and blobs needed by retained snapshots. The same
 `policy` is accepted by `explain_cleanup_old_versions` for a read-only preview.
 
+Retention rules work with both values of `delete_unverified`. By default, cleanup
+preserves recent files that no manifest references. With `delete_unverified=True`,
+it can remove those files immediately; files needed by retained snapshots remain
+protected in either mode.
+
 The existing top-level `older_than` keeps its wall-clock expiration meaning.
 Existing cleanup calls and defaults continue to work. The single-window shorthand
 `older_than=timedelta(days=7), keep_one=KeepOne(timedelta(days=1), timedelta(days=2))`

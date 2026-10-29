@@ -4484,6 +4484,7 @@ dependencies = [
 name = "lance-io"
 version = "15.0.0-beta.5"
 dependencies = [
+ "arc-swap",
  "arrow",
  "arrow-array",
  "arrow-schema",
@@ -4523,6 +4524,7 @@ dependencies = [
  "url",
  "uuid",
  "windows-sys 0.61.2",
+ "xxhash-rust",
 ]
 
 [[package]]

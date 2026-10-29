@@ -28,6 +28,8 @@ pub mod gcp;
 pub mod goosefs;
 #[cfg(feature = "huggingface")]
 pub mod huggingface;
+#[cfg(feature = "aws")]
+pub mod la;
 pub mod local;
 pub mod memory;
 #[cfg(feature = "oss")]
@@ -102,6 +104,7 @@ pub struct ObjectStoreRegistryStats {
 /// - `file+uring`: A local file object store using io_uring (Linux only).
 /// - `s3`: An S3 object store.
 /// - `s3+ddb`: An S3 object store with DynamoDB for metadata.
+/// - `la`: A read-only store that routes chunked reads across S3-compatible cache endpoints.
 /// - `az`: An Azure Blob Storage object store.
 /// - `gs`: A Google Cloud Storage object store.
 /// - `tos`: A Volcengine TOS object store.
@@ -384,6 +387,7 @@ impl Default for ObjectStoreRegistry {
             let aws = Arc::new(aws::AwsStoreProvider);
             providers.insert("s3".into(), aws.clone());
             providers.insert("s3+ddb".into(), aws);
+            providers.insert("la".into(), Arc::new(la::LaStoreProvider));
         }
         #[cfg(feature = "azure")]
         {

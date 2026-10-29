@@ -27,6 +27,7 @@ async-trait.workspace = true
 aws-config = { workspace = true, optional = true }
 aws-credential-types = { workspace = true, optional = true }
 byteorder.workspace = true
+arc-swap = { workspace = true, optional = true }
 bytes.workspace = true
 chrono.workspace = true
 futures.workspace = true
@@ -42,6 +43,7 @@ serde_json = { workspace = true, optional = true }
 tokio.workspace = true
 tracing.workspace = true
 url.workspace = true
+xxhash-rust = { version = "0.8.15", features = ["xxh3"], optional = true }
 uuid.workspace = true
 path_abs.workspace = true
 rand.workspace = true
@@ -93,7 +95,7 @@ gcp = [
     "dep:serde_json",
     "dep:quick-xml",
 ]
-aws = ["object_store/aws", "dep:aws-config", "dep:aws-credential-types", "dep:opendal", "opendal/services-s3", "dep:object_store_opendal", "dep:quick-xml"]
+aws = ["object_store/aws", "dep:arc-swap", "dep:xxhash-rust", "dep:serde_json", "dep:aws-config", "dep:aws-credential-types", "dep:opendal", "opendal/services-s3", "dep:object_store_opendal", "dep:quick-xml"]
 azure = ["object_store/azure", "dep:opendal", "opendal/services-azblob", "opendal/services-azdls", "dep:object_store_opendal", "dep:quick-xml"]
 oss = ["dep:opendal", "opendal/services-oss", "dep:object_store_opendal"]
 goosefs = [

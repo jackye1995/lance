@@ -24,14 +24,13 @@
 //! `rendezvous-xxh3-64-v1`: the chunk of `{bucket}/{path}` at
 //! `offset / chunk_size` has the key `{bucket}/{path}-{chunk_index}`. Its
 //! owner is the node whose endpoint has the highest
-//! `xxh3_64("{endpoint}\n{key}")`; the next highest takes over when the owner
-//! cannot be reached.
+//! `xxh3_64("{endpoint}\n{key}")`. A chunk is only ever read from its owner:
+//! a failed or timed-out read is returned as an error rather than sent to
+//! another node, which would cache the chunk a second time.
 
 use std::fmt::{Display, Formatter};
-use std::future::Future;
 use std::ops::Range;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
@@ -63,13 +62,10 @@ const ENDPOINT_OPTION: &str = "endpoint";
 const REGION_OPTION: &str = "region";
 const DEFAULT_REGION: &str = "us-east-1";
 const ROUTING_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
-/// Endpoints tried for one chunk, in rendezvous order.
-const MAX_ENDPOINT_ATTEMPTS: usize = 2;
-/// Trying the next endpoint is the retry, so each endpoint is retried once.
-const ENDPOINT_MAX_RETRIES: usize = 1;
+/// A failed read is reported as is; retrying it would only add load to an owner
+/// that is already falling behind.
+const ENDPOINT_MAX_RETRIES: usize = 0;
 const ENDPOINT_RETRY_TIMEOUT: Duration = Duration::from_secs(10);
-/// How long an endpoint that failed to answer is tried only after the others.
-const UNHEALTHY_COOLDOWN: Duration = Duration::from_secs(10);
 /// Chunks requested ahead of the one being returned.
 const CHUNK_FETCH_CONCURRENCY: usize = 8;
 
@@ -152,107 +148,22 @@ struct Routing {
     stores: Vec<Arc<dyn OSObjectStore>>,
     chunk_size: u64,
     fetched_at: Instant,
-    /// Per endpoint, milliseconds after `fetched_at` until which it is tried
-    /// only after the healthy endpoints.
-    unhealthy_until: Vec<AtomicU64>,
-}
-
-/// Whether another endpoint could answer where this one failed.
-fn is_endpoint_failure(err: &object_store::Error) -> bool {
-    !matches!(
-        err,
-        object_store::Error::NotFound { .. }
-            | object_store::Error::Precondition { .. }
-            | object_store::Error::NotModified { .. }
-    )
-}
-
-fn no_endpoints() -> object_store::Error {
-    object_store::Error::Generic {
-        store: "la",
-        source: "the routing document lists no endpoints".into(),
-    }
 }
 
 impl Routing {
-    fn now_millis(&self) -> u64 {
-        self.fetched_at.elapsed().as_millis() as u64
-    }
-
-    /// Endpoints in rendezvous order for `key`, healthy ones first.
-    fn order(&self, key: &str) -> Vec<usize> {
-        let now = self.now_millis();
-        let (healthy, unhealthy): (Vec<usize>, Vec<usize>) = rendezvous_order(&self.urls, key)
-            .into_iter()
-            .partition(|&idx| self.unhealthy_until[idx].load(Ordering::Relaxed) <= now);
-        healthy.into_iter().chain(unhealthy).collect()
-    }
-
-    fn mark_unhealthy(&self, idx: usize, key: &str, err: &object_store::Error) {
-        log::warn!("la:// endpoint {} failed for {key}: {err}", self.urls[idx]);
-        let until = self.now_millis() + UNHEALTHY_COOLDOWN.as_millis() as u64;
-        self.unhealthy_until[idx].store(until, Ordering::Relaxed);
-    }
-
-    /// Runs `op` against the endpoints that own `key`, moving on only when an
-    /// endpoint fails to answer.
-    async fn on_owner<T, F, Fut>(&self, key: &str, op: F) -> object_store::Result<T>
-    where
-        F: Fn(Arc<dyn OSObjectStore>) -> Fut,
-        Fut: Future<Output = object_store::Result<T>>,
-    {
-        let mut last_err = None;
-        for idx in self.order(key).into_iter().take(MAX_ENDPOINT_ATTEMPTS) {
-            match op(self.stores[idx].clone()).await {
-                Ok(value) => return Ok(value),
-                Err(err) if is_endpoint_failure(&err) => {
-                    self.mark_unhealthy(idx, key, &err);
-                    last_err = Some(err);
-                }
-                Err(err) => return Err(err),
-            }
-        }
-        Err(last_err.unwrap_or_else(no_endpoints))
+    /// The store of the endpoint that owns `key`.
+    fn owner(&self, key: &str) -> Arc<dyn OSObjectStore> {
+        self.stores[rendezvous_owner(&self.urls, key)].clone()
     }
 }
 
-/// Lists from the endpoints that own `key`, moving on when an endpoint fails
-/// before returning its first entry.
-fn list_on_owner(
-    routing: Arc<Routing>,
-    key: String,
-    list: impl Fn(&Arc<dyn OSObjectStore>) -> BoxStream<'static, object_store::Result<ObjectMeta>>
-    + Send
-    + 'static,
-) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
-    futures::stream::once(async move {
-        let mut last_err = None;
-        for idx in routing.order(&key).into_iter().take(MAX_ENDPOINT_ATTEMPTS) {
-            let mut entries = list(&routing.stores[idx]);
-            match entries.next().await {
-                Some(Err(err)) if is_endpoint_failure(&err) => {
-                    routing.mark_unhealthy(idx, &key, &err);
-                    last_err = Some(err);
-                }
-                first => return futures::stream::iter(first).chain(entries).boxed(),
-            }
-        }
-        let err = last_err.unwrap_or_else(no_endpoints);
-        futures::stream::once(async move { Err(err) }).boxed()
-    })
-    .flatten()
-    .boxed()
-}
-
-/// Endpoint indices ordered by rendezvous score for `key`, highest first.
-fn rendezvous_order(urls: &[String], key: &str) -> Vec<usize> {
-    let mut scored: Vec<(u64, usize)> = urls
-        .iter()
+/// Index of the endpoint with the highest rendezvous score for `key`.
+fn rendezvous_owner(urls: &[String], key: &str) -> usize {
+    urls.iter()
         .enumerate()
-        .map(|(idx, url)| (xxh3_64(format!("{url}\n{key}").as_bytes()), idx))
-        .collect();
-    scored.sort_unstable_by(|a, b| b.cmp(a));
-    scored.into_iter().map(|(_, idx)| idx).collect()
+        .max_by_key(|(_, url)| xxh3_64(format!("{url}\n{key}").as_bytes()))
+        .map(|(idx, _)| idx)
+        .expect("routing always has at least one endpoint")
 }
 
 /// Splits `range` at `chunk_size` boundaries into `(chunk_index, sub_range)`.
@@ -363,13 +274,11 @@ async fn fetch_routing(
         .iter()
         .map(|url| build_endpoint_store(url, bucket, storage_options))
         .collect::<Result<Vec<_>>>()?;
-    let unhealthy_until = urls.iter().map(|_| AtomicU64::new(0)).collect();
     Ok(Routing {
         urls,
         stores,
         chunk_size,
         fetched_at: Instant::now(),
-        unhealthy_until,
     })
 }
 
@@ -451,10 +360,8 @@ impl LaObjectStore {
         location: &Path,
     ) -> object_store::Result<ObjectMeta> {
         routing
-            .on_owner(&chunk_key(&self.bucket, location, 0), |store| {
-                let location = location.clone();
-                async move { store.head(&location).await }
-            })
+            .owner(&chunk_key(&self.bucket, location, 0))
+            .head(location)
             .await
     }
 
@@ -482,16 +389,11 @@ async fn get_chunk(
     options: &GetOptions,
     chunk: Range<u64>,
 ) -> object_store::Result<GetResult> {
-    routing
-        .on_owner(key, |store| {
-            let location = location.clone();
-            let options = GetOptions {
-                range: Some(GetRange::Bounded(chunk.clone())),
-                ..options.clone()
-            };
-            async move { store.get_opts(&location, options).await }
-        })
-        .await
+    let options = GetOptions {
+        range: Some(GetRange::Bounded(chunk)),
+        ..options.clone()
+    };
+    routing.owner(key).get_opts(location, options).await
 }
 
 #[async_trait::async_trait]
@@ -524,11 +426,8 @@ impl OSObjectStore for LaObjectStore {
             // Whole-object reads and heads go to the owner of the first chunk.
             _ => {
                 return routing
-                    .on_owner(&chunk_key(&self.bucket, location, 0), |store| {
-                        let location = location.clone();
-                        let options = options.clone();
-                        async move { store.get_opts(&location, options).await }
-                    })
+                    .owner(&chunk_key(&self.bucket, location, 0))
+                    .get_opts(location, options)
                     .await;
             }
         };
@@ -589,11 +488,10 @@ impl OSObjectStore for LaObjectStore {
     }
 
     fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
-        let key = self.list_key(prefix);
-        let prefix = prefix.cloned();
-        list_on_owner(self.routing.load_full(), key, move |store| {
-            store.list(prefix.as_ref())
-        })
+        self.routing
+            .load()
+            .owner(&self.list_key(prefix))
+            .list(prefix)
     }
 
     fn list_with_offset(
@@ -601,21 +499,17 @@ impl OSObjectStore for LaObjectStore {
         prefix: Option<&Path>,
         offset: &Path,
     ) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
-        let key = self.list_key(prefix);
-        let prefix = prefix.cloned();
-        let offset = offset.clone();
-        list_on_owner(self.routing.load_full(), key, move |store| {
-            store.list_with_offset(prefix.as_ref(), &offset)
-        })
+        self.routing
+            .load()
+            .owner(&self.list_key(prefix))
+            .list_with_offset(prefix, offset)
     }
 
     async fn list_with_delimiter(&self, prefix: Option<&Path>) -> object_store::Result<ListResult> {
-        let routing = self.routing().await;
-        routing
-            .on_owner(&self.list_key(prefix), |store| {
-                let prefix = prefix.cloned();
-                async move { store.list_with_delimiter(prefix.as_ref()).await }
-            })
+        self.routing()
+            .await
+            .owner(&self.list_key(prefix))
+            .list_with_delimiter(prefix)
             .await
     }
 
@@ -643,9 +537,9 @@ mod tests {
         let mut owners = [0usize; 3];
         for chunk in 0..300 {
             let key = format!("bucket/t.lance/data/a.lance-{chunk}");
-            let order = rendezvous_order(&urls, &key);
-            assert_eq!(order, rendezvous_order(&urls, &key));
-            owners[order[0]] += 1;
+            let owner = rendezvous_owner(&urls, &key);
+            assert_eq!(owner, rendezvous_owner(&urls, &key));
+            owners[owner] += 1;
         }
         assert!(owners.iter().all(|&n| n > 50), "{owners:?}");
     }
@@ -656,8 +550,8 @@ mod tests {
         let remaining = urls[..3].to_vec();
         for chunk in 0..200 {
             let key = format!("bucket/f-{chunk}");
-            let before = &urls[rendezvous_order(&urls, &key)[0]];
-            let after = &remaining[rendezvous_order(&remaining, &key)[0]];
+            let before = &urls[rendezvous_owner(&urls, &key)];
+            let after = &remaining[rendezvous_owner(&remaining, &key)];
             if before != &urls[3] {
                 assert_eq!(before, after);
             }
@@ -674,34 +568,11 @@ mod tests {
         } else {
             1
         };
-        assert_eq!(rendezvous_order(&urls, key)[0], owner);
+        assert_eq!(rendezvous_owner(&urls, key), owner);
         assert_eq!(
             chunk_key("bucket", &Path::from("t.lance/data/a.lance"), 7),
             key
         );
-    }
-
-    #[test]
-    fn unhealthy_endpoints_are_tried_last() {
-        let urls = urls(3);
-        let routing = Routing {
-            stores: urls
-                .iter()
-                .map(|_| Arc::new(object_store::memory::InMemory::new()) as Arc<dyn OSObjectStore>)
-                .collect(),
-            unhealthy_until: urls.iter().map(|_| AtomicU64::new(0)).collect(),
-            urls,
-            chunk_size: 4,
-            fetched_at: Instant::now(),
-        };
-        let key = "bucket/f-0";
-        let ranked = routing.order(key);
-        let err = object_store::Error::Generic {
-            store: "test",
-            source: "down".into(),
-        };
-        routing.mark_unhealthy(ranked[0], key, &err);
-        assert_eq!(routing.order(key), vec![ranked[1], ranked[2], ranked[0]]);
     }
 
     #[test]

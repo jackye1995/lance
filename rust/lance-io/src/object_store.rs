@@ -1995,7 +1995,7 @@ impl StorageOptions {
         self.0.get(key)
     }
 
-    /// Build [`ClientOptions`] with default headers extracted from `headers.*` keys.
+    /// Default HTTP headers from `headers.*` keys.
     ///
     /// Keys prefixed with `headers.` are parsed into HTTP headers. For example,
     /// `headers.x-ms-version = 2023-11-03` results in a default header
@@ -2003,7 +2003,7 @@ impl StorageOptions {
     ///
     /// Returns an error if any `headers.*` key has an invalid header name or value.
     #[cfg(any(feature = "aws", feature = "azure", feature = "gcp"))]
-    pub fn client_options(&self) -> Result<ClientOptions> {
+    pub fn headers(&self) -> Result<HeaderMap> {
         let mut headers = HeaderMap::new();
         for (key, value) in &self.0 {
             if let Some(header_name) = key.strip_prefix("headers.") {
@@ -2018,6 +2018,15 @@ impl StorageOptions {
                 headers.insert(name, val);
             }
         }
+        Ok(headers)
+    }
+
+    /// Build [`ClientOptions`] with default headers extracted from `headers.*` keys.
+    ///
+    /// Returns an error if any `headers.*` key has an invalid header name or value.
+    #[cfg(any(feature = "aws", feature = "azure", feature = "gcp"))]
+    pub fn client_options(&self) -> Result<ClientOptions> {
+        let headers = self.headers()?;
         let mut client_options = ClientOptions::default();
         if !headers.is_empty() {
             client_options = client_options.with_default_headers(headers);

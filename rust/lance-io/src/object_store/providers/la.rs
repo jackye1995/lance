@@ -27,6 +27,11 @@
 //! `xxh3_64("{endpoint}\n{key}")`. A chunk is only ever read from its owner:
 //! a failed or timed-out read is returned as an error rather than sent to
 //! another node, which would cache the chunk a second time.
+//!
+//! Reads and heads are plain `GET`/`HEAD` requests to
+//! `{endpoint}/{bucket}/{path}` over one shared HTTP/2 (prior knowledge)
+//! client, so each node gets one multiplexed connection instead of one
+//! connection per in-flight range read. Listing goes through an S3 client.
 
 use std::fmt::{Display, Formatter};
 use std::ops::Range;
@@ -35,15 +40,21 @@ use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 use futures::stream::BoxStream;
 use futures::{StreamExt, TryStreamExt};
+use http::header::{
+    CONTENT_LENGTH, CONTENT_RANGE, ETAG, HeaderMap, IF_MATCH, IF_MODIFIED_SINCE, IF_NONE_MATCH,
+    IF_UNMODIFIED_SINCE, LAST_MODIFIED, RANGE,
+};
+use http::{Method, StatusCode};
 use object_store::aws::AmazonS3Builder;
 use object_store::client::{HttpConnector, HttpRequestBody, ReqwestConnector};
 use object_store::path::Path;
 use object_store::{
     BackoffConfig, ClientOptions, CopyOptions, GetOptions, GetRange, GetResult, GetResultPayload,
-    ListResult, MultipartUpload, ObjectMeta, ObjectStore as OSObjectStore, ObjectStoreExt,
-    PutMultipartOptions, PutOptions, PutPayload, PutResult, RetryConfig,
+    ListResult, MultipartUpload, ObjectMeta, ObjectStore as OSObjectStore, PutMultipartOptions,
+    PutOptions, PutPayload, PutResult, RetryConfig,
 };
 use serde::Deserialize;
 use tokio::sync::Mutex;
@@ -68,6 +79,13 @@ const ENDPOINT_MAX_RETRIES: usize = 0;
 const ENDPOINT_RETRY_TIMEOUT: Duration = Duration::from_secs(10);
 /// Chunks requested ahead of the one being returned.
 const CHUNK_FETCH_CONCURRENCY: usize = 8;
+const ENDPOINT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const ENDPOINT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Largest HTTP/2 frame a node may send; bigger frames mean fewer frames per
+/// multi-MiB chunk.
+const ENDPOINT_HTTP2_MAX_FRAME_SIZE: u32 = 1024 * 1024;
+const HTTP_DATE_FORMAT: &str = "%a, %d %b %Y %H:%M:%S GMT";
+const STORE_NAME: &str = "la";
 
 #[derive(Default, Debug)]
 pub struct LaStoreProvider;
@@ -145,15 +163,21 @@ impl TopologyDocument {
 #[derive(Debug)]
 struct Routing {
     urls: Vec<String>,
-    stores: Vec<Arc<dyn OSObjectStore>>,
+    /// S3 clients for listing, one per endpoint in `urls`.
+    list_stores: Vec<Arc<dyn OSObjectStore>>,
     chunk_size: u64,
     fetched_at: Instant,
 }
 
 impl Routing {
-    /// The store of the endpoint that owns `key`.
-    fn owner(&self, key: &str) -> Arc<dyn OSObjectStore> {
-        self.stores[rendezvous_owner(&self.urls, key)].clone()
+    /// The endpoint URL that owns `key`.
+    fn owner(&self, key: &str) -> &str {
+        &self.urls[rendezvous_owner(&self.urls, key)]
+    }
+
+    /// The listing store of the endpoint that owns `key`.
+    fn list_owner(&self, key: &str) -> Arc<dyn OSObjectStore> {
+        self.list_stores[rendezvous_owner(&self.urls, key)].clone()
     }
 }
 
@@ -198,7 +222,22 @@ fn endpoint_retry() -> RetryConfig {
     }
 }
 
-fn build_endpoint_store(
+fn build_endpoint_client(storage_options: &StorageOptions) -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .default_headers(storage_options.headers()?)
+        .http2_prior_knowledge()
+        .http2_adaptive_window(true)
+        .http2_max_frame_size(ENDPOINT_HTTP2_MAX_FRAME_SIZE)
+        .tcp_nodelay(true)
+        .connect_timeout(ENDPOINT_CONNECT_TIMEOUT)
+        .timeout(ENDPOINT_REQUEST_TIMEOUT)
+        .build()
+        .map_err(|err| {
+            Error::invalid_input(format!("failed to build the la:// HTTP client: {err}"))
+        })
+}
+
+fn build_list_store(
     url: &str,
     bucket: &str,
     storage_options: &StorageOptions,
@@ -251,10 +290,13 @@ async fn fetch_topology(url: &str, storage_options: &StorageOptions) -> Result<T
     })
 }
 
+/// Fetches the topology. Listing stores of endpoints already in `previous` are
+/// reused so their connections survive a refresh.
 async fn fetch_routing(
     topology_url: &str,
     bucket: &str,
     storage_options: &StorageOptions,
+    previous: Option<&Routing>,
 ) -> Result<Routing> {
     let document = fetch_topology(topology_url, storage_options).await?;
     if document.hash != HASH_RENDEZVOUS_XXH3_64_V1 {
@@ -270,16 +312,187 @@ async fn fetch_routing(
             "la:// topology from {topology_url} needs a healthy node with an endpoint and a non-zero chunk_size"
         )));
     }
-    let stores = urls
+    let list_stores = urls
         .iter()
-        .map(|url| build_endpoint_store(url, bucket, storage_options))
+        .map(|url| {
+            let reused = previous.and_then(|previous| {
+                previous
+                    .urls
+                    .iter()
+                    .position(|previous_url| previous_url == url)
+                    .map(|idx| previous.list_stores[idx].clone())
+            });
+            match reused {
+                Some(store) => Ok(store),
+                None => build_list_store(url, bucket, storage_options),
+            }
+        })
         .collect::<Result<Vec<_>>>()?;
     Ok(Routing {
         urls,
-        stores,
+        list_stores,
         chunk_size,
         fetched_at: Instant::now(),
     })
+}
+
+fn generic(err: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> object_store::Error {
+    object_store::Error::Generic {
+        store: STORE_NAME,
+        source: err.into(),
+    }
+}
+
+fn header_str(headers: &HeaderMap, name: http::header::HeaderName) -> Option<&str> {
+    headers.get(name).and_then(|value| value.to_str().ok())
+}
+
+/// The object size from a `Content-Range: bytes a-b/size` header.
+fn content_range_size(headers: &HeaderMap) -> Option<u64> {
+    header_str(headers, CONTENT_RANGE)?
+        .rsplit_once('/')?
+        .1
+        .parse()
+        .ok()
+}
+
+fn object_meta(location: &Path, headers: &HeaderMap, size: u64) -> ObjectMeta {
+    ObjectMeta {
+        location: location.clone(),
+        last_modified: header_str(headers, LAST_MODIFIED)
+            .and_then(|value| DateTime::parse_from_rfc2822(value).ok())
+            .map(|time| time.with_timezone(&Utc))
+            .unwrap_or_default(),
+        size,
+        e_tag: header_str(headers, ETAG).map(str::to_string),
+        version: None,
+    }
+}
+
+/// Sends reads and heads straight to a node over the shared HTTP/2 client.
+#[derive(Debug, Clone)]
+struct EndpointClient {
+    http: reqwest::Client,
+    bucket: Arc<str>,
+}
+
+impl EndpointClient {
+    fn object_url(&self, endpoint: &str, location: &Path) -> object_store::Result<Url> {
+        let mut url = Url::parse(endpoint).map_err(generic)?;
+        url.path_segments_mut()
+            .map_err(|()| generic(format!("la:// endpoint {endpoint} is not a base URL")))?
+            .pop_if_empty()
+            .push(&self.bucket)
+            .extend(location.parts());
+        Ok(url)
+    }
+
+    async fn send(
+        &self,
+        method: Method,
+        endpoint: &str,
+        location: &Path,
+        options: &GetOptions,
+        range: Option<&Range<u64>>,
+    ) -> object_store::Result<reqwest::Response> {
+        if options.version.is_some() {
+            return Err(object_store::Error::NotSupported {
+                source: "la:// does not support versioned reads".into(),
+            });
+        }
+        let mut request = self
+            .http
+            .request(method, self.object_url(endpoint, location)?);
+        if let Some(range) = range {
+            request = request.header(RANGE, format!("bytes={}-{}", range.start, range.end - 1));
+        }
+        if let Some(tag) = &options.if_match {
+            request = request.header(IF_MATCH, tag);
+        }
+        if let Some(tag) = &options.if_none_match {
+            request = request.header(IF_NONE_MATCH, tag);
+        }
+        if let Some(time) = options.if_modified_since {
+            request = request.header(IF_MODIFIED_SINCE, time.format(HTTP_DATE_FORMAT).to_string());
+        }
+        if let Some(time) = options.if_unmodified_since {
+            request = request.header(
+                IF_UNMODIFIED_SINCE,
+                time.format(HTTP_DATE_FORMAT).to_string(),
+            );
+        }
+        let response = request.send().await.map_err(generic)?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(response);
+        }
+        let path = location.to_string();
+        let source = format!("{endpoint} returned {status} for {location}").into();
+        Err(match status {
+            StatusCode::NOT_FOUND => object_store::Error::NotFound { path, source },
+            StatusCode::NOT_MODIFIED => object_store::Error::NotModified { path, source },
+            StatusCode::PRECONDITION_FAILED => object_store::Error::Precondition { path, source },
+            _ => generic(source),
+        })
+    }
+
+    async fn head(
+        &self,
+        endpoint: &str,
+        location: &Path,
+        options: &GetOptions,
+    ) -> object_store::Result<ObjectMeta> {
+        let response = self
+            .send(Method::HEAD, endpoint, location, options, None)
+            .await?;
+        let size = header_str(response.headers(), CONTENT_LENGTH)
+            .and_then(|value| value.parse().ok())
+            .ok_or_else(|| generic(format!("{endpoint} sent no Content-Length for {location}")))?;
+        Ok(object_meta(location, response.headers(), size))
+    }
+
+    async fn get(
+        &self,
+        endpoint: &str,
+        location: &Path,
+        options: &GetOptions,
+        range: Option<Range<u64>>,
+    ) -> object_store::Result<GetResult> {
+        let response = self
+            .send(Method::GET, endpoint, location, options, range.as_ref())
+            .await?;
+        let headers = response.headers();
+        let (size, range) = match range {
+            Some(range) => {
+                if response.status() != StatusCode::PARTIAL_CONTENT {
+                    return Err(generic(format!(
+                        "{endpoint} returned {} instead of 206 for a range read of {location}",
+                        response.status()
+                    )));
+                }
+                let size = content_range_size(headers).ok_or_else(|| {
+                    generic(format!("{endpoint} sent no Content-Range for {location}"))
+                })?;
+                (size, range)
+            }
+            None => {
+                let size = header_str(headers, CONTENT_LENGTH)
+                    .and_then(|value| value.parse().ok())
+                    .ok_or_else(|| {
+                        generic(format!("{endpoint} sent no Content-Length for {location}"))
+                    })?;
+                (size, 0..size)
+            }
+        };
+        let meta = object_meta(location, headers, size);
+        Ok(GetResult {
+            payload: GetResultPayload::Stream(response.bytes_stream().map_err(generic).boxed()),
+            meta,
+            range,
+            attributes: Default::default(),
+            extensions: Default::default(),
+        })
+    }
 }
 
 fn read_only(operation: &str) -> object_store::Error {
@@ -294,6 +507,7 @@ pub struct LaObjectStore {
     bucket: String,
     topology_url: String,
     storage_options: StorageOptions,
+    endpoints: EndpointClient,
     routing: ArcSwap<Routing>,
     refreshing: Mutex<()>,
 }
@@ -310,9 +524,14 @@ impl LaObjectStore {
         topology_url: String,
         storage_options: StorageOptions,
     ) -> Result<Self> {
-        let routing = fetch_routing(&topology_url, &bucket, &storage_options).await?;
+        let routing = fetch_routing(&topology_url, &bucket, &storage_options, None).await?;
+        let endpoints = EndpointClient {
+            http: build_endpoint_client(&storage_options)?,
+            bucket: Arc::from(bucket.as_str()),
+        };
         Ok(Self {
             bucket,
+            endpoints,
             topology_url,
             storage_options,
             routing: ArcSwap::from_pointee(routing),
@@ -330,7 +549,14 @@ impl LaObjectStore {
         let Ok(_guard) = self.refreshing.try_lock() else {
             return current;
         };
-        match fetch_routing(&self.topology_url, &self.bucket, &self.storage_options).await {
+        match fetch_routing(
+            &self.topology_url,
+            &self.bucket,
+            &self.storage_options,
+            Some(&current),
+        )
+        .await
+        {
             Ok(routing) => {
                 let routing = Arc::new(routing);
                 self.routing.store(routing.clone());
@@ -359,9 +585,12 @@ impl LaObjectStore {
         routing: &Routing,
         location: &Path,
     ) -> object_store::Result<ObjectMeta> {
-        routing
-            .owner(&chunk_key(&self.bucket, location, 0))
-            .head(location)
+        self.endpoints
+            .head(
+                routing.owner(&chunk_key(&self.bucket, location, 0)),
+                location,
+                &GetOptions::default(),
+            )
             .await
     }
 
@@ -383,17 +612,16 @@ impl LaObjectStore {
 }
 
 async fn get_chunk(
+    endpoints: &EndpointClient,
     routing: &Routing,
     key: &str,
     location: &Path,
     options: &GetOptions,
     chunk: Range<u64>,
 ) -> object_store::Result<GetResult> {
-    let options = GetOptions {
-        range: Some(GetRange::Bounded(chunk)),
-        ..options.clone()
-    };
-    routing.owner(key).get_opts(location, options).await
+    endpoints
+        .get(routing.owner(key), location, options, Some(chunk))
+        .await
 }
 
 #[async_trait::async_trait]
@@ -425,10 +653,18 @@ impl OSObjectStore for LaObjectStore {
             Some(range) if !options.head => range,
             // Whole-object reads and heads go to the owner of the first chunk.
             _ => {
-                return routing
-                    .owner(&chunk_key(&self.bucket, location, 0))
-                    .get_opts(location, options)
-                    .await;
+                let owner = routing.owner(&chunk_key(&self.bucket, location, 0));
+                if !options.head {
+                    return self.endpoints.get(owner, location, &options, None).await;
+                }
+                let meta = self.endpoints.head(owner, location, &options).await?;
+                return Ok(GetResult {
+                    payload: GetResultPayload::Stream(futures::stream::empty().boxed()),
+                    range: 0..meta.size,
+                    meta,
+                    attributes: Default::default(),
+                    extensions: Default::default(),
+                });
             }
         };
         let range = self.resolve_range(&routing, location, range).await?;
@@ -445,7 +681,15 @@ impl OSObjectStore for LaObjectStore {
         };
         // The first chunk is fetched eagerly to return the object's metadata.
         let first_key = chunk_key(&self.bucket, location, first_index);
-        let first = get_chunk(&routing, &first_key, location, &options, first_range).await?;
+        let first = get_chunk(
+            &self.endpoints,
+            &routing,
+            &first_key,
+            location,
+            &options,
+            first_range,
+        )
+        .await?;
         let rest: Vec<(u64, Range<u64>)> = chunks.collect();
         if rest.is_empty() {
             return Ok(GetResult { range, ..first });
@@ -454,15 +698,17 @@ impl OSObjectStore for LaObjectStore {
         let attributes = first.attributes.clone();
         let extensions = first.extensions.clone();
         let bucket = self.bucket.clone();
+        let endpoints = self.endpoints.clone();
         let location = location.clone();
         let rest_bytes = futures::stream::iter(rest)
             .map(move |(chunk_index, chunk)| {
+                let endpoints = endpoints.clone();
                 let routing = routing.clone();
                 let options = options.clone();
                 let location = location.clone();
                 let key = chunk_key(&bucket, &location, chunk_index);
                 async move {
-                    get_chunk(&routing, &key, &location, &options, chunk)
+                    get_chunk(&endpoints, &routing, &key, &location, &options, chunk)
                         .await?
                         .bytes()
                         .await
@@ -490,7 +736,7 @@ impl OSObjectStore for LaObjectStore {
     fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
         self.routing
             .load()
-            .owner(&self.list_key(prefix))
+            .list_owner(&self.list_key(prefix))
             .list(prefix)
     }
 
@@ -501,14 +747,14 @@ impl OSObjectStore for LaObjectStore {
     ) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
         self.routing
             .load()
-            .owner(&self.list_key(prefix))
+            .list_owner(&self.list_key(prefix))
             .list_with_offset(prefix, offset)
     }
 
     async fn list_with_delimiter(&self, prefix: Option<&Path>) -> object_store::Result<ListResult> {
         self.routing()
             .await
-            .owner(&self.list_key(prefix))
+            .list_owner(&self.list_key(prefix))
             .list_with_delimiter(prefix)
             .await
     }
@@ -588,6 +834,32 @@ mod tests {
         )
         .unwrap();
         assert_eq!(document.endpoints(), vec!["http://a:1", "http://b:1"]);
+    }
+
+    #[test]
+    fn endpoint_urls_are_path_style() {
+        let endpoints = EndpointClient {
+            http: reqwest::Client::new(),
+            bucket: Arc::from("bucket"),
+        };
+        let location = Path::from("db/t.lance/data/0a1b.lance");
+        for endpoint in ["http://pe-0:9100", "http://pe-0:9100/"] {
+            assert_eq!(
+                endpoints.object_url(endpoint, &location).unwrap().as_str(),
+                "http://pe-0:9100/bucket/db/t.lance/data/0a1b.lance"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_object_size_from_content_range() {
+        let mut headers = HeaderMap::new();
+        assert_eq!(content_range_size(&headers), None);
+        headers.insert(
+            CONTENT_RANGE,
+            "bytes 4194304-8388607/12345678".parse().unwrap(),
+        );
+        assert_eq!(content_range_size(&headers), Some(12345678));
     }
 
     #[test]

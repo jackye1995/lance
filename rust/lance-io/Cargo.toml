@@ -38,6 +38,7 @@ moka.workspace = true
 pin-project.workspace = true
 prost.workspace = true
 quick-xml = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true, features = ["http2", "stream"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, optional = true }
 tokio.workspace = true
@@ -95,7 +96,7 @@ gcp = [
     "dep:serde_json",
     "dep:quick-xml",
 ]
-aws = ["object_store/aws", "dep:arc-swap", "dep:xxhash-rust", "dep:serde_json", "dep:aws-config", "dep:aws-credential-types", "dep:opendal", "opendal/services-s3", "dep:object_store_opendal", "dep:quick-xml"]
+aws = ["object_store/aws", "dep:arc-swap", "dep:xxhash-rust", "dep:serde_json", "dep:aws-config", "dep:aws-credential-types", "dep:opendal", "opendal/services-s3", "dep:object_store_opendal", "dep:quick-xml", "dep:reqwest"]
 azure = ["object_store/azure", "dep:opendal", "opendal/services-azblob", "opendal/services-azdls", "dep:object_store_opendal", "dep:quick-xml"]
 oss = ["dep:opendal", "opendal/services-oss", "dep:object_store_opendal"]
 goosefs = [

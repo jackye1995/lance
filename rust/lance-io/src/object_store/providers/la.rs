@@ -5,10 +5,14 @@
 //! S3-compatible cache nodes.
 //!
 //! The `endpoint` storage option is the URL of a topology document that
-//! lists the nodes. The store splits every ranged read into fixed-size
-//! chunks and sends each chunk to the node that owns it under rendezvous
-//! hashing, so each chunk is served (and cached) by one node and its bytes
-//! cross the network once. The document is refetched periodically:
+//! lists the nodes. Every read goes to the node that owns it under
+//! rendezvous hashing, so each byte is served (and cached) by one node and
+//! crosses the network once. Data and deletion files are owned whole: a table
+//! has many of them, of similar size and read uniformly, so whole files
+//! spread evenly and each node only sees the metadata of its own files. Every
+//! other object (indices in particular, which are few, large and hot) is split
+//! into fixed-size chunks that are owned separately. The document is
+//! refetched periodically:
 //!
 //! ```json
 //! {"nodes": [{"endpoint": "http://cache-0:9100", "healthy": true},
@@ -21,12 +25,13 @@
 //! fields are ignored. `headers.*` storage options are sent with every
 //! request, including the topology request.
 //!
-//! `rendezvous-xxh3-64-v1`: the chunk of `{bucket}/{path}` at
-//! `offset / chunk_size` has the key `{bucket}/{path}-{chunk_index}`. Its
-//! owner is the node whose endpoint has the highest
-//! `xxh3_64("{endpoint}\n{key}")`. A chunk is only ever read from its owner:
+//! `rendezvous-xxh3-64-v1`: a data file (`data/*.lance`) or deletion file
+//! (`_deletions/*`) has the key `{bucket}/{path}`; for any other object, the
+//! chunk at `offset / chunk_size` has the key `{bucket}/{path}-{chunk_index}`.
+//! The owner of a key is the node whose endpoint has the highest
+//! `xxh3_64("{endpoint}\n{key}")`. Bytes are only ever read from their owner:
 //! a failed or timed-out read is returned as an error rather than sent to
-//! another node, which would cache the chunk a second time.
+//! another node, which would cache the bytes a second time.
 //!
 //! Reads and heads are plain `GET`/`HEAD` requests to
 //! `{endpoint}/{bucket}/{path}` over one shared HTTP/2 (prior knowledge)
@@ -205,6 +210,22 @@ fn split_into_chunks(range: Range<u64>, chunk_size: u64) -> Vec<(u64, Range<u64>
 
 fn chunk_key(bucket: &str, location: &Path, chunk_index: u64) -> String {
     format!("{bucket}/{location}-{chunk_index}")
+}
+
+fn file_key(bucket: &str, location: &Path) -> String {
+    format!("{bucket}/{location}")
+}
+
+/// Whether `location` is a data or deletion file, which is owned whole
+/// instead of in chunks.
+fn owned_whole(location: &Path) -> bool {
+    let path = location.as_ref();
+    let (dir, file) = path.rsplit_once('/').unwrap_or(("", path));
+    match dir.rsplit('/').next().unwrap_or("") {
+        "data" => file.ends_with(".lance"),
+        "_deletions" => true,
+        _ => false,
+    }
 }
 
 /// Client options from `storage_options`, with `allow_http` applied.
@@ -580,6 +601,15 @@ impl LaObjectStore {
         )
     }
 
+    /// The routing key of `location`, or of its first chunk when it is chunked.
+    fn first_key(&self, location: &Path) -> String {
+        if owned_whole(location) {
+            file_key(&self.bucket, location)
+        } else {
+            chunk_key(&self.bucket, location, 0)
+        }
+    }
+
     async fn head_on_owner(
         &self,
         routing: &Routing,
@@ -587,7 +617,7 @@ impl LaObjectStore {
     ) -> object_store::Result<ObjectMeta> {
         self.endpoints
             .head(
-                routing.owner(&chunk_key(&self.bucket, location, 0)),
+                routing.owner(&self.first_key(location)),
                 location,
                 &GetOptions::default(),
             )
@@ -651,9 +681,9 @@ impl OSObjectStore for LaObjectStore {
         let routing = self.routing().await;
         let range = match options.range.clone() {
             Some(range) if !options.head => range,
-            // Whole-object reads and heads go to the owner of the first chunk.
+            // Whole-object reads and heads go to the owner of the file or of its first chunk.
             _ => {
-                let owner = routing.owner(&chunk_key(&self.bucket, location, 0));
+                let owner = routing.owner(&self.first_key(location));
                 if !options.head {
                     return self.endpoints.get(owner, location, &options, None).await;
                 }
@@ -668,6 +698,13 @@ impl OSObjectStore for LaObjectStore {
             }
         };
         let range = self.resolve_range(&routing, location, range).await?;
+        if owned_whole(location) && !range.is_empty() {
+            let owner = routing.owner(&file_key(&self.bucket, location));
+            return self
+                .endpoints
+                .get(owner, location, &options, Some(range))
+                .await;
+        }
         let mut chunks = split_into_chunks(range.clone(), routing.chunk_size).into_iter();
         let Some((first_index, first_range)) = chunks.next() else {
             let meta = self.head_on_owner(&routing, location).await?;
@@ -819,6 +856,34 @@ mod tests {
             chunk_key("bucket", &Path::from("t.lance/data/a.lance"), 7),
             key
         );
+    }
+
+    #[test]
+    fn data_and_deletion_files_are_owned_whole() {
+        for path in [
+            "db/t.lance/data/0a1b.lance",
+            "t.lance/data/0a1b.lance",
+            "db/t.lance/_deletions/0-1-2.arrow",
+            "db/t.lance/_deletions/0-1-2.bin",
+        ] {
+            assert!(owned_whole(&Path::from(path)), "{path}");
+        }
+        for path in [
+            "db/t.lance/_indices/9f/index.idx",
+            "db/t.lance/_indices/9f/auxiliary.idx",
+            "db/t.lance/_versions/1.manifest",
+            "db/t.lance/_transactions/1-x.txn",
+            "data/default/t.lance",
+            "db/t.lance/data/notes.txt",
+        ] {
+            assert!(!owned_whole(&Path::from(path)), "{path}");
+        }
+    }
+
+    #[test]
+    fn whole_file_keys_have_no_chunk_suffix() {
+        let location = Path::from("t.lance/data/a.lance");
+        assert_eq!(file_key("bucket", &location), "bucket/t.lance/data/a.lance");
     }
 
     #[test]

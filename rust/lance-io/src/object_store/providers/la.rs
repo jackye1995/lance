@@ -61,6 +61,7 @@ use tokio::sync::Mutex;
 use url::Url;
 use xxhash_rust::xxh3::xxh3_64;
 
+use super::la_stats::{self, CountedBody};
 use crate::object_store::{
     DEFAULT_CLOUD_BLOCK_SIZE, DEFAULT_CLOUD_IO_PARALLELISM, DEFAULT_MAX_IOP_SIZE, ObjectStore,
     ObjectStoreParams, ObjectStoreProvider, StorageOptions,
@@ -394,7 +395,12 @@ impl EndpointClient {
         location: &Path,
         options: &GetOptions,
         range: Option<&Range<u64>>,
-    ) -> object_store::Result<reqwest::Response> {
+    ) -> object_store::Result<(reqwest::Response, Instant)> {
+        let method_name = if method == Method::HEAD {
+            "HEAD"
+        } else {
+            "GET"
+        };
         if options.version.is_some() {
             return Err(object_store::Error::NotSupported {
                 source: "la:// does not support versioned reads".into(),
@@ -421,11 +427,33 @@ impl EndpointClient {
                 time.format(HTTP_DATE_FORMAT).to_string(),
             );
         }
-        let response = request.send().await.map_err(generic)?;
+        let started = Instant::now();
+        let response = match request.send().await {
+            Ok(response) => response,
+            Err(err) => {
+                la_stats::record_response(
+                    method_name,
+                    endpoint,
+                    location,
+                    range,
+                    0,
+                    started.elapsed(),
+                );
+                return Err(generic(err));
+            }
+        };
         let status = response.status();
         if status.is_success() {
-            return Ok(response);
+            return Ok((response, started));
         }
+        la_stats::record_response(
+            method_name,
+            endpoint,
+            location,
+            range,
+            status.as_u16(),
+            started.elapsed(),
+        );
         let path = location.to_string();
         let source = format!("{endpoint} returned {status} for {location}").into();
         Err(match status {
@@ -442,9 +470,17 @@ impl EndpointClient {
         location: &Path,
         options: &GetOptions,
     ) -> object_store::Result<ObjectMeta> {
-        let response = self
+        let (response, started) = self
             .send(Method::HEAD, endpoint, location, options, None)
             .await?;
+        la_stats::record_response(
+            "HEAD",
+            endpoint,
+            location,
+            None,
+            response.status().as_u16(),
+            started.elapsed(),
+        );
         let size = header_str(response.headers(), CONTENT_LENGTH)
             .and_then(|value| value.parse().ok())
             .ok_or_else(|| generic(format!("{endpoint} sent no Content-Length for {location}")))?;
@@ -458,7 +494,7 @@ impl EndpointClient {
         options: &GetOptions,
         range: Option<Range<u64>>,
     ) -> object_store::Result<GetResult> {
-        let response = self
+        let (response, started) = self
             .send(Method::GET, endpoint, location, options, range.as_ref())
             .await?;
         let headers = response.headers();
@@ -485,8 +521,23 @@ impl EndpointClient {
             }
         };
         let meta = object_meta(location, headers, size);
+        let status = response.status().as_u16();
+        let mut body = response.bytes_stream().map_err(generic).boxed();
+        if la_stats::enabled() {
+            let expected = range.end - range.start;
+            body = CountedBody::new(
+                body,
+                endpoint,
+                location,
+                Some(range.clone()),
+                status,
+                expected,
+                started,
+            )
+            .boxed();
+        }
         Ok(GetResult {
-            payload: GetResultPayload::Stream(response.bytes_stream().map_err(generic).boxed()),
+            payload: GetResultPayload::Stream(body),
             meta,
             range,
             attributes: Default::default(),
@@ -648,6 +699,16 @@ impl OSObjectStore for LaObjectStore {
         location: &Path,
         options: GetOptions,
     ) -> object_store::Result<GetResult> {
+        if la_stats::enabled() {
+            let (kind, len) = match (&options.range, options.head) {
+                (_, true) => ("head", None),
+                (None, false) => ("whole", None),
+                (Some(GetRange::Bounded(r)), false) => ("bounded", Some(r.end - r.start)),
+                (Some(GetRange::Suffix(n)), false) => ("suffix", Some(*n)),
+                (Some(GetRange::Offset(_)), false) => ("offset", None),
+            };
+            la_stats::record_read(kind, location, len);
+        }
         let routing = self.routing().await;
         let range = match options.range.clone() {
             Some(range) if !options.head => range,
@@ -734,10 +795,10 @@ impl OSObjectStore for LaObjectStore {
     }
 
     fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
-        self.routing
-            .load()
-            .list_owner(&self.list_key(prefix))
-            .list(prefix)
+        let routing = self.routing.load();
+        let key = self.list_key(prefix);
+        la_stats::record_list(routing.owner(&key));
+        routing.list_owner(&key).list(prefix)
     }
 
     fn list_with_offset(
@@ -745,18 +806,17 @@ impl OSObjectStore for LaObjectStore {
         prefix: Option<&Path>,
         offset: &Path,
     ) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
-        self.routing
-            .load()
-            .list_owner(&self.list_key(prefix))
-            .list_with_offset(prefix, offset)
+        let routing = self.routing.load();
+        let key = self.list_key(prefix);
+        la_stats::record_list(routing.owner(&key));
+        routing.list_owner(&key).list_with_offset(prefix, offset)
     }
 
     async fn list_with_delimiter(&self, prefix: Option<&Path>) -> object_store::Result<ListResult> {
-        self.routing()
-            .await
-            .list_owner(&self.list_key(prefix))
-            .list_with_delimiter(prefix)
-            .await
+        let routing = self.routing().await;
+        let key = self.list_key(prefix);
+        la_stats::record_list(routing.owner(&key));
+        routing.list_owner(&key).list_with_delimiter(prefix).await
     }
 
     async fn copy_opts(

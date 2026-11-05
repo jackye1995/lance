@@ -30,6 +30,8 @@ pub mod goosefs;
 pub mod huggingface;
 #[cfg(feature = "aws")]
 pub mod la;
+#[cfg(feature = "aws")]
+mod la_stats;
 pub mod local;
 pub mod memory;
 #[cfg(feature = "oss")]

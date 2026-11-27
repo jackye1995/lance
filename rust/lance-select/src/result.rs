@@ -191,6 +191,9 @@ impl NullableIndexExprResult {
     /// Under a `WHERE` clause NULL is treated as FALSE, so `drop_nulls`
     /// folds NULL rows out of the answer at each endpoint.
     pub fn drop_nulls(self) -> IndexExprResult {
+        if self.exact {
+            return IndexExprResult::exact(self.lower.drop_nulls());
+        }
         IndexExprResult {
             lower: self.lower.drop_nulls(),
             upper: self.upper.drop_nulls(),
@@ -215,6 +218,9 @@ impl std::ops::BitAnd<Self> for NullableIndexExprResult {
     type Output = Self;
 
     fn bitand(self, rhs: Self) -> Self {
+        if self.exact && rhs.exact {
+            return Self::exact(self.lower & rhs.lower);
+        }
         Self {
             lower: self.lower & rhs.lower,
             upper: self.upper & rhs.upper,
@@ -227,6 +233,9 @@ impl std::ops::BitOr<Self> for NullableIndexExprResult {
     type Output = Self;
 
     fn bitor(self, rhs: Self) -> Self {
+        if self.exact && rhs.exact {
+            return Self::exact(self.lower | rhs.lower);
+        }
         Self {
             lower: self.lower | rhs.lower,
             upper: self.upper | rhs.upper,
@@ -332,6 +341,9 @@ impl std::ops::BitAnd<Self> for IndexExprResult {
     type Output = Self;
 
     fn bitand(self, rhs: Self) -> Self {
+        if self.exact && rhs.exact {
+            return Self::exact(self.lower & rhs.lower);
+        }
         Self {
             lower: self.lower & rhs.lower,
             upper: self.upper & rhs.upper,
@@ -344,6 +356,9 @@ impl std::ops::BitOr<Self> for IndexExprResult {
     type Output = Self;
 
     fn bitor(self, rhs: Self) -> Self {
+        if self.exact && rhs.exact {
+            return Self::exact(self.lower | rhs.lower);
+        }
         Self {
             lower: self.lower | rhs.lower,
             upper: self.upper | rhs.upper,
@@ -547,6 +562,40 @@ mod tests {
             RowAddrTreeMap::from_iter(rows.iter().copied()),
             RowAddrTreeMap::new(),
         ))
+    }
+
+    #[test]
+    fn exact_algebra_preserves_nullable_bounds() {
+        let left = NullableRowAddrMask::AllowList(NullableRowAddrSet::new(
+            RowAddrTreeMap::from_iter([0, 1, 1 << 32]),
+            RowAddrTreeMap::from_iter([1, 2]),
+        ));
+        let right = NullableRowAddrMask::AllowList(NullableRowAddrSet::new(
+            RowAddrTreeMap::from_iter([1, 2, 1 << 32]),
+            RowAddrTreeMap::from_iter([0, 2]),
+        ));
+        for lhs in [left.clone(), !left] {
+            for rhs in [right.clone(), !right.clone()] {
+                let left_result = NullableIndexExprResult::exact(lhs.clone());
+                let right_result = NullableIndexExprResult::exact(rhs.clone());
+                for (result, expected) in [
+                    (
+                        left_result.clone() & right_result.clone(),
+                        lhs.clone() & rhs.clone(),
+                    ),
+                    (left_result | right_result, lhs.clone() | rhs.clone()),
+                ] {
+                    assert!(result.is_exact());
+                    assert_eq!(result.lower, expected);
+                    assert_eq!(result.upper, expected);
+                    let result = result.drop_nulls();
+                    let expected = expected.drop_nulls();
+                    assert!(result.is_exact());
+                    assert_eq!(result.lower, expected);
+                    assert_eq!(result.upper, expected);
+                }
+            }
+        }
     }
 
     #[test]

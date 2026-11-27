@@ -192,7 +192,14 @@ impl NullableIndexExprResult {
     /// folds NULL rows out of the answer at each endpoint.
     pub fn drop_nulls(self) -> IndexExprResult {
         if self.exact {
-            return IndexExprResult::exact(self.lower.drop_nulls());
+            let nulls = match &self.lower {
+                NullableRowAddrMask::AllowList(rows) | NullableRowAddrMask::BlockList(rows) => {
+                    rows.null_rows()
+                }
+            };
+            if !nulls.is_empty() {
+                return IndexExprResult::exact(self.lower.drop_nulls());
+            }
         }
         IndexExprResult {
             lower: self.lower.drop_nulls(),
